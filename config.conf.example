@@ -1,0 +1,31 @@
+# ============================================================
+#  config.conf — AI Code Manager 全局配置
+#  修改后执行 ./aicm.sh apply 生效
+# ============================================================
+
+# ── 镜像配置 ──────────────────────────────────────────────
+IMAGE_NAME=ai-code-manager
+IMAGE_TAG=latest
+
+# 构建平台（Mac M 系列芯片固定用 linux/amd64，由 Docker Rosetta 模拟运行）
+BUILD_PLATFORM=linux/arm64
+
+# ── 代理配置 ──────────────────────────────────────────────
+# 宿主机代理地址（容器通过 host.docker.internal 访问宿主机）
+PROXY_HOST=host.docker.internal
+
+# 宿主机代理端口
+# 混合端口（同时支持 HTTP/SOCKS5，如 v2ray/sing-box 的混合入站）：两个填同一个值
+# 分开端口（如 Clash：HTTP=7890 SOCKS5=7891）：分别填写
+PROXY_HTTP_PORT=10808
+PROXY_SOCKS5_PORT=10808
+
+# ── 内部网络配置 ──────────────────────────────────────────
+INTERNAL_SUBNET=172.21.0.0/16
+RELAY_IP=172.21.0.2
+
+# 代理中继对内网监听的端口（容器内 HTTP_PROXY 指向此端口）
+RELAY_LISTEN_PORT=10808
+
+# 代理中继镜像
+RELAY_IMAGE=gogost/gost:3

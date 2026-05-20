@@ -1,0 +1,45 @@
+# ── 自动生成的编排文件（由 aicm.sh apply 生成）──────────
+docker-compose.yml
+
+# ── 账号认证数据（敏感凭据，绝对不能入库）────────────────
+accounts/
+
+# ── 任务执行记录与日志 ────────────────────────────────────
+tasks/*.json
+tasks/*.log
+!tasks/.gitkeep
+
+# ── 容器任务临时文件（I/O 解耦写入项目目录）──────────────
+.aicm-tasks/
+
+# ── 任务链会话记录 ────────────────────────────────────────
+conversations/*.json
+!conversations/.gitkeep
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# ── macOS ─────────────────────────────────────────────────
+.DS_Store
+
+# ── IDE / 编辑器 ──────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+accounts.conf
+config.conf
+projects.conf
+
+.claude/settings.local.json
+
+.agent
+# ── 视频等大体积媒体文件 ───────────────────────────────
+*.mp4

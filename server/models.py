@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class TaskStatus(str, Enum):
+    running = "running"
+    done    = "done"
+    failed  = "failed"
+    killed  = "killed"
+
+
+class ConversationStatus(str, Enum):
+    active   = "active"
+    archived = "archived"
+
+
+class AccountType(str, Enum):
+    codex  = "codex"
+    claude = "claude"
+
+
+class AccountAuth(str, Enum):
+    login = "login"
+    env   = "env"
+
+
+class AccountProxy(str, Enum):
+    relay = "relay"
+    off   = "off"
+
+
+# ── 账号 ──────────────────────────────────────────────────
+
+class Account(BaseModel):
+    name:     str
+    type:     AccountType
+    auth:     AccountAuth = AccountAuth.login
+    env_file: str = ""
+    proxy:    AccountProxy = AccountProxy.relay
+
+
+class Project(BaseModel):
+    name:    str
+    account: str
+    path:    str
+
+    @property
+    def mount_path(self) -> str:
+        return "/workspace"
+
+    def container_name(self, account_type: AccountType) -> str:
+        return f"{account_type.value}-{self.name}"
+
+    def service_name(self, account_type: AccountType) -> str:
+        return f"{account_type.value}-project-{self.name}"
+
+
+# ── 任务 ──────────────────────────────────────────────────
+
+class Conversation(BaseModel):
+    id:                str
+    name:              str
+    account:           str
+    type:              AccountType
+    project:           str
+    project_name:      str = ""
+    native_session_id: str = ""
+    status:            ConversationStatus = ConversationStatus.active
+    created:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    last_task_id:      str = ""
+
+    def save(self, conversations_dir: Path) -> None:
+        conversations_dir.mkdir(parents=True, exist_ok=True)
+        path = conversations_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "Conversation":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(**data)
+
+    @classmethod
+    def load_all(cls, conversations_dir: Path) -> list["Conversation"]:
+        if not conversations_dir.exists():
+            return []
+        conversations = []
+        for p in sorted(conversations_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                conversations.append(cls.load(p))
+            except Exception:
+                pass
+        return conversations
+
+    def touch(
+        self,
+        conversations_dir: Path,
+        native_session_id: Optional[str] = None,
+        last_task_id: Optional[str] = None,
+    ) -> None:
+        if native_session_id:
+            self.native_session_id = native_session_id
+        if last_task_id:
+            self.last_task_id = last_task_id
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(conversations_dir)
+
+
+class Task(BaseModel):
+    id:           str
+    status:       TaskStatus
+    account:      str
+    type:         AccountType
+    prompt:       str
+    project:      str
+    project_name: str = ""
+    conversation_id:   str = ""
+    native_session_id: str = ""
+    pid:      str = ""
+    created:  str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    finished: Optional[str] = None
+    archived: bool = False
+
+    # ── 持久化 ────────────────────────────────────────────
+
+    def save(self, tasks_dir: Path) -> None:
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        path = tasks_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "Task":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(**data)
+
+    @classmethod
+    def load_all(cls, tasks_dir: Path) -> list["Task"]:
+        if not tasks_dir.exists():
+            return []
+        tasks = []
+        for p in sorted(tasks_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                tasks.append(cls.load(p))
+            except Exception:
+                pass
+        return tasks
+
+    def update_status(self, status: TaskStatus, tasks_dir: Path) -> None:
+        self.status = status
+        if status in (TaskStatus.done, TaskStatus.failed, TaskStatus.killed):
+            self.finished = datetime.now().isoformat(timespec="seconds")
+        self.save(tasks_dir)
+
+    @property
+    def log_path_str(self) -> str:
+        return f"tasks/{self.id}.log"
+
+
+# ── HTTP 请求/响应结构 ─────────────────────────────────────
+
+class TaskCreateRequest(BaseModel):
+    prompt:  str
+    account: Optional[str] = None        # 指定账号名
+    project: Optional[str] = None        # 按项目路径匹配
+    project_name: Optional[str] = None   # 按项目配置名匹配
+    type:    Optional[AccountType] = None
+    auto:    bool = False                 # 全自动模式（--full-auto / --dangerously-skip-permissions）
+    conversation_id:   Optional[str] = None
+    conversation_name: Optional[str] = None
+
+
+class TaskResponse(BaseModel):
+    id:           str
+    status:       TaskStatus
+    account:      str
+    type:         AccountType
+    prompt:       str
+    project:      str
+    project_name: str = ""
+    conversation_id: str = ""
+    native_session_id: str = ""
+    created: str
+    finished: Optional[str] = None
+    log_path: str
+    archived: bool = False
+
+    @classmethod
+    def from_task(cls, t: Task) -> "TaskResponse":
+        return cls(
+            id           = t.id,
+            status       = t.status,
+            account      = t.account,
+            type         = t.type,
+            prompt       = t.prompt,
+            project      = t.project,
+            project_name = t.project_name,
+            conversation_id   = t.conversation_id,
+            native_session_id = t.native_session_id,
+            created      = t.created,
+            finished     = t.finished,
+            log_path     = t.log_path_str,
+            archived     = t.archived,
+        )
+
+
+class ConversationResponse(BaseModel):
+    id:                str
+    name:              str
+    account:           str
+    type:              AccountType
+    project:           str
+    project_name:      str = ""
+    native_session_id: str
+    status:            ConversationStatus
+    created:           str
+    updated:           str
+    last_task_id:      str
+
+    @classmethod
+    def from_conversation(cls, c: Conversation) -> "ConversationResponse":
+        return cls(
+            id                = c.id,
+            name              = c.name,
+            account           = c.account,
+            type              = c.type,
+            project           = c.project,
+            project_name      = c.project_name,
+            native_session_id = c.native_session_id,
+            status            = c.status,
+            created           = c.created,
+            updated           = c.updated,
+            last_task_id      = c.last_task_id,
+        )
+
+
+class ProjectResponse(BaseModel):
+    name:    str
+    account: str
+    path:    str
+
+    @classmethod
+    def from_project(cls, p: Project) -> "ProjectResponse":
+        return cls(name=p.name, account=p.account, path=p.path)
+
+
+class AccountResponse(BaseModel):
+    name:      str
+    type:      AccountType
+    auth:      AccountAuth
+    env_file:  str = ""
+    proxy:     AccountProxy
+    projects:  list[str]
+    running:   bool         # 容器是否在线
+    busy:      bool         # 是否有 running 任务占用
+    container: str
+    running_task_id:     str = ""
+    running_task_prompt: str = ""
+    task_done_count:     int = 0
+    task_failed_count:   int = 0
