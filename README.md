@@ -2,7 +2,7 @@
 
 **更适合中国开发者（CN）体质的多账号 AI 辅助开发方案。**
 
-![演示视频](https://github.com/user-attachments/assets/95d5b7be-c54d-45d9-a9f7-c509759b2bba)
+<video src="https://github.com/user-attachments/assets/95d5b7be-c54d-45d9-a9f7-c509759b2bba" controls width="100%"></video>
 
 ### 💡 为什么需要 AICM？
 
