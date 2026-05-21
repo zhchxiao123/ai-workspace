@@ -167,6 +167,8 @@ function renderEmptyChatState() {
   if (!workspace) return;
 
   const projectLabel = chatNewSessionProject || '未指定项目';
+  currentChatProjectName = chatNewSessionProject;
+  pendingImages = [];
 
   workspace.innerHTML = `
 <div class="chat-main-header">
@@ -182,22 +184,7 @@ function renderEmptyChatState() {
   </div>
 </div>
 
-<div class="chat-input-container">
-  <div class="chat-input-row">
-    <textarea class="chat-input-textarea" id="chat-input" placeholder="输入您的开发指令... (按 Enter 发送，Shift+Enter 换行)" rows="1"></textarea>
-    <button class="btn primary" id="chat-send-btn" onclick="sendChatMessage()" style="min-height: 40px;">发送</button>
-  </div>
-  <div class="chat-input-actions">
-    <div class="chat-input-options">
-      <label class="toggle-row" style="cursor: pointer;">
-        <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
-      </label>
-      <span style="color: var(--border-md);">|</span>
-      <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
-    </div>
-    <div style="font-size: 11px; color: var(--text-3);">发送第一条消息后将自动创建会话链</div>
-  </div>
-</div>
+${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Enter 换行)', '发送第一条消息后将自动创建会话链')}
   `;
 
   const textarea = document.getElementById('chat-input');
@@ -235,6 +222,9 @@ async function renderChatWorkspace(conv) {
   const workspace = document.getElementById('chat-workspace');
   if (!workspace) return;
 
+  currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
+  pendingImages = [];
+
   workspace.innerHTML = `
 <!-- 会话头部 -->
 <div class="chat-main-header">
@@ -257,22 +247,7 @@ async function renderChatWorkspace(conv) {
 </div>
 
 <!-- 底部输入框 -->
-<div class="chat-input-container">
-  <div class="chat-input-row">
-    <textarea class="chat-input-textarea" id="chat-input" placeholder="输入您下一轮的指令... (按 Enter 发送，Shift+Enter 换行)" rows="1"></textarea>
-    <button class="btn primary" id="chat-send-btn" onclick="sendChatMessage()" style="min-height: 40px;">发送</button>
-  </div>
-  <div class="chat-input-actions">
-    <div class="chat-input-options">
-      <label class="toggle-row" style="cursor: pointer;">
-        <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
-      </label>
-      <span style="color: var(--border-md);">|</span>
-      <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
-    </div>
-    <div style="font-size: 11px; color: var(--text-3);">${conv.isOneOff ? '一次性单任务 (发送消息升级为任务链)' : 'AI 连续问答 · 会话链模式'}</div>
-  </div>
-</div>
+${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+Enter 换行)', conv.isOneOff ? '一次性单任务 (发送消息升级为任务链)' : 'AI 连续问答 · 会话链模式')}
   `;
 
   const textarea = document.getElementById('chat-input');
@@ -291,24 +266,49 @@ async function renderChatWorkspace(conv) {
         .filter(t => t.conversation_id === conv.id)
         .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
 
-    // 渲染头部动作按钮
+    // 渲染头部动作按钮与状态文本
     const headerActions = document.getElementById('chat-header-actions');
     const runningTask = convTasks.find(t => t.status === 'running');
+    const pendingTask = convTasks.find(t => t.status === 'pending');
+    const scheduledTask = convTasks.find(t => t.status === 'scheduled');
+
+    let actionBtnHtml = '';
     if (runningTask) {
       currentChatTaskId = runningTask.id;
-      headerActions.innerHTML = `
-    <button class="btn danger" onclick="killChatTask('${runningTask.id}')">终止执行</button>
-    <button class="btn" onclick="selectConversation('${conv.id}')">刷新</button>
-  `;
-      document.getElementById('chat-status-text').innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
-      document.getElementById('chat-input').disabled = true;
-      document.getElementById('chat-send-btn').disabled = true;
+      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${runningTask.id}')">终止执行</button>`;
+    } else if (pendingTask) {
+      currentChatTaskId = pendingTask.id;
+      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${pendingTask.id}')">取消排队</button>`;
+    } else if (scheduledTask) {
+      currentChatTaskId = scheduledTask.id;
+      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${scheduledTask.id}')">取消定时</button>`;
     } else {
       currentChatTaskId = null;
-      headerActions.innerHTML = `
-    <button class="btn" onclick="selectConversation('${conv.id}')">刷新</button>
-  `;
     }
+
+    headerActions.innerHTML = `
+      ${actionBtnHtml}
+      <button class="btn" onclick="selectConversation('${conv.id}')">刷新</button>
+    `;
+
+    const runningCount = convTasks.filter(t => t.status === 'running').length;
+    const pendingCount = convTasks.filter(t => t.status === 'pending').length;
+    const scheduledCount = convTasks.filter(t => t.status === 'scheduled').length;
+
+    let statusHtml = '';
+    if (runningCount > 0) {
+      statusHtml = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
+      if (pendingCount > 0) {
+        statusHtml += ` <span style="color: var(--text-2); font-size: 11px;">(${pendingCount}个任务在排队...)</span>`;
+      }
+    } else if (pendingCount > 0) {
+      statusHtml = `<span style="color: var(--text-2);">● 任务在排队中 (${pendingCount}个)</span>`;
+    } else if (scheduledCount > 0) {
+      statusHtml = `<span style="color: var(--text-2);">● 已定时待发送 (${scheduledCount}个)</span>`;
+    } else {
+      statusHtml = `<span style="color: var(--text-2);">就绪</span>`;
+    }
+    document.getElementById('chat-status-text').innerHTML = statusHtml;
 
     if (convTasks.length === 0) {
       chatContent.innerHTML = `<div class="empty">会话目前没有指令记录，发送消息开始交流。</div>`;
@@ -334,7 +334,10 @@ async function renderChatWorkspace(conv) {
       userWrap.className = 'timeline-node-wrapper user-wrapper';
       userWrap.innerHTML = `
     <div class="user-bubble">
-      <div class="user-bubble-title">你:</div>
+      <div class="user-bubble-title-row">
+        <div class="user-bubble-title">你:</div>
+        <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
+      </div>
       <div class="user-bubble-content">${esc(task.prompt)}</div>
     </div>`;
       chatContent.appendChild(userWrap);
@@ -347,7 +350,13 @@ async function renderChatWorkspace(conv) {
       // 3. 构建局部的 ChatLogRenderer 并进行渲染
       // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
       const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true);
-      localRenderer.render(logText);
+      if (task.status === 'pending') {
+        localRenderer.renderPending();
+      } else if (task.status === 'scheduled') {
+        localRenderer.renderScheduled(task.execute_at);
+      } else {
+        localRenderer.render(logText);
+      }
 
       // 4. 如果是最后一个任务，把该 localRenderer 赋给全局 chatRenderer 方便 SSE 追加
       if (idx === convTasks.length - 1) {
@@ -357,12 +366,15 @@ async function renderChatWorkspace(conv) {
 
     scrollChatViewportToBottom();
 
-    // 如果有正在运行的任务，开启实时追踪
-    if (runningTask) {
-      startChatFollow(runningTask.id);
+    // 追踪任务选择：优先正在运行的任务，其次是第一个 pending 任务，最后是第一个 scheduled 任务
+    const activeTask = runningTask 
+      || convTasks.find(t => t.status === 'pending') 
+      || convTasks.find(t => t.status === 'scheduled');
+    if (activeTask) {
+      startChatFollow(activeTask.id);
     }
   } catch (e) {
-    chatContent.innerHTML = `<div style="color:var(--red);padding:16px">加载会话历史失败: ${esc(e.message)}</div>`;
+    chatContent.innerHTML = `<div style="color:var(--red);padding:16px">加载会话历史失败: ${esc(e.message)}<br><pre style="font-size:11px;color:var(--text-3);margin-top:8px">${esc(e.stack)}</pre></div>`;
   }
 }
 
@@ -375,6 +387,16 @@ async function sendChatMessage() {
 
   const sendBtn = document.getElementById('chat-send-btn');
   const autoMode = document.getElementById('chat-auto-mode')?.checked || false;
+
+  const schedCheckbox = document.getElementById('chat-schedule-checkbox');
+  const schedTimeInput = document.getElementById('chat-sched-time');
+  let executeAt = null;
+  if (schedCheckbox && schedCheckbox.checked && schedTimeInput && schedTimeInput.value) {
+    executeAt = schedTimeInput.value;
+    if (executeAt.includes(':') && executeAt.split(':').length === 2) {
+      executeAt += ':00';
+    }
+  }
 
   let convId = activeConversationId;
   let projectName = null;
@@ -397,11 +419,13 @@ async function sendChatMessage() {
       const rTask = await fetch(`${API}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          prompt: promptText, 
-          project_name: projectName, 
+        body: JSON.stringify({
+          prompt: promptText,
+          project_name: projectName,
           auto: autoMode,
-          conversation_name: conversationName
+          conversation_name: conversationName,
+          images: pendingImages.map(i => i.container_path),
+          execute_at: executeAt,
         })
       });
       const taskData = await rTask.json();
@@ -414,6 +438,15 @@ async function sendChatMessage() {
       activeConversationId = taskData.conversation_id;
       textarea.value = '';
       textarea.style.height = 'auto';
+      pendingImages = [];
+      renderImagePreviews();
+
+      if (schedCheckbox) schedCheckbox.checked = false;
+      toggleSchedTimeInput(false);
+      if (schedTimeInput) schedTimeInput.value = '';
+
+      sendBtn.disabled = false;
+      sendBtn.textContent = '发送';
 
       await selectConversation(activeConversationId);
       loadTasks();
@@ -461,7 +494,6 @@ async function sendChatMessage() {
   }
 
   // 3. 正常发送追问消息
-  textarea.disabled = true;
   sendBtn.disabled = true;
   sendBtn.textContent = '发送中...';
 
@@ -472,7 +504,9 @@ async function sendChatMessage() {
       body: JSON.stringify({
         prompt: promptText,
         auto: autoMode,
-        conversation_id: convId
+        conversation_id: convId,
+        images: pendingImages.map(i => i.container_path),
+        execute_at: executeAt,
       })
     });
     const data = await r.json();
@@ -480,13 +514,21 @@ async function sendChatMessage() {
 
     textarea.value = '';
     textarea.style.height = 'auto';
+    pendingImages = [];
+    renderImagePreviews();
+
+    if (schedCheckbox) schedCheckbox.checked = false;
+    toggleSchedTimeInput(false);
+    if (schedTimeInput) schedTimeInput.value = '';
+
+    sendBtn.disabled = false;
+    sendBtn.textContent = '发送';
 
     await selectConversation(convId);
     loadTasks();
     loadProjectsDashboard();
   } catch (e) {
     alert('发送消息失败: ' + e.message);
-    textarea.disabled = false;
     sendBtn.disabled = false;
     sendBtn.textContent = '发送';
   }
@@ -604,5 +646,98 @@ async function deleteOneOff(itemId) {
   } catch (e) {
     alert('删除失败: ' + e.message);
   }
+}
+
+// ── 图片上传 ──────────────────────────────────────────────
+
+function buildChatInputHTML(placeholder, hint) {
+  const imgIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+  return `
+<div class="chat-input-container">
+  <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
+  <div class="chat-input-row">
+    <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
+    <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片">${imgIcon}</button>
+    <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>
+    <button class="btn primary" id="chat-send-btn" onclick="sendChatMessage()" style="min-height: 40px;">发送</button>
+  </div>
+  <div class="chat-input-actions">
+    <div class="chat-input-options">
+      <label class="toggle-row" style="cursor: pointer;">
+        <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
+      </label>
+      <span style="color: var(--border-md);">|</span>
+      <label class="toggle-row" style="cursor: pointer;">
+        <input type="checkbox" id="chat-schedule-checkbox" onchange="toggleSchedTimeInput(this.checked)"> 定时发送 ⏰
+      </label>
+      <span id="chat-sched-time-wrap" style="display: none; align-items: center; gap: 4px;">
+        <input type="datetime-local" id="chat-sched-time" style="background: var(--surface-2); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); font-size: 11px; padding: 2px 4px; outline: none; min-height: 24px; width: auto;">
+      </span>
+      <span style="color: var(--border-md);">|</span>
+      <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
+    </div>
+    <div style="font-size: 11px; color: var(--text-3);">${hint}</div>
+  </div>
+</div>`;
+}
+
+function toggleSchedTimeInput(checked) {
+  const el = document.getElementById('chat-sched-time-wrap');
+  if (el) {
+    el.style.display = checked ? 'inline-flex' : 'none';
+  }
+}
+
+async function handleImageSelect(input) {
+  const files = Array.from(input.files);
+  input.value = '';
+  if (!files.length) return;
+
+  if (!currentChatProjectName) {
+    alert('请先从左侧选择项目后再上传图片');
+    return;
+  }
+
+  for (const file of files) {
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch(
+        `${API}/api/uploads?project_name=${encodeURIComponent(currentChatProjectName)}`,
+        { method: 'POST', body: fd }
+      );
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      pendingImages.push({
+        container_path: data.container_path,
+        preview_url: data.preview_url,
+        name: data.filename,
+      });
+    } catch (e) {
+      alert(`上传图片失败: ${e.message}`);
+    }
+  }
+  renderImagePreviews();
+}
+
+function renderImagePreviews() {
+  const container = document.getElementById('chat-image-previews');
+  if (!container) return;
+  if (pendingImages.length === 0) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+  container.style.display = 'flex';
+  container.innerHTML = pendingImages.map((img, i) => `
+    <div class="chat-image-thumb" title="${esc(img.name)}">
+      <img src="${API}${img.preview_url}" alt="${esc(img.name)}">
+      <button class="chat-image-thumb-remove" onclick="removePendingImage(${i})" title="移除">×</button>
+    </div>`).join('');
+}
+
+function removePendingImage(index) {
+  pendingImages.splice(index, 1);
+  renderImagePreviews();
 }
 

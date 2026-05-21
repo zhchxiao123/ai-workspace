@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
-    running = "running"
+    scheduled = "scheduled"
+    pending   = "pending"
+    running   = "running"
     done    = "done"
     failed  = "failed"
     killed  = "killed"
@@ -130,6 +132,9 @@ class Task(BaseModel):
     created:  str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     finished: Optional[str] = None
     archived: bool = False
+    auto:     bool = False
+    images:   list[str] = Field(default_factory=list)
+    execute_at: Optional[str] = None
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -180,6 +185,8 @@ class TaskCreateRequest(BaseModel):
     auto:    bool = False                 # 全自动模式（--full-auto / --dangerously-skip-permissions）
     conversation_id:   Optional[str] = None
     conversation_name: Optional[str] = None
+    images:  list[str] = []              # 容器内图片路径列表（--image 参数）
+    execute_at: Optional[str] = None     # 定时执行时间
 
 
 class TaskResponse(BaseModel):
@@ -196,6 +203,9 @@ class TaskResponse(BaseModel):
     finished: Optional[str] = None
     log_path: str
     archived: bool = False
+    auto:     bool = False
+    images:   list[str] = []
+    execute_at: Optional[str] = None
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -213,6 +223,9 @@ class TaskResponse(BaseModel):
             finished     = t.finished,
             log_path     = t.log_path_str,
             archived     = t.archived,
+            auto         = getattr(t, "auto", False),
+            images       = getattr(t, "images", []),
+            execute_at   = getattr(t, "execute_at", None),
         )
 
 

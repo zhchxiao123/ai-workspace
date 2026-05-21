@@ -43,6 +43,7 @@ class Scheduler:
         self.conversations_dir = workspace_dir / "conversations"
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
+        self._loop_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def task_process_marker(task_id: str) -> str:
@@ -56,10 +57,12 @@ class Scheduler:
         task_id: str,
         native_session_id: str = "",
         container_workdir: str = "",
+        images: list[str] | None = None,
     ) -> str:
         """
         构建在容器内执行的 CLI 命令。
         始终开启 JSON 输出（--output-format stream-json / --json）以便提取 native_session_id。
+        images: 容器内图片路径列表，仅 codex 支持（-i 参数）。
         """
         escaped_prompt = shlex.quote(prompt)
         marker = shlex.quote(Scheduler.task_process_marker(task_id))
@@ -70,22 +73,35 @@ class Scheduler:
             # 始终使用流式 JSON 输出以捕获 session_id
             output_format = " --output-format stream-json --verbose"
             resume = f" --resume {shlex.quote(native_session_id)}" if native_session_id else ""
-            cli_cmd = f"claude -p {permission}{output_format}{resume} {escaped_prompt}"
+            # claude 不支持 -i flag，通过在 prompt 末尾附加本地路径来传图片
+            if images:
+                paths = "\n".join(images)
+                escaped_prompt = shlex.quote(f"{prompt}\n\n[Attached images:\n{paths}]")
+            # 通过 stdin 传入 prompt，兼容所有 claude CLI 版本（部分版本不再接受位置参数）
+            inner_cmd = (
+                f"printf '%s\\n' {escaped_prompt} | "
+                f"AICM_TASK_ID={task_env} exec -a {marker} "
+                f"claude -p {permission}{output_format}{resume}"
+            )
         else:
             sandbox = "danger-full-access" if auto else "workspace-write"
-            # 始终使用 --json 以捕获 thread_id
+            image_flags = "".join(f" -i {shlex.quote(img)}" for img in (images or []))
+            # 始终使用 --json 以捕获 thread_id；prompt 通过 stdin 传入
             if native_session_id:
-                # codex exec resume <session_id> <prompt> --json
+                # codex exec resume <session_id> --json [flags] - prompt via stdin
                 # resume 子命令不支持 --sandbox，使用 --dangerously-bypass-approvals-and-sandbox
                 danger_flag = " --dangerously-bypass-approvals-and-sandbox" if auto else ""
-                cli_cmd = (
-                    f"codex exec resume --json{danger_flag} "
-                    f"{shlex.quote(native_session_id)} {escaped_prompt}"
+                inner_cmd = (
+                    f"printf '%s\\n' {escaped_prompt} | "
+                    f"AICM_TASK_ID={task_env} exec -a {marker} "
+                    f"codex exec resume {shlex.quote(native_session_id)} --json{danger_flag}{image_flags}"
                 )
             else:
-                cli_cmd = f"codex exec --json --sandbox {sandbox} {escaped_prompt}"
-
-        inner_cmd = f"AICM_TASK_ID={task_env} exec -a {marker} {cli_cmd}"
+                inner_cmd = (
+                    f"printf '%s\\n' {escaped_prompt} | "
+                    f"AICM_TASK_ID={task_env} exec -a {marker} "
+                    f"codex exec --json --sandbox {sandbox}{image_flags}"
+                )
         if container_workdir:
             inner_cmd = f"cd {shlex.quote(container_workdir)} && {inner_cmd}"
 
@@ -258,13 +274,12 @@ class Scheduler:
         """
         busy = self.get_busy_accounts()
 
-        project_match = self.find_project_for_path(prefer_project) if prefer_project else None
-
         for acc in self.get_accounts():
             if prefer_type and acc.type != prefer_type:
                 continue
-            if project_match:
-                if acc.name != project_match.account:
+            if prefer_project:
+                project_match = self.find_project_for_path(prefer_project, acc.name)
+                if not project_match:
                     continue
             if acc.name in busy:
                 continue
@@ -304,13 +319,15 @@ class Scheduler:
     def find_project_by_name(self, name: str) -> Optional[Project]:
         return next((p for p in self.get_projects() if p.name == name), None)
 
-    def find_project_for_path(self, project: Optional[str]) -> Optional[Project]:
+    def find_project_for_path(self, project: Optional[str], account: Optional[str] = None) -> Optional[Project]:
         if not project:
             return None
         matching = [
             p for p in self.get_projects()
             if self._path_under_root(p.path, project)
         ]
+        if account:
+            matching = [p for p in matching if p.account == account]
         if not matching:
             return None
         return max(matching, key=lambda p: len(str(self._canonical_path(p.path))))
@@ -421,6 +438,119 @@ class Scheduler:
 
     # ── 提交任务 ──────────────────────────────────────────
 
+    # ── 定时与排队调度 ────────────────────────────────────────
+
+    def start_scheduling_loop(self) -> None:
+        if self._loop_task is None or self._loop_task.done():
+            self._loop_task = asyncio.create_task(
+                self._schedule_pending_tasks_loop(),
+                name="scheduler-pending-loop",
+            )
+
+    async def _schedule_pending_tasks_loop(self) -> None:
+        while True:
+            try:
+                await self.schedule_next_tasks()
+            except Exception as e:
+                import traceback
+                print("Error in schedule_next_tasks:")
+                traceback.print_exc()
+            await asyncio.sleep(1.0)
+
+    async def schedule_next_tasks(self) -> None:
+        now = datetime.now()
+        
+        # 1. 扫描并触发已到时间的定时任务 (scheduled -> pending)
+        all_tasks = Task.load_all(self.tasks_dir)
+        for t in all_tasks:
+            if t.status == TaskStatus.scheduled and t.execute_at:
+                try:
+                    dt = datetime.fromisoformat(t.execute_at)
+                    if now >= dt:
+                        t.update_status(TaskStatus.pending, self.tasks_dir)
+                except Exception as e:
+                    t.update_status(TaskStatus.failed, self.tasks_dir)
+                    self._write_failed_log(t, f"定时时间解析失败：{e}")
+
+        # 2. 扫描并运行 pending 任务
+        pending_tasks = [t for t in Task.load_all(self.tasks_dir) if t.status == TaskStatus.pending]
+        if not pending_tasks:
+            return
+
+        # 按照创建时间升序排列，先进先出
+        pending_tasks.sort(key=lambda t: t.created or "")
+        busy_accounts = self.get_busy_accounts()
+
+        for task in pending_tasks:
+            if task.account not in busy_accounts:
+                busy_accounts.add(task.account)
+                # 异步拉起执行该 pending 任务
+                await self._start_pending_task(task)
+
+    async def _start_pending_task(self, task: Task) -> None:
+        try:
+            acc = next((a for a in self.get_accounts() if a.name == task.account), None)
+            if acc is None:
+                task.update_status(TaskStatus.failed, self.tasks_dir)
+                self._write_failed_log(task, f"账号 '{task.account}' 不存在")
+                return
+
+            project = self.find_project_for_path(task.project, task.account)
+            if project is None:
+                task.update_status(TaskStatus.failed, self.tasks_dir)
+                self._write_failed_log(task, f"项目路径 '{task.project}' 未配置")
+                return
+
+            container_name = project.container_name(acc.type)
+            container_workdir = self.container_workdir_for_project(project, task.project)
+
+            if not docker_mgr.is_container_running(container_name):
+                task.update_status(TaskStatus.failed, self.tasks_dir)
+                self._write_failed_log(task, f"容器 {container_name} 未运行")
+                return
+
+            # 加载对应的 conversation（如果有）
+            conversation = self.get_conversation(task.conversation_id) if task.conversation_id else None
+
+            # 转换为运行状态
+            task.update_status(TaskStatus.running, self.tasks_dir)
+
+            # 写日志头
+            log_path = self.get_log_path(task.id)
+            self._write_log_header(log_path, task, acc, container_workdir, container_name)
+
+            # 异步后台执行
+            bg = asyncio.create_task(
+                self._run(
+                    task,
+                    acc,
+                    log_path,
+                    getattr(task, "auto", False),
+                    conversation,
+                    container_workdir,
+                    container_name,
+                    getattr(task, "images", []),
+                ),
+                name=f"task-{task.id}",
+            )
+            self._running[task.id] = bg
+
+        except Exception as e:
+            task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._write_failed_log(task, f"拉起任务失败：{e}")
+
+    def _write_failed_log(self, task: Task, reason: str) -> None:
+        log_path = self.get_log_path(task.id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8") as f:
+            f.write("=== AICM Task Log ===\n")
+            f.write(f"id:      {task.id}\n")
+            f.write(f"status:  failed\n")
+            f.write(f"prompt:  {task.prompt}\n")
+            f.write(f"error:   {reason}\n")
+            f.write("=" * 38 + "\n\n")
+            f.write(f"任务启动失败：{reason}\n")
+
     async def submit(
         self,
         prompt:         str,
@@ -431,18 +561,29 @@ class Scheduler:
         conversation_id: Optional[str]         = None,
         conversation_name: Optional[str]       = None,
         project_name:   Optional[str]         = None,
+        images:         list[str]             = [],
+        execute_at:     Optional[str]         = None,
     ) -> Task:
         """
         提交任务，异步在后台执行，立即返回 Task 对象。
         调用方可以通过 task.id 跟踪进度。
         """
+        is_pending = False
         conversation: Optional[Conversation] = None
 
         if conversation_id:
             conversation = self.get_conversation(conversation_id)
             if conversation is None:
                 raise ValueError(f"任务链 '{conversation_id}' 不存在")
-            self.ensure_conversation_available(conversation)
+            
+            # 判断任务链是否有正在运行的任务
+            has_running_in_conv = any(
+                t.conversation_id == conversation.id and t.status == TaskStatus.running
+                for t in Task.load_all(self.tasks_dir)
+            )
+            if has_running_in_conv:
+                is_pending = True
+
             account_name = conversation.account
             prefer_type = conversation.type
             prefer_project = conversation.project
@@ -461,6 +602,7 @@ class Scheduler:
             prefer_project = selected_project.path
 
         # 确定账号
+        acc: Optional[Account] = None
         if account_name:
             acc = next((a for a in self.get_accounts() if a.name == account_name), None)
             if acc is None:
@@ -469,24 +611,53 @@ class Scheduler:
                 raise ValueError(
                     f"账号 '{account_name}' 类型为 {acc.type.value}，与筛选类型 {prefer_type.value} 不一致"
                 )
+            # 若账号忙碌，则标记为排队
+            if acc.name in self.get_busy_accounts():
+                is_pending = True
         else:
+            # 优先寻找空闲账号
             acc = self.find_idle_account(
                 prefer_type    = prefer_type,
                 prefer_project = prefer_project,
             )
             if acc is None:
-                hints = []
-                if prefer_project:
-                    hints.append(f"项目：{prefer_project}")
-                if prefer_type:
-                    hints.append(f"类型：{prefer_type.value}")
-                hint_str = "，".join(hints)
-                raise RuntimeError(
-                    f"没有匹配的空闲账号{('（' + hint_str + '）') if hint_str else ''}"
-                )
+                # 寻找支持该项目且对应的项目容器在线的忙碌账号
+                matching_busy_accounts = []
+                for a in self.get_accounts():
+                    if prefer_type and a.type != prefer_type:
+                        continue
+                    if prefer_project:
+                        project_match = self.find_project_for_path(prefer_project, a.name)
+                        if not project_match:
+                            continue
+                    account_projects = [p for p in self.get_projects() if p.account == a.name]
+                    if not account_projects:
+                        continue
+                    any_running = any(
+                        docker_mgr.is_container_running(p.container_name(a.type))
+                        for p in account_projects
+                    )
+                    if not any_running:
+                        continue
+                    matching_busy_accounts.append(a)
+                
+                if not matching_busy_accounts:
+                    hints = []
+                    if prefer_project:
+                        hints.append(f"项目：{prefer_project}")
+                    if prefer_type:
+                        hints.append(f"类型：{prefer_type.value}")
+                    hint_str = "，".join(hints)
+                    raise RuntimeError(
+                        f"没有匹配的空闲账号{('（' + hint_str + '）') if hint_str else ''}"
+                    )
+                
+                # 分配第一个可用的忙碌账号并标记为 pending
+                acc = matching_busy_accounts[0]
+                is_pending = True
 
         task_project = self.resolve_task_project(acc, prefer_project)
-        selected_project = selected_project or self.find_project_for_path(task_project)
+        selected_project = selected_project or self.find_project_for_path(task_project, acc.name)
         if selected_project is None:
             raise ValueError(f"项目 '{task_project}' 未配置")
         container_name = selected_project.container_name(acc.type)
@@ -500,8 +671,65 @@ class Scheduler:
 
         # 创建任务记录
         task_id  = self.new_task_id()
-        log_path = self.get_log_path(task_id)
 
+        # ── 处理定时任务 ──
+        if execute_at:
+            try:
+                dt = datetime.fromisoformat(execute_at)
+                if dt > datetime.now():
+                    task = Task(
+                        id           = task_id,
+                        status       = TaskStatus.scheduled,
+                        account      = acc.name,
+                        type         = acc.type,
+                        prompt       = prompt,
+                        project      = task_project,
+                        project_name = selected_project.name,
+                        conversation_id = conversation.id if conversation else "",
+                        native_session_id = conversation.native_session_id if conversation else "",
+                        auto         = auto,
+                        images       = images,
+                        execute_at   = execute_at,
+                    )
+                    task.save(self.tasks_dir)
+                    
+                    # 写入空日志文件防 SSE 404
+                    log_path = self.get_log_path(task_id)
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_path.write_text("", encoding="utf-8")
+                    
+                    return task
+            except ValueError:
+                pass
+
+        # ── 处理排队任务 ──
+        if is_pending:
+            task = Task(
+                id           = task_id,
+                status       = TaskStatus.pending,
+                account      = acc.name,
+                type         = acc.type,
+                prompt       = prompt,
+                project      = task_project,
+                project_name = selected_project.name,
+                conversation_id = conversation.id if conversation else "",
+                native_session_id = conversation.native_session_id if conversation else "",
+                auto         = auto,
+                images       = images,
+            )
+            task.save(self.tasks_dir)
+            
+            # 写入空日志文件防 SSE 404
+            log_path = self.get_log_path(task_id)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("", encoding="utf-8")
+            
+            # 立即触发一次调度检查
+            asyncio.create_task(self.schedule_next_tasks())
+            return task
+
+        # ── 立即执行任务 ──
+        log_path = self.get_log_path(task_id)
         task = Task(
             id           = task_id,
             status       = TaskStatus.running,
@@ -512,6 +740,8 @@ class Scheduler:
             project_name = selected_project.name,
             conversation_id = conversation.id if conversation else "",
             native_session_id = conversation.native_session_id if conversation else "",
+            auto         = auto,
+            images       = images,
         )
         task.save(self.tasks_dir)
 
@@ -520,7 +750,7 @@ class Scheduler:
 
         # 异步后台执行
         bg = asyncio.create_task(
-            self._run(task, acc, log_path, auto, conversation, container_workdir, container_name),
+            self._run(task, acc, log_path, auto, conversation, container_workdir, container_name, images),
             name=f"task-{task_id}",
         )
         self._running[task_id] = bg
@@ -549,7 +779,7 @@ class Scheduler:
         acc = next((a for a in self.get_accounts() if a.name == task.account), None)
         if acc is None:
             raise ValueError(f"账号 '{task.account}' 不存在")
-        project = self.find_project_for_path(task.project)
+        project = self.find_project_for_path(task.project, task.account)
         if project is None:
             raise ValueError(f"项目路径 '{task.project}' 未配置")
 
@@ -669,6 +899,7 @@ class Scheduler:
         conversation: Optional[Conversation] = None,
         container_workdir: str = "",
         container_name: str = "",
+        images: list[str] = [],
     ) -> None:
         """后台协程：以 detached 方式启动容器任务，再轮询宿主机日志文件跟踪进度。"""
         try:
@@ -679,6 +910,7 @@ class Scheduler:
                 task.id,
                 native_session_id=conversation.native_session_id if conversation else "",
                 container_workdir=container_workdir,
+                images=images,
             )
 
             proc = await asyncio.create_subprocess_exec(
@@ -716,6 +948,7 @@ class Scheduler:
         finally:
             self._running.pop(task.id, None)
             self._cleanup_container_task_files(task)
+            asyncio.create_task(self.schedule_next_tasks())
 
     async def _reattach(self, task: Task) -> None:
         """重新 attach 到一个在 Python 重启后仍存活的容器进程，继续跟踪其日志。"""
@@ -756,6 +989,7 @@ class Scheduler:
         finally:
             self._running.pop(task.id, None)
             self._cleanup_container_task_files(task)
+            asyncio.create_task(self.schedule_next_tasks())
 
     async def _append_usage_status(self, log_path: Path, acc: Account, container_name: str) -> None:
         cmd = self.build_usage_status_command(acc.type)
@@ -800,14 +1034,14 @@ class Scheduler:
 
     def _get_task_container(self, task: Task) -> Optional[str]:
         """通过任务记录的 project 路径找到对应项目，推导容器名。"""
-        project = self.find_project_for_path(task.project)
+        project = self.find_project_for_path(task.project, task.account)
         if project is None:
             return None
         return project.container_name(task.type)
 
     def _get_project_root(self, task: Task) -> Optional[Path]:
         """返回任务所属项目在宿主机的根目录（/workspace 在容器内挂载的目标）。"""
-        project = self.find_project_for_path(task.project)
+        project = self.find_project_for_path(task.project, task.account)
         if project is None:
             return None
         return Path(project.path)
@@ -918,8 +1152,17 @@ class Scheduler:
         task = self.get_task(task_id)
         if task is None:
             raise ValueError(f"任务 '{task_id}' 不存在")
-        if task.status != TaskStatus.running:
-            raise RuntimeError(f"任务状态为 '{task.status.value}'，只能终止 running 状态的任务")
+        if task.status not in (TaskStatus.running, TaskStatus.pending, TaskStatus.scheduled):
+            raise RuntimeError(f"任务状态为 '{task.status.value}'，只能终止 running、pending 或 scheduled 状态的任务")
+
+        if task.status in (TaskStatus.pending, TaskStatus.scheduled):
+            old_status = task.status
+            task.update_status(TaskStatus.killed, self.tasks_dir)
+            reason = "killed by user (cancelled schedule)" if old_status == TaskStatus.scheduled else "killed by user (while pending)"
+            self._append_log_footer(self.get_log_path(task_id), reason)
+            # 异步触发一次调度，确保释放该队列的后续处理（以防万一）
+            asyncio.create_task(self.schedule_next_tasks())
+            return task
 
         # 先更新状态防止并发写入
         task.update_status(TaskStatus.killed, self.tasks_dir)
@@ -935,6 +1178,8 @@ class Scheduler:
                 pass
 
         self._append_log_footer(self.get_log_path(task_id), "killed by user")
+        # 触发下一次调度
+        asyncio.create_task(self.schedule_next_tasks())
         return task
 
     def delete_task(self, task_id: str) -> None:

@@ -1529,13 +1529,47 @@
       min-width: 0;
     }
 
+    .bubble-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+
     .bubble-label {
       font-size: 10px;
       font-weight: 750;
       letter-spacing: .5px;
       text-transform: uppercase;
-      margin-bottom: 5px;
       color: #5eead4;
+    }
+
+    .bubble-copy-btn {
+      opacity: 0;
+      transition: opacity 0.15s, background 0.1s;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: var(--text-3);
+      display: flex;
+      align-items: center;
+      line-height: 1;
+    }
+
+    .chat-bubble-wrap:hover .bubble-copy-btn {
+      opacity: 1;
+    }
+
+    .bubble-copy-btn:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .bubble-copy-btn.copied {
+      color: var(--green);
+      opacity: 1;
     }
 
     .bubble-label.think-label {
@@ -2120,13 +2154,47 @@
       line-height: 1.5;
     }
 
+    .user-bubble-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+
     .user-bubble-title {
       font-weight: 700;
-      margin-bottom: 4px;
       font-size: 11px;
       opacity: 0.85;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+
+    .user-copy-btn {
+      opacity: 0;
+      transition: opacity 0.15s, background 0.1s;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.7);
+      display: flex;
+      align-items: center;
+      line-height: 1;
+    }
+
+    .user-bubble:hover .user-copy-btn {
+      opacity: 1;
+    }
+
+    .user-copy-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    .user-copy-btn.copied {
+      color: #fff;
+      opacity: 1;
     }
 
     .user-bubble-content {
@@ -2427,6 +2495,72 @@
       gap: 12px;
       font-size: 12px;
       color: var(--text-2);
+    }
+
+    .chat-upload-btn {
+      background: none;
+      border: 1px solid var(--border-md);
+      border-radius: var(--radius);
+      padding: 0 10px;
+      min-height: 40px;
+      cursor: pointer;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .chat-upload-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .chat-image-preview-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px 0 4px;
+    }
+
+    .chat-image-thumb {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--border-md);
+      flex-shrink: 0;
+    }
+
+    .chat-image-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .chat-image-thumb-remove {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 18px;
+      height: 18px;
+      background: rgba(0, 0, 0, 0.6);
+      border: none;
+      border-radius: 50%;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .chat-image-thumb-remove:hover {
+      background: rgba(200, 30, 30, 0.85);
     }
 
     .welcome-container {
@@ -2764,4 +2898,9 @@
       margin-bottom: 4px;
       white-space: pre-wrap;
       word-break: break-all;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }

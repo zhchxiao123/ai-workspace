@@ -22,8 +22,10 @@ from pathlib import Path
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
 
+import uuid
+
 import aiofiles
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -78,6 +80,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.on_event("startup")
 async def reconcile_tasks_on_startup():
     await scheduler.reconcile_running_tasks()
+    scheduler.start_scheduling_loop()
 
 
 @app.get("/", include_in_schema=False)
@@ -126,6 +129,8 @@ async def create_task(req: TaskCreateRequest):
             conversation_id   = req.conversation_id,
             conversation_name = req.conversation_name,
             project_name      = req.project_name,
+            images            = req.images,
+            execute_at        = req.execute_at,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -141,6 +146,58 @@ async def list_projects():
         ProjectResponse.from_project(p)
         for p in scheduler.list_projects()
     ]
+
+
+# ── 图片上传 ──────────────────────────────────────────────
+
+_ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+@app.post("/api/uploads")
+async def upload_image(
+    file: UploadFile = File(...),
+    project_name: str = Query(..., description="项目名称"),
+):
+    """上传图片到项目工作目录，返回容器内可访问的路径。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{project_name}' 不存在")
+
+    original_name = file.filename or "upload"
+    ext = Path(original_name).suffix.lower()
+    if ext not in _ALLOWED_IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail=f"不支持的图片格式：{ext}")
+
+    upload_dir = Path(project.path) / ".aicm-uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    file_id = uuid.uuid4().hex[:16]
+    filename = f"{file_id}{ext}"
+    save_path = upload_dir / filename
+
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    return {
+        "container_path": f"/workspace/.aicm-uploads/{filename}",
+        "preview_url": f"/api/uploads/{project_name}/{filename}",
+        "filename": original_name,
+    }
+
+
+@app.get("/api/uploads/{project_name}/{filename}")
+async def serve_upload(project_name: str, filename: str):
+    """预览已上传的图片。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    safe_name = Path(filename).name
+    file_path = Path(project.path) / ".aicm-uploads" / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    return FileResponse(file_path)
 
 
 # ── 项目终端 ──────────────────────────────────────────────
@@ -421,19 +478,23 @@ async def stream_logs(
         if task is None:
             yield "data: [DONE]\n\n"
             return
-        if task.status != TaskStatus.running:
-            yield "data: [DONE]\n\n"
-            return
 
-        # 任务仍在运行：持续 tail 文件末尾，推送新内容
         last_size = log_path.stat().st_size if log_path.exists() else 0
 
         while True:
             await asyncio.sleep(0.3)
 
-            # 检查任务是否已结束
             task = scheduler.get_task(task_id)
-            is_done = task is None or task.status != TaskStatus.running
+            if task is None:
+                yield "data: [DONE]\n\n"
+                return
+
+            # 如果还在排队或定时中，持续等待其被调度拉起
+            if task.status in (TaskStatus.pending, TaskStatus.scheduled):
+                continue
+
+            # 任务是否已结束
+            is_done = task.status not in (TaskStatus.running, TaskStatus.pending, TaskStatus.scheduled)
 
             if log_path.exists():
                 cur_size = log_path.stat().st_size

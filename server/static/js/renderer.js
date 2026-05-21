@@ -70,6 +70,33 @@ class ChatLogRenderer {
     }
   }
 
+  renderPending() {
+    this.container.innerHTML = '<div class="chat-log timeline"></div>';
+    this.inner = this.container.querySelector('.chat-log');
+    const el = document.createElement('div');
+    el.className = 'chat-sys-event timeline-node is-muted';
+    el.innerHTML = `
+      <span class="chat-sys-pill" style="background: rgba(148, 163, 184, 0.08); border-color: rgba(148, 163, 184, 0.22); color: #cbd5e1;">
+        <span style="display: inline-block; animation: spin 2s linear infinite; margin-right: 6px;">⏳</span> 任务排队中，等待空闲账号...
+      </span>
+    `;
+    this.inner.appendChild(el);
+  }
+
+  renderScheduled(executeAt) {
+    this.container.innerHTML = '<div class="chat-log timeline"></div>';
+    this.inner = this.container.querySelector('.chat-log');
+    const displayTime = executeAt ? executeAt.replace('T', ' ') : '';
+    const el = document.createElement('div');
+    el.className = 'chat-sys-event timeline-node is-muted';
+    el.innerHTML = `
+      <span class="chat-sys-pill" style="background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.22); color: #f59e0b;">
+        <span style="margin-right: 6px;">⏰</span> 已定时：将在 ${esc(displayTime)} 自动发送
+      </span>
+    `;
+    this.inner.appendChild(el);
+  }
+
   // ── 全量渲染 ─────────────────────────────────────────────
   render(text) {
     this.container.innerHTML = '<div class="chat-log timeline"></div>';
@@ -114,6 +141,36 @@ class ChatLogRenderer {
   // ── 增量推送（SSE 每行调用一次）─────────────────────────
   push(line) {
     if (!line.trim()) return;
+
+    if (line.startsWith('=== AICM Task Log ===')) {
+      if (this.inner && this.inner.querySelector('.chat-meta-block')) {
+        return;
+      }
+      if (this.inner) {
+        this.inner.innerHTML = '';
+      }
+      this.toolMap = {};
+      this._footerRendered = false;
+      this.processWrapper = null;
+      this.processBody = null;
+      this.toolCount = 0;
+      this.lastBubbleEl = null;
+
+      this._isCollectingHeader = true;
+      this._headerLines = [line];
+      return;
+    }
+
+    if (this._isCollectingHeader) {
+      if (line.startsWith('======')) {
+        this._isCollectingHeader = false;
+        this._renderHeader(this._headerLines);
+      } else {
+        this._headerLines.push(line);
+      }
+      return;
+    }
+
     // 跳过已渲染的头尾标记（初次全量加载后 SSE 会重复推）
     if (line.startsWith('=== AICM') || line.startsWith('======')) return;
     if (line.startsWith('id:') || line.startsWith('account:') ||
@@ -357,9 +414,16 @@ class ChatLogRenderer {
     el.innerHTML = `
   <div class="chat-avatar ai" aria-hidden="true">AI</div>
   <div class="bubble-body">
-    <div class="bubble-label">${esc(label)}</div>
+    <div class="bubble-label-row">
+      <div class="bubble-label">${esc(label)}</div>
+      <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+    </div>
     <div class="bubble">${renderMd(text)}</div>
   </div>`;
+
+    el.querySelector('.bubble-copy-btn').addEventListener('click', () => {
+      copyTextToClipboard(text, el.querySelector('.bubble-copy-btn'));
+    });
 
     // 如果之前有渲染过 AI 回复，说明之前的回复并非最后一条，需要移入折叠包中
     if (this.lastBubbleEl) {

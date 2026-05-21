@@ -20,6 +20,8 @@ let chatFollowMode = false;
 let currentChatTaskId = null;
 let chatRenderer = null;
 let chatNewSessionProject = '';
+let currentChatProjectName = '';
+let pendingImages = [];
 let tasksCache = [];
 let terminalContext = {
   projectName: '',

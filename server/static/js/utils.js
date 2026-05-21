@@ -113,3 +113,35 @@ function statusRank(s) {
   return ({ running: 0, failed: 1, killed: 2, done: 3 })[s] ?? 4;
 }
 
+// ── 气泡复制 ───────────────────────────────────────────────
+function copyBtnSVG() {
+  return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+}
+
+function _applyBubbleCopyFeedback(btn) {
+  btn.textContent = '✓';
+  btn.classList.add('copied');
+  setTimeout(() => { btn.innerHTML = copyBtnSVG(); btn.classList.remove('copied'); }, 1500);
+}
+
+function copyTextToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    _applyBubbleCopyFeedback(btn);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+    _applyBubbleCopyFeedback(btn);
+  });
+}
+
+// 用于用户气泡（onclick 内联调用）
+function copyUserBubble(btn) {
+  const content = btn.closest('.user-bubble').querySelector('.user-bubble-content');
+  copyTextToClipboard(content.textContent, btn);
+}
+
