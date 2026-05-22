@@ -21,7 +21,24 @@ def main(ctx: click.Context) -> None:
 
 
 from aicm.task_cmds import task_group
+from aicm.config_cmds import account_group, project_group
+from aicm.docker_ops import (
+    cmd_build, cmd_apply, cmd_up, cmd_down,
+    cmd_restart, cmd_status, cmd_logs, cmd_enter, cmd_check_proxy,
+)
+
 main.add_command(task_group)
+main.add_command(account_group)
+main.add_command(project_group)
+main.add_command(cmd_build)
+main.add_command(cmd_apply)
+main.add_command(cmd_up)
+main.add_command(cmd_down)
+main.add_command(cmd_restart)
+main.add_command(cmd_status)
+main.add_command(cmd_logs)
+main.add_command(cmd_enter)
+main.add_command(cmd_check_proxy)
 
 
 @main.command("init")
