@@ -19,31 +19,65 @@
 
 ## 安装
 
-### 方式一：pipx 安装（推荐，新用户）
+### 环境要求
+
+- Docker Desktop（macOS / Linux）或 Docker Engine + Compose V2
+- 宿主机已运行代理软件（Clash / v2ray 等），并开启 allow-lan
+- Python 3.10+（推荐用 uv 管理，见下方）
+
+---
+
+### 第零步：安装 uv（推荐）
+
+[uv](https://docs.astral.sh/uv/) 是极速 Python 包管理器，同时负责安装 Python 本身和管理工具隔离环境，比 pip / pipx 更快且无副作用。
 
 ```bash
-pipx install aicm
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 重新加载 shell 使 uv 命令生效
+source $HOME/.local/bin/env   # bash/zsh
+# 或重新打开终端
+```
+
+安装完成后，用 uv 装好 Python：
+
+```bash
+uv python install 3.12
+```
+
+---
+
+### 方式一：uv tool 安装（推荐，新用户）
+
+`uv tool` 等价于 pipx，将 aicm 装进独立隔离环境，不污染系统 Python。
+
+```bash
+uv tool install aicm
 ```
 
 安装完成后，`aicm` 命令全局可用，工作区默认位于 `~/.aicm/`。
+
+> 如果未安装 uv，也可用 pipx：
+> ```bash
+> pipx install aicm
+> ```
 
 ### 方式二：克隆仓库（开发者 / 老用户）
 
 ```bash
 git clone https://github.com/your-org/aicm.git
 cd aicm
-pip install -e .       # 可编辑安装，aicm 命令指向当前代码
-# 或者直接使用原有脚本（向后兼容）
-./aicm.sh <子命令>
+
+# 用 uv 创建虚拟环境并安装（推荐）
+uv venv && source .venv/bin/activate
+uv pip install -e .
+
+# 或用系统 pip（可能需要 --break-system-packages）
+pip install -e .
 ```
 
 > **向后兼容**：`./aicm.sh` 已改为薄包装层，将所有命令透传给 Python CLI，原有工作流完全不变。克隆目录自动作为工作区，无需额外配置。详见 [从 aicm.sh 迁移指南](changelog/migrate-from-aicm-sh.md)。
-
-### 环境要求
-
-- Python 3.10+
-- Docker Desktop（macOS / Linux）或 Docker Engine + Compose V2
-- 宿主机已运行代理软件（Clash / v2ray 等），并开启 allow-lan
 
 ---
 

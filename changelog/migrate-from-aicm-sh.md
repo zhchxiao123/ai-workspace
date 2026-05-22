@@ -2,11 +2,19 @@
 
 ## 背景
 
-`aicm.sh` 原本是一个 1300 行的 Shell 脚本，承担了所有功能。新版本将其重构为标准 Python 包（`pip install aicm` / `pipx install aicm`），`aicm.sh` 保留为薄包装层以维持向后兼容。
+`aicm.sh` 原本是一个 1300 行的 Shell 脚本，承担了所有功能。新版本将其重构为标准 Python 包（`uv tool install aicm` / `pipx install aicm`），`aicm.sh` 保留为薄包装层以维持向后兼容。
 
 ---
 
 ## 升级步骤
+
+### 前置：安装 uv（推荐）
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env   # 或重新打开终端
+uv python install 3.12
+```
 
 ### 已有仓库用户（git clone 方式）
 
@@ -14,23 +22,22 @@
 
 ```bash
 git pull
-pip install -e .
+
+# 推荐：用 uv 创建隔离环境
+uv venv && source .venv/bin/activate
+uv pip install -e .
+
+# 或直接用系统 pip
+pip install -e . --break-system-packages
 ```
 
 完成后，`./aicm.sh` 原有用法**一行不用改**，同时获得新的 `aicm` 命令。
 
-> 如果系统 Python 提示不能安装到系统目录，加 `--break-system-packages` 或改用 `pipx`：
-> ```bash
-> pip install -e . --break-system-packages
-> # 或
-> pipx install .
-> ```
-
-### 新用户（pipx 安装）
+### 新用户（全新安装）
 
 ```bash
-pipx install aicm
-aicm init        # 交互式创建 ~/.aicm/ 工作区
+uv tool install aicm    # 推荐，隔离环境，等价于 pipx install aicm
+aicm init               # 交互式创建 ~/.aicm/ 工作区
 aicm build
 ```
 
