@@ -37,7 +37,7 @@ pip install -e .       # 可编辑安装，aicm 命令指向当前代码
 ./aicm.sh <子命令>
 ```
 
-> **向后兼容**：`./aicm.sh` 已改为薄包装层，将所有命令透传给 Python CLI，原有工作流完全不变。克隆目录自动作为工作区，无需额外配置。
+> **向后兼容**：`./aicm.sh` 已改为薄包装层，将所有命令透传给 Python CLI，原有工作流完全不变。克隆目录自动作为工作区，无需额外配置。详见 [从 aicm.sh 迁移指南](changelog/migrate-from-aicm-sh.md)。
 
 ### 环境要求
 
