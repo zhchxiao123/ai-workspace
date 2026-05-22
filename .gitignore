@@ -49,3 +49,5 @@ projects.conf
 core
 
 .aicm-uploads
+
+server.log
