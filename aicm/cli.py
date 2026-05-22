@@ -1,10 +1,111 @@
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
+import sys
+import time
 import click
 from pathlib import Path
 
 from aicm.config import get_workspace, load_config
+
+
+# ── server daemon helpers ──────────────────────────────────────
+
+
+def _pid_file(ws: Path) -> Path:
+    return ws / "server.pid"
+
+
+def _log_file(ws: Path) -> Path:
+    return ws / "server.log"
+
+
+def _is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _read_pid(ws: Path) -> int | None:
+    p = _pid_file(ws)
+    if not p.exists():
+        return None
+    try:
+        return int(p.read_text().strip())
+    except ValueError:
+        return None
+
+
+def _server_start_daemon(ws: Path, port: int) -> None:
+    pid = _read_pid(ws)
+    if pid and _is_running(pid):
+        click.secho(f"server 已在运行（PID {pid}）", fg="yellow")
+        click.echo(f"  日志：{_log_file(ws)}")
+        click.echo(f"  停止：aicm server --stop")
+        return
+
+    log = _log_file(ws)
+    cmd = [sys.executable, "-m", "aicm", "server", "--port", str(port)]
+
+    with log.open("a") as fh:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=fh,
+            stderr=fh,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,          # 脱离当前终端会话
+            env={**os.environ, "AICM_WORKSPACE": str(ws), "AICM_PORT": str(port)},
+        )
+
+    _pid_file(ws).write_text(str(proc.pid))
+
+    # 短暂等待确认进程存活
+    time.sleep(1)
+    if _is_running(proc.pid):
+        click.secho(f"✓ server 已在后台启动（PID {proc.pid}）", fg="green")
+        click.echo(f"  Web UI：http://localhost:{port}")
+        click.echo(f"  日志：{log}")
+        click.echo(f"  停止：aicm server --stop")
+    else:
+        _pid_file(ws).unlink(missing_ok=True)
+        raise click.ClickException(f"server 启动失败，查看日志：{log}")
+
+
+def _server_stop(ws: Path) -> None:
+    pid = _read_pid(ws)
+    if pid is None:
+        click.secho("server 未在运行（找不到 PID 文件）", fg="yellow")
+        return
+    if not _is_running(pid):
+        _pid_file(ws).unlink(missing_ok=True)
+        click.secho("server 未在运行（PID 文件已清理）", fg="yellow")
+        return
+
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(20):          # 最多等 10 秒
+        time.sleep(0.5)
+        if not _is_running(pid):
+            break
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+    _pid_file(ws).unlink(missing_ok=True)
+    click.secho(f"✓ server 已停止（PID {pid}）", fg="green")
+
+
+def _server_status(ws: Path) -> None:
+    pid = _read_pid(ws)
+    if pid and _is_running(pid):
+        click.secho(f"● server 运行中（PID {pid}）", fg="green")
+        click.echo(f"  日志：{_log_file(ws)}")
+    else:
+        if pid:
+            _pid_file(ws).unlink(missing_ok=True)
+        click.secho("○ server 未运行", fg="yellow")
 
 
 @click.group()
@@ -52,16 +153,50 @@ def cmd_init(ctx: click.Context) -> None:
 
 
 @main.command("server")
-@click.option("--port", default=None, type=int, envvar="AICM_PORT", help="Port to listen on (default: 8765)")
+@click.option("--port", default=None, type=int, envvar="AICM_PORT",
+              help="监听端口（默认 8765）")
+@click.option("--daemon", "-d", is_flag=True,
+              help="后台守护进程模式运行")
+@click.option("--stop", "do_stop", is_flag=True,
+              help="停止后台运行的 server")
+@click.option("--status", "do_status", is_flag=True,
+              help="查看 server 运行状态")
 @click.pass_context
-def cmd_server(ctx: click.Context, port: int | None) -> None:
-    """Start the FastAPI scheduler server and Web UI."""
+def cmd_server(
+    ctx: click.Context,
+    port: int | None,
+    daemon: bool,
+    do_stop: bool,
+    do_status: bool,
+) -> None:
+    """Start the FastAPI scheduler server and Web UI.
+
+    \b
+    aicm server              # 前台运行（Ctrl+C 停止）
+    aicm server --daemon     # 后台守护进程
+    aicm server --stop       # 停止后台 server
+    aicm server --status     # 查看运行状态
+    """
     import uvicorn
 
     ws = ctx.obj["workspace"]
+
+    if do_stop:
+        _server_stop(ws)
+        return
+
+    if do_status:
+        _server_status(ws)
+        return
+
     cfg = load_config(ws)
     resolved_port = port or int(cfg.get("AICM_PORT", 8765))
 
+    if daemon:
+        _server_start_daemon(ws, resolved_port)
+        return
+
+    # 前台模式
     os.environ["AICM_WORKSPACE"] = str(ws)
     os.environ["AICM_PORT"] = str(resolved_port)
 
