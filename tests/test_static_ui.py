@@ -5,8 +5,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INDEX_HTML = ROOT / "server" / "static" / "index.html"
-PROJECTS_JS = ROOT / "server" / "static" / "js" / "projects.js"
+STATIC_DIR = ROOT / "aicm" / "server" / "static"
+INDEX_HTML = STATIC_DIR / "index.html"
+PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
 
 
 def read_index() -> str:
@@ -15,6 +16,14 @@ def read_index() -> str:
 
 def read_projects_js() -> str:
     return PROJECTS_JS.read_text(encoding="utf-8")
+
+
+def read_ui_source() -> str:
+    parts = [INDEX_HTML.read_text(encoding="utf-8")]
+    for path in sorted((STATIC_DIR / "js").glob("*.js")):
+        parts.append(path.read_text(encoding="utf-8"))
+    parts.append((STATIC_DIR / "css" / "main.css").read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def test_dashboard_exposes_operational_summary() -> None:
@@ -31,61 +40,60 @@ def test_dashboard_exposes_operational_summary() -> None:
 
 def test_task_page_embeds_submit_panel() -> None:
     html = read_index()
+    source = read_ui_source()
 
     assert 'id="task-submit-panel"' in html
     assert 'id="task-submit-slot"' in html
     assert 'id="submit-modal"' in html
     assert 'id="submit-modal-slot"' in html
-    assert "function openTaskSubmitPanel" in html
-    assert "function openProjectSubmitModal" in html
-    assert "function moveSubmitPanel" in html
-    assert "function closeTaskSubmitPanel" in html
-    assert "function closeSubmitModal" in html
-    assert "submitContext" in html
+    assert "function openTaskSubmitPanel" in source
+    assert "function openProjectSubmitModal" in source
+    assert "function moveSubmitPanel" in source
+    assert "function closeTaskSubmitPanel" in source
+    assert "function closeSubmitModal" in source
+    assert "submitContext" in source
     assert "submit-panel-close-btn" in html
-    assert "populateConversations(convs, tasks, submitContext.projectName)" in html
-    assert "populateProjects(projects, submitContext.projectName)" in html
+    assert "populateConversations(convs, tasks, submitContext.projectName)" in source
+    assert "populateProjects(projects, submitContext.projectName)" in source
     assert 'data-page="submit"' not in html
     assert 'id="page-submit"' not in html
 
 
 def test_task_queue_uses_time_sorted_pagination_without_global_chain_board() -> None:
-    html = read_index()
+    source = read_ui_source()
 
-    assert 'id="conversation-grid"' not in html
-    assert "function renderConversationBoard" not in html
-    assert 'id="task-pagination"' in html
-    assert "TASK_PAGE_SIZE" in html
-    assert "function setTaskPage" in html
-    assert "new Date(b.created || 0) - new Date(a.created || 0)" in html
-    assert "任务链视图" not in html
+    assert 'id="conversation-grid"' not in source
+    assert "function renderConversationBoard" not in source
+    assert 'id="task-pagination"' in source
+    assert "TASK_PAGE_SIZE" in source
+    assert "function setTaskPage" in source
+    assert "new Date(b.created || 0) - new Date(a.created || 0)" in source
+    assert "任务链视图" not in source
 
 
 def test_dashboard_exposes_project_workspace() -> None:
     html = read_index()
+    source = read_ui_source()
 
     assert 'data-page="projects"' in html
     assert 'id="project-grid"' in html
     assert 'id="project-detail-view"' in html
-    assert 'data-project-filter="all"' not in html
-    assert 'data-project-filter="chains"' in html
-    assert 'data-project-filter="one-off"' in html
-    assert 'id="project-status-filter"' not in html
-    assert 'data-project-status="running"' in html
-    assert 'data-project-status="done"' in html
-    assert 'data-project-status="failed"' in html
-    assert 'id="project-search"' in html
-    assert "project-chain-workspace" in html
-    assert "project-chain-area" in html
-    assert "project-chain-detail-tasks" in html
-    assert "function loadProjectsDashboard" in html
-    assert "function renderProjectDetail" in html
-    assert "function setProjectTaskFilter" in html
-    assert "function setProjectStatusFilter" in html
-    assert "function getProjectFilteredTasks" in html
-    assert "function chooseProjectTaskFilter" in html
-    assert "function selectProjectConversation" in html
-    assert "function renderProjectTaskCard" in html
+    assert 'data-project-filter="all"' not in source
+    assert 'value="new-chain"' in html
+    assert 'value="one-off"' in html
+    assert 'id="project-status-filter"' not in source
+    assert "t.status === 'running'" in source
+    assert "t.status === 'done'" in source
+    assert "t.status === 'failed'" in source
+    assert 'id="project-list-view"' in html
+    assert "project-detail-summary" in source
+    assert "project-stats" in source
+    assert "submitForCurrentProject" in source
+    assert "function loadProjectsDashboard" in source
+    assert "function renderProjectDetail" in source
+    assert "function backToProjects" in source
+    assert "function submitForCurrentProject" in source
+    assert "function terminalWsUrl" in source
 
 
 def test_legacy_project_records_use_single_canonical_path_owner() -> None:
@@ -99,43 +107,45 @@ def test_legacy_project_records_use_single_canonical_path_owner() -> None:
 
 def test_project_workspace_exposes_embedded_terminal() -> None:
     html = read_index()
+    source = read_ui_source()
 
     assert '/static/vendor/xterm/xterm.css' in html
     assert '/static/vendor/xterm/xterm.js' in html
     assert '/static/vendor/xterm/addon-fit.js' in html
-    assert 'data-project-panel="tasks"' in html
-    assert 'data-project-panel="terminal"' in html
-    assert 'id="project-terminal-panel"' in html
+    assert 'id="project-detail-summary"' in html
+    assert 'class="terminal-card"' in html
+    assert 'class="terminal-toolbar"' in html
     assert 'id="project-terminal-status"' in html
     assert 'id="project-terminal"' in html
     assert 'id="project-terminal-reconnect"' in html
-    assert "terminalContext" in html
-    assert "function openProjectTerminal" in html
-    assert "function connectProjectTerminal" in html
-    assert "function disconnectProjectTerminal" in html
-    assert "function resizeProjectTerminal" in html
-    assert "window.addEventListener('beforeunload', disconnectProjectTerminal)" in html
-    assert "disconnectProjectTerminal();" in html
+    assert "terminalContext" in source
+    assert "function openProjectTerminal" in source
+    assert "function connectProjectTerminal" in source
+    assert "function disconnectProjectTerminal" in source
+    assert "function resizeProjectTerminal" in source
+    assert "window.addEventListener('beforeunload', disconnectProjectTerminal)" in source
+    assert "disconnectProjectTerminal();" in source
 
 
 def test_sidebar_can_collapse_with_persisted_state() -> None:
     html = read_index()
+    source = read_ui_source()
 
     assert 'id="sidebar-toggle"' in html
     assert 'aria-label="折叠侧边栏"' in html
     assert 'aria-expanded="true"' in html
-    assert "function toggleSidebar" in html
-    assert "function applySidebarCollapsed" in html
-    assert "localStorage.getItem('aicm.sidebarCollapsed')" in html
-    assert "localStorage.setItem('aicm.sidebarCollapsed'" in html
-    assert "sidebar-collapsed" in html
+    assert "function toggleSidebar" in source
+    assert "function applySidebarCollapsed" in source
+    assert "localStorage.getItem('aicm.sidebarCollapsed')" in source
+    assert "localStorage.setItem('aicm.sidebarCollapsed'" in source
+    assert "sidebar-collapsed" in source
     assert "sidebar-label" in html
     assert "brand-text" in html
     assert "sidebar-toggle-icon" in html
 
 
 def test_account_cards_use_structured_resource_layout() -> None:
-    html = read_index()
+    source = read_ui_source()
 
     for class_name in [
         "account-card-head",
@@ -143,12 +153,12 @@ def test_account_cards_use_structured_resource_layout() -> None:
         "chip-list",
         "container-list",
     ]:
-        assert class_name in html
+        assert class_name in source
 
 
 def test_tool_log_icons_are_text_tokens_not_emoji() -> None:
-    html = read_index()
-    match = re.search(r"const TOOL_ICONS = \{(?P<body>.*?)\};", html, re.S)
+    source = read_ui_source()
+    match = re.search(r"const TOOL_ICONS = \{(?P<body>.*?)\};", source, re.S)
 
     assert match is not None
     assert not re.search(r"[\U0001F300-\U0001FAFF]", match.group("body"))
@@ -164,6 +174,7 @@ def test_icon_only_controls_have_accessible_names() -> None:
 
 def test_log_modal_has_summary_and_timeline_shell() -> None:
     html = read_index()
+    source = read_ui_source()
 
     for element_id in [
         "log-summary-status",
@@ -175,11 +186,11 @@ def test_log_modal_has_summary_and_timeline_shell() -> None:
 
     assert 'class="log-shell"' in html
     assert 'class="log-summary"' in html
-    assert "chat-log timeline" in html
+    assert "chat-log timeline" in source
 
 
 def test_log_modal_uses_neutral_color_tokens() -> None:
-    html = read_index()
+    source = read_ui_source()
 
     for token in ["--log-bg", "--log-panel", "--log-card", "--log-card-soft"]:
-        assert token in html
+        assert token in source

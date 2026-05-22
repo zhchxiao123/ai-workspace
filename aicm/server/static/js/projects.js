@@ -1,15 +1,36 @@
 // ── 项目工作台 ────────────────────────────────────────────
+function normalizeProjectPath(path) {
+  return String(path || '').replace(/\/+$/, '');
+}
+
+function projectPathContains(projectPath, recordPath) {
+  const base = normalizeProjectPath(projectPath);
+  const target = normalizeProjectPath(recordPath);
+  return !!base && (target === base || target.startsWith(base + '/'));
+}
+
+function canonicalProjectForLegacyRecord(record) {
+  const recordPath = String(record?.project || '');
+  return (projectsCache || []).find(p => projectPathContains(p.path, recordPath)) || null;
+}
+
+function legacyRecordBelongsToProject(record, project) {
+  if (!projectPathContains(project?.path, record?.project)) return false;
+
+  const canonical = canonicalProjectForLegacyRecord(record);
+  if (canonical) return canonical.name === project.name;
+
+  return true;
+}
+
 function taskBelongsToProject(task, project) {
   if (task.project_name) return task.project_name === project.name;
-  const taskPath = String(task.project || '');
-  const projectPath = String(project.path || '');
-  return taskPath === projectPath || taskPath.startsWith(projectPath + '/');
+  return legacyRecordBelongsToProject(task, project);
 }
 
 function conversationBelongsToProject(conversation, project) {
   if (conversation.project_name) return conversation.project_name === project.name;
-  const convPath = String(conversation.project || '');
-  return convPath === project.path || convPath.startsWith(project.path + '/');
+  return legacyRecordBelongsToProject(conversation, project);
 }
 
 async function loadProjectsDashboard() {

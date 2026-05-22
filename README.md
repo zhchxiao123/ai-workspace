@@ -415,7 +415,7 @@ aicm/                      # Python 包
 │   ├── Dockerfile
 │   ├── entrypoint.sh
 │   └── *.conf.example
-└── server/                # FastAPI 调度服务
+└── server/                # FastAPI 调度服务（包内模块）
     ├── main.py            # REST API + WebSocket 终端
     ├── scheduler.py       # 任务队列与执行引擎
     ├── models.py          # Pydantic 数据模型

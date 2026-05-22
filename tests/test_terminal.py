@@ -6,16 +6,15 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVER = ROOT / "server"
-if str(SERVER) not in sys.path:
-    sys.path.insert(0, str(SERVER))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from models import Account, AccountType, Project
-from scheduler import Scheduler
+from aicm.server.models import Account, AccountType, Project
+from aicm.server.scheduler import Scheduler
 
 
 def test_terminal_command_enters_project_container_workdir(tmp_path: Path) -> None:
-    from terminal import build_terminal_command
+    from aicm.server.terminal import build_terminal_command
 
     sched = Scheduler(tmp_path)
     project = Project(name="repo", account="alice", path=str(tmp_path / "repo"))
@@ -30,7 +29,7 @@ def test_terminal_command_enters_project_container_workdir(tmp_path: Path) -> No
 
 
 def test_terminal_session_resize_delegates_to_pty(monkeypatch: pytest.MonkeyPatch) -> None:
-    import terminal
+    from aicm.server import terminal
 
     calls: list[tuple[int, int, int]] = []
     session = terminal.TerminalSession(
@@ -46,7 +45,7 @@ def test_terminal_session_resize_delegates_to_pty(monkeypatch: pytest.MonkeyPatc
 
 
 def test_terminal_session_close_terminates_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    import terminal
+    from aicm.server import terminal
 
     killed: list[tuple[int, int]] = []
     closed: list[int] = []
@@ -71,7 +70,7 @@ def test_terminal_session_close_terminates_child(monkeypatch: pytest.MonkeyPatch
 
 
 def test_resolve_terminal_target_rejects_unknown_project(tmp_path: Path) -> None:
-    from terminal import resolve_terminal_target
+    from aicm.server.terminal import resolve_terminal_target
 
     sched = Scheduler(tmp_path)
 
@@ -80,7 +79,7 @@ def test_resolve_terminal_target_rejects_unknown_project(tmp_path: Path) -> None
 
 
 def test_resolve_terminal_target_rejects_missing_account(tmp_path: Path) -> None:
-    from terminal import resolve_terminal_target
+    from aicm.server.terminal import resolve_terminal_target
 
     sched = Scheduler(tmp_path)
     monkeypatch_project = Project(name="repo", account="alice", path=str(tmp_path / "repo"))
@@ -96,8 +95,8 @@ def test_resolve_terminal_target_rejects_stopped_container(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import terminal
-    from terminal import resolve_terminal_target
+    from aicm.server import terminal
+    from aicm.server.terminal import resolve_terminal_target
 
     sched = Scheduler(tmp_path)
     project = Project(name="repo", account="alice", path=str(tmp_path / "repo"))
@@ -114,8 +113,8 @@ def test_resolve_terminal_target_returns_docker_exec_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import terminal
-    from terminal import resolve_terminal_target
+    from aicm.server import terminal
+    from aicm.server.terminal import resolve_terminal_target
 
     sched = Scheduler(tmp_path)
     project = Project(name="repo", account="alice", path=str(tmp_path / "repo"))

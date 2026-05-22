@@ -65,8 +65,9 @@ def test_apply_injects_env_file_for_claude_env_account(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
-    assert 'AICM_ACCOUNT_AUTH: "env"' in compose
-    assert "env_file:\n      - ./accounts/api-claude/env" in compose
+    assert "AICM_ACCOUNT_AUTH: env" in compose
+    assert "env_file:" in compose
+    assert "- ./accounts/api-claude/env" in compose
 
 
 def test_apply_disables_proxy_for_account_proxy_off(tmp_path: Path) -> None:
@@ -104,8 +105,10 @@ def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:
         "add",
         "api-claude",
         "TYPE=claude",
-        "AUTH=env",
-        "PROXY=off",
+        "--auth",
+        "env",
+        "--proxy",
+        "off",
     )
 
     assert result.returncode == 0, result.stderr
@@ -133,7 +136,7 @@ def test_project_add_rejects_proxy_option(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "未知参数" in result.stderr
+    assert "unexpected extra argument" in result.stderr
 
 
 def test_login_skips_claude_env_account(tmp_path: Path) -> None:
@@ -148,7 +151,7 @@ def test_login_skips_claude_env_account(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "使用环境变量认证" in result.stdout
-    assert "无需执行交互登录" in result.stdout
+    assert "无需交互登录" in result.stdout
 
 
 def test_account_add_env_defaults_env_file(tmp_path: Path) -> None:
@@ -163,7 +166,8 @@ def test_account_add_env_defaults_env_file(tmp_path: Path) -> None:
         "add",
         "api-claude",
         "TYPE=claude",
-        "AUTH=env",
+        "--auth",
+        "env",
     )
 
     assert result.returncode == 0, result.stderr

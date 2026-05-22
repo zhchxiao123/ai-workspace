@@ -34,28 +34,29 @@ No test suite exists. Syntax-check the shell script with `bash -n aicm.sh`.
 
 ### Two modes of operation
 
-1. **Interactive** — `./aicm.sh enter <project>` drops into a container shell; user runs `claude` or `codex` directly.
-2. **Scheduled** — `./aicm.sh server` runs the FastAPI scheduler; tasks are submitted via CLI or Web UI and executed non-interactively inside containers.
+1. **Interactive** — `aicm enter <project>` drops into a container shell; user runs `claude` or `codex` directly.
+2. **Scheduled** — `aicm server` runs the FastAPI scheduler; tasks are submitted via CLI or Web UI and executed non-interactively inside containers.
 
 ### Component map
 
 | Component | Role |
 |-----------|------|
-| `aicm.sh` | Single entry point for all host-side operations. Thin curl wrappers call the FastAPI server for task commands; direct docker/compose calls for everything else. |
-| `server/main.py` | FastAPI app. Defines all REST endpoints and WebSocket terminal handler. |
-| `server/scheduler.py` | Core task queue. Resolves account/project, spawns async tasks inside containers via `docker exec`, tracks state. |
-| `server/models.py` | Pydantic models: `Task`, `Conversation`, `Account`, `Project` and their HTTP request/response shapes. |
-| `server/docker_mgr.py` | Docker API wrapper (container status, exec). |
-| `server/terminal.py` | WebSocket ↔ `docker exec -it` bridge for the in-browser terminal. |
-| `server/static/` | Single-page Web UI (vanilla JS, no build step). JS is split into `chat.js`, `projects.js`, `tasks.js`, `accounts.js`, `nav.js`, `state.js`, `utils.js`. |
+| `aicm/cli.py` | Click entry point for all host-side operations. |
+| `aicm.sh` | Backward-compatible thin wrapper that delegates to the Python CLI. |
+| `aicm/server/main.py` | FastAPI app. Defines all REST endpoints and WebSocket terminal handler. |
+| `aicm/server/scheduler.py` | Core task queue. Resolves account/project, spawns async tasks inside containers via `docker exec`, tracks state. |
+| `aicm/server/models.py` | Pydantic models: `Task`, `Conversation`, `Account`, `Project` and their HTTP request/response shapes. |
+| `aicm/server/docker_mgr.py` | Docker API wrapper (container status, exec). |
+| `aicm/server/terminal.py` | WebSocket ↔ `docker exec -it` bridge for the in-browser terminal. |
+| `aicm/server/static/` | Single-page Web UI (vanilla JS, no build step). JS is split into `chat.js`, `projects.js`, `tasks.js`, `accounts.js`, `nav.js`, `state.js`, `utils.js`. |
 
 ### Data storage (all under workspace root)
 
 - `config.conf`, `accounts.conf`, `projects.conf` — authoritative config files; `docker-compose.yml` is **generated** from these, never edit it manually.
 - `accounts/<name>/` — per-account CLI auth data mounted into containers.
-- `server/workspace/tasks/*.json` — task state records.
-- `server/workspace/tasks/*.log` — task execution logs.
-- `server/workspace/conversations/*.json` — conversation (task chain) records.
+- `tasks/*.json` — task state records.
+- `tasks/*.log` — task execution logs.
+- `conversations/*.json` — conversation (task chain) records.
 
 ### Task / Conversation model
 

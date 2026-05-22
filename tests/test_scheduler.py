@@ -7,12 +7,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVER = ROOT / "server"
-if str(SERVER) not in sys.path:
-    sys.path.insert(0, str(SERVER))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-import scheduler as scheduler_mod
-from models import (
+from aicm.server import scheduler as scheduler_mod
+from aicm.server.models import (
     Account,
     AccountAuth,
     AccountProxy,
@@ -22,7 +21,7 @@ from models import (
     Task,
     TaskStatus,
 )
-from scheduler import Scheduler
+from aicm.server.scheduler import Scheduler
 
 
 def _assert_detached_command(command: str, task_id: str) -> None:
@@ -72,7 +71,7 @@ def test_build_cli_command_resumes_codex_thread() -> None:
     )
 
     _assert_detached_command(command, "task-3")
-    assert "codex exec resume --json" in command
+    assert "codex exec resume thread-123 --json" in command
     assert "thread-123" in command
 
 
