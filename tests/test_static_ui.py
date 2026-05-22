@@ -6,10 +6,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "server" / "static" / "index.html"
+PROJECTS_JS = ROOT / "server" / "static" / "js" / "projects.js"
 
 
 def read_index() -> str:
     return INDEX_HTML.read_text(encoding="utf-8")
+
+
+def read_projects_js() -> str:
+    return PROJECTS_JS.read_text(encoding="utf-8")
 
 
 def test_dashboard_exposes_operational_summary() -> None:
@@ -81,6 +86,15 @@ def test_dashboard_exposes_project_workspace() -> None:
     assert "function chooseProjectTaskFilter" in html
     assert "function selectProjectConversation" in html
     assert "function renderProjectTaskCard" in html
+
+
+def test_legacy_project_records_use_single_canonical_path_owner() -> None:
+    js = read_projects_js()
+
+    assert "function canonicalProjectForLegacyRecord" in js
+    assert "if (task.project_name) return task.project_name === project.name;" in js
+    assert "if (conversation.project_name) return conversation.project_name === project.name;" in js
+    assert "if (canonical) return canonical.name === project.name;" in js
 
 
 def test_project_workspace_exposes_embedded_terminal() -> None:
