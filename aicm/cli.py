@@ -20,6 +20,14 @@ def main(ctx: click.Context) -> None:
     ctx.obj["workspace"] = get_workspace()
 
 
+@main.command("init")
+@click.pass_context
+def cmd_init(ctx: click.Context) -> None:
+    """Initialize the AICM workspace (interactive setup wizard)."""
+    from aicm.init_wizard import run_init_wizard
+    run_init_wizard(ctx.obj["workspace"])
+
+
 @main.command("server")
 @click.option("--port", default=None, type=int, envvar="AICM_PORT", help="Port to listen on (default: 8765)")
 @click.pass_context

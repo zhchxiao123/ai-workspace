@@ -1,0 +1,17 @@
+# ============================================================
+#  projects.conf — AI Code Manager 项目配置
+#
+#  字段说明：
+#    NAME=<名称>             必填，只允许字母/数字/连字符
+#    ACCOUNT=<账号名>        必填，使用 accounts.conf 中的账号
+#    PATH=<项目路径>         必填，挂载进该账号容器的目录（支持 ~）
+#
+#  修改后执行 ./aicm.sh apply 生效。
+# ============================================================
+
+# 示例：
+# NAME=my-app  ACCOUNT=codex-alice  PATH=~/projects/my-app
+# NAME=local-app ACCOUNT=claude-local PATH=~/projects/local-app
+
+NAME=byclaw-code-agent    ACCOUNT=codex-zhchxiao123 PATH=/home/demo/demo-byclaw
+NAME=timelog              ACCOUNT=claude-fajikmomi   PATH=/home/demo/demo-timelog
