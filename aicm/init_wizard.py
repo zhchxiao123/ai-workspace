@@ -160,7 +160,7 @@ def run_init_wizard(ws: Path) -> None:
 
 
 def _copy_runtime_files(ws: Path) -> None:
-    """将 Dockerfile 和 entrypoint.sh 拷贝到工作区（已存在则跳过）。"""
+    """将 Dockerfile、entrypoint.sh 和 scripts/ 拷贝到工作区（已存在则跳过）。"""
     for name in ("Dockerfile", "entrypoint.sh"):
         dst = ws / name
         if dst.exists():
@@ -174,6 +174,18 @@ def _copy_runtime_files(ws: Path) -> None:
             click.secho(f"✓ {name} 已拷贝", fg="green")
         else:
             click.secho(f"警告：找不到内置 {name}，请手动放置", fg="yellow")
+
+    # scripts/ — Dockerfile 构建时需要的辅助脚本
+    scripts_src = Path(str(_data_file("scripts")))
+    scripts_dst = ws / "scripts"
+    if scripts_src.is_dir():
+        scripts_dst.mkdir(exist_ok=True)
+        for f in scripts_src.iterdir():
+            dst = scripts_dst / f.name
+            if dst.exists():
+                continue
+            shutil.copy2(str(f), str(dst))
+        click.secho("✓ scripts/ 已拷贝", fg="green")
 
 
 def _init_empty_confs(ws: Path) -> None:
