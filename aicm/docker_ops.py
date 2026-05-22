@@ -63,8 +63,20 @@ def _get_projects(ws: Path) -> list[dict[str, str]]:
 
 
 @click.command("build")
+@click.option("--no-cache", is_flag=True, help="不使用构建缓存（强制完整重新构建）")
+@click.option("--pull", is_flag=True, help="强制拉取最新基础镜像")
+@click.option("--platform", "platform_override", default=None, metavar="PLATFORM",
+              help="覆盖 config.conf 中的 BUILD_PLATFORM（如 linux/amd64）")
+@click.option("--tag", "tag_override", default=None, metavar="TAG",
+              help="覆盖 config.conf 中的 IMAGE_TAG")
 @click.pass_context
-def cmd_build(ctx: click.Context) -> None:
+def cmd_build(
+    ctx: click.Context,
+    no_cache: bool,
+    pull: bool,
+    platform_override: Optional[str],
+    tag_override: Optional[str],
+) -> None:
     """Build the Docker image."""
     ws: Path = ctx.obj["workspace"]
     cfg = load_config(ws)
@@ -75,20 +87,32 @@ def cmd_build(ctx: click.Context) -> None:
             f"找不到 Dockerfile（{dockerfile}），请先执行 aicm init"
         )
 
-    image = f"{cfg.get('IMAGE_NAME', 'ai-code-manager')}:{cfg.get('IMAGE_TAG', 'latest')}"
-    platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+    image_name = cfg.get("IMAGE_NAME", "ai-code-manager")
+    image_tag = tag_override or cfg.get("IMAGE_TAG", "latest")
+    image = f"{image_name}:{image_tag}"
+    platform = platform_override or cfg.get("BUILD_PLATFORM", "linux/amd64")
 
     click.echo(f"构建镜像 {image}（平台：{platform}）...")
+    if no_cache:
+        click.secho("  --no-cache：跳过所有缓存层", fg="yellow")
+    if pull:
+        click.secho("  --pull：强制拉取最新基础镜像", fg="yellow")
     click.secho("首次构建约需 5~10 分钟，请耐心等待", dim=True)
     click.echo()
 
-    result = subprocess.run([
+    cmd = [
         "docker", "build",
         "--platform", platform,
         "--tag", image,
         "--file", str(dockerfile),
-        str(ws),
-    ])
+    ]
+    if no_cache:
+        cmd.append("--no-cache")
+    if pull:
+        cmd.append("--pull")
+    cmd.append(str(ws))
+
+    result = subprocess.run(cmd)
 
     if result.returncode != 0:
         raise click.ClickException("镜像构建失败")
