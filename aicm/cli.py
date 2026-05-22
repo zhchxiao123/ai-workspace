@@ -20,6 +20,10 @@ def main(ctx: click.Context) -> None:
     ctx.obj["workspace"] = get_workspace()
 
 
+from aicm.task_cmds import task_group
+main.add_command(task_group)
+
+
 @main.command("init")
 @click.pass_context
 def cmd_init(ctx: click.Context) -> None:
