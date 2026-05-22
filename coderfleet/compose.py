@@ -11,7 +11,7 @@ from typing import Any
 import click
 import yaml
 
-from aicm.config import load_config, parse_conf
+from coderfleet.config import load_config, parse_conf
 
 
 def _make_dumper() -> type[yaml.Dumper]:
@@ -42,7 +42,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
 
     accounts = {r["NAME"]: r for r in parse_conf(ws / "accounts.conf") if "NAME" in r}
 
-    image = f"{cfg.get('IMAGE_NAME', 'ai-code-manager')}:{cfg.get('IMAGE_TAG', 'latest')}"
+    image = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
     subnet = cfg.get("INTERNAL_SUBNET", "172.21.0.0/16")
     relay_ip = cfg.get("RELAY_IP", "172.21.0.2")
     relay_port = cfg.get("RELAY_LISTEN_PORT", "7890")
@@ -58,7 +58,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
 
     services["proxy-relay"] = {
         "image": relay_image,
-        "container_name": "aicm-proxy-relay",
+        "container_name": "coderfleet-proxy-relay",
         "restart": "unless-stopped",
         "networks": {
             "intnet": {"ipv4_address": relay_ip},
@@ -101,10 +101,10 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         environment: dict[str, str] = {
             "CODEX_HOME": "/home/byclaw/.codex",
             "CLAUDE_CONFIG_DIR": "/home/byclaw/.claude",
-            "AICM_ACCOUNT_NAME": paccount,
-            "AICM_ACCOUNT_TYPE": acc_type,
-            "AICM_ACCOUNT_AUTH": acc_auth,
-            "AICM_ACCOUNT_PROXY": acc_proxy,
+            "CODERFLEET_ACCOUNT_NAME": paccount,
+            "CODERFLEET_ACCOUNT_TYPE": acc_type,
+            "CODERFLEET_ACCOUNT_AUTH": acc_auth,
+            "CODERFLEET_ACCOUNT_PROXY": acc_proxy,
         }
 
         if acc_proxy != "off":
@@ -117,8 +117,8 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "all_proxy": proxy_url,
                 "NO_PROXY": no_proxy,
                 "no_proxy": no_proxy,
-                "AICM_RELAY_IP": relay_ip,
-                "AICM_RELAY_PORT": relay_port,
+                "CODERFLEET_RELAY_IP": relay_ip,
+                "CODERFLEET_RELAY_PORT": relay_port,
             })
 
         svc: dict[str, Any] = {
@@ -167,7 +167,7 @@ def write_compose(ws: Path) -> Path:
     data = generate_compose(ws)
     dumper = _make_dumper()
     content = (
-        "# !! 此文件由 aicm apply 自动生成，请勿手动编辑 !!\n\n"
+        "# !! 此文件由 coderfleet apply 自动生成，请勿手动编辑 !!\n\n"
         + yaml.dump(data, Dumper=dumper, allow_unicode=True,
                     sort_keys=False, default_flow_style=False)
     )

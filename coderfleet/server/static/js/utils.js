@@ -1,6 +1,6 @@
 'use strict';
 const API = '';
-const SIDEBAR_COLLAPSED_KEY = 'aicm.sidebarCollapsed';
+const SIDEBAR_COLLAPSED_KEY = 'coderfleet.sidebarCollapsed';
 
 // ══════════════════════════════════════════════════════════════
 //  工具图标 & 格式化

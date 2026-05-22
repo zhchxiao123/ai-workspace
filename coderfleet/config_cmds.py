@@ -1,5 +1,5 @@
 """
-config_cmds.py — aicm account / project 子命令
+config_cmds.py — coderfleet account / project 子命令
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Optional
 
 import click
 
-from aicm.config import ensure_workspace, parse_conf, remove_conf_entry, write_conf_line
+from coderfleet.config import ensure_workspace, parse_conf, remove_conf_entry, write_conf_line
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9-]+$")
 
@@ -87,8 +87,8 @@ def cmd_account_add(
     click.secho(f"✓ 账号 '{name}' 已添加（类型：{acc_type}，认证：{auth}，代理：{proxy}）", fg="green")
     if auth == "env":
         click.secho(f"  请在 {env_file} 中配置 ANTHROPIC_API_KEY 等环境变量", fg="yellow")
-    click.secho(f"  接下来：aicm project add <项目名> {name} <项目路径>", dim=True)
-    click.secho("  执行 aicm apply 使配置生效", fg="yellow")
+    click.secho(f"  接下来：coderfleet project add <项目名> {name} <项目路径>", dim=True)
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 
 @account_group.command("remove")
@@ -119,7 +119,7 @@ def cmd_account_remove(ctx: click.Context, name: str) -> None:
     remove_conf_entry(accounts_conf, "NAME", name)
     click.secho(f"✓ 账号 '{name}' 已从配置中移除", fg="green")
     click.secho(f"  认证数据保留在 accounts/{name}/  如需清除：rm -rf accounts/{name}", fg="yellow")
-    click.secho("  执行 aicm apply 重新生成配置", fg="yellow")
+    click.secho("  执行 coderfleet apply 重新生成配置", fg="yellow")
 
 
 @account_group.command("list")
@@ -136,7 +136,7 @@ def cmd_account_list(ctx: click.Context) -> None:
     click.echo("  " + "─" * 70)
 
     if not accounts:
-        click.secho("  暂无账号，使用 aicm account add 添加", fg="yellow")
+        click.secho("  暂无账号，使用 coderfleet account add 添加", fg="yellow")
         click.echo()
         return
 
@@ -198,7 +198,7 @@ def cmd_project_add(
 
     expanded = str(Path(path).expanduser())
     click.secho(f"✓ 项目 '{name}' 已添加（账号：{account}  路径：{expanded}）", fg="green")
-    click.secho("  执行 aicm apply 使配置生效", fg="yellow")
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 
 @project_group.command("remove")
@@ -214,7 +214,7 @@ def cmd_project_remove(ctx: click.Context, name: str) -> None:
 
     remove_conf_entry(projects_conf, "NAME", name)
     click.secho(f"✓ 项目 '{name}' 已移除", fg="green")
-    click.secho("  执行 aicm apply 重新生成配置", fg="yellow")
+    click.secho("  执行 coderfleet apply 重新生成配置", fg="yellow")
 
 
 @project_group.command("list")
@@ -230,7 +230,7 @@ def cmd_project_list(ctx: click.Context) -> None:
     click.echo("  " + "─" * 74)
 
     if not projects:
-        click.secho("  暂无项目，使用 aicm project add 添加", fg="yellow")
+        click.secho("  暂无项目，使用 coderfleet project add 添加", fg="yellow")
         click.echo()
         return
 

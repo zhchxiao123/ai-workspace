@@ -8,7 +8,7 @@ import time
 import click
 from pathlib import Path
 
-from aicm.config import get_workspace, load_config
+from coderfleet.config import get_workspace, load_config
 
 
 # ── server daemon helpers ──────────────────────────────────────
@@ -45,11 +45,11 @@ def _server_start_daemon(ws: Path, port: int) -> None:
     if pid and _is_running(pid):
         click.secho(f"server 已在运行（PID {pid}）", fg="yellow")
         click.echo(f"  日志：{_log_file(ws)}")
-        click.echo(f"  停止：aicm server --stop")
+        click.echo(f"  停止：coderfleet server --stop")
         return
 
     log = _log_file(ws)
-    cmd = [sys.executable, "-m", "aicm", "server", "--port", str(port)]
+    cmd = [sys.executable, "-m", "coderfleet", "server", "--port", str(port)]
 
     with log.open("a") as fh:
         proc = subprocess.Popen(
@@ -58,7 +58,7 @@ def _server_start_daemon(ws: Path, port: int) -> None:
             stderr=fh,
             stdin=subprocess.DEVNULL,
             start_new_session=True,          # 脱离当前终端会话
-            env={**os.environ, "AICM_WORKSPACE": str(ws), "AICM_PORT": str(port)},
+            env={**os.environ, "CODERFLEET_WORKSPACE": str(ws), "CODERFLEET_PORT": str(port)},
         )
 
     _pid_file(ws).write_text(str(proc.pid))
@@ -69,7 +69,7 @@ def _server_start_daemon(ws: Path, port: int) -> None:
         click.secho(f"✓ server 已在后台启动（PID {proc.pid}）", fg="green")
         click.echo(f"  Web UI：http://localhost:{port}")
         click.echo(f"  日志：{log}")
-        click.echo(f"  停止：aicm server --stop")
+        click.echo(f"  停止：coderfleet server --stop")
     else:
         _pid_file(ws).unlink(missing_ok=True)
         raise click.ClickException(f"server 启动失败，查看日志：{log}")
@@ -111,23 +111,23 @@ def _server_status(ws: Path) -> None:
 @click.group()
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """AICM - AI Code Manager
+    """CoderFleet
 
     Manages multiple Claude Code / Codex accounts in isolated Docker containers.
 
-    Workspace location: AICM_WORKSPACE env var, or ~/.aicm/ by default.
+    Workspace location: CODERFLEET_WORKSPACE env var, or ~/.coderfleet/ by default.
     """
     ctx.ensure_object(dict)
     ctx.obj["workspace"] = get_workspace()
 
 
-from aicm.task_cmds import task_group
-from aicm.config_cmds import account_group, project_group
-from aicm.docker_ops import (
+from coderfleet.task_cmds import task_group
+from coderfleet.config_cmds import account_group, project_group
+from coderfleet.docker_ops import (
     cmd_build, cmd_apply, cmd_up, cmd_down,
     cmd_restart, cmd_status, cmd_logs, cmd_enter, cmd_check_proxy,
 )
-from aicm.login_cmd import cmd_login
+from coderfleet.login_cmd import cmd_login
 
 main.add_command(task_group)
 main.add_command(account_group)
@@ -147,13 +147,13 @@ main.add_command(cmd_login)
 @main.command("init")
 @click.pass_context
 def cmd_init(ctx: click.Context) -> None:
-    """Initialize the AICM workspace (interactive setup wizard)."""
-    from aicm.init_wizard import run_init_wizard
+    """Initialize the CoderFleet workspace (interactive setup wizard)."""
+    from coderfleet.init_wizard import run_init_wizard
     run_init_wizard(ctx.obj["workspace"])
 
 
 @main.command("server")
-@click.option("--port", default=None, type=int, envvar="AICM_PORT",
+@click.option("--port", default=None, type=int, envvar="CODERFLEET_PORT",
               help="监听端口（默认 8765）")
 @click.option("--daemon", "-d", is_flag=True,
               help="后台守护进程模式运行")
@@ -172,10 +172,10 @@ def cmd_server(
     """Start the FastAPI scheduler server and Web UI.
 
     \b
-    aicm server              # 前台运行（Ctrl+C 停止）
-    aicm server --daemon     # 后台守护进程
-    aicm server --stop       # 停止后台 server
-    aicm server --status     # 查看运行状态
+    coderfleet server              # 前台运行（Ctrl+C 停止）
+    coderfleet server --daemon     # 后台守护进程
+    coderfleet server --stop       # 停止后台 server
+    coderfleet server --status     # 查看运行状态
     """
     import uvicorn
 
@@ -190,21 +190,21 @@ def cmd_server(
         return
 
     cfg = load_config(ws)
-    resolved_port = port or int(cfg.get("AICM_PORT", 8765))
+    resolved_port = port or int(cfg.get("CODERFLEET_PORT", 8765))
 
     if daemon:
         _server_start_daemon(ws, resolved_port)
         return
 
     # 前台模式
-    os.environ["AICM_WORKSPACE"] = str(ws)
-    os.environ["AICM_PORT"] = str(resolved_port)
+    os.environ["CODERFLEET_WORKSPACE"] = str(ws)
+    os.environ["CODERFLEET_PORT"] = str(resolved_port)
 
     click.echo(f"Workspace: {ws}")
-    click.echo(f"Starting AICM server at http://localhost:{resolved_port}")
+    click.echo(f"Starting CoderFleet server at http://localhost:{resolved_port}")
 
     uvicorn.run(
-        "aicm.server.main:app",
+        "coderfleet.server.main:app",
         host="0.0.0.0",
         port=resolved_port,
         reload=False,

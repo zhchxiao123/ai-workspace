@@ -1,5 +1,5 @@
 # ============================================================
-#  AI Code Manager — 统一工作容器镜像
+#  CoderFleet — 统一工作容器镜像
 #  包含：Python 3.12 / Node.js 20 / Codex CLI / Claude Code
 #  平台：linux/amd64（Apple Silicon 通过 Docker 模拟运行）
 # ============================================================
@@ -72,7 +72,7 @@ RUN groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw
 RUN mkdir -p /workspace && chown byclaw:byclaw /workspace
 WORKDIR /workspace
 
-# 这两个目录由 aicm.sh 按账号挂载，容器内路径固定
+# 这两个目录由 CoderFleet 按账号挂载，容器内路径固定
 # Codex 认证：/home/byclaw/.codex   由 CODEX_HOME 控制
 # Claude 认证：/home/byclaw/.claude  由 CLAUDE_CONFIG_DIR 控制
 ENV CODEX_HOME=/home/byclaw/.codex
@@ -82,8 +82,8 @@ ENV CLAUDE_CONFIG_DIR=/home/byclaw/.claude
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-COPY scripts/aicm_usage_status.py /usr/local/bin/aicm-usage-status
-RUN chmod +x /usr/local/bin/aicm-usage-status
+COPY scripts/coderfleet_usage_status.py /usr/local/bin/coderfleet-usage-status
+RUN chmod +x /usr/local/bin/coderfleet-usage-status
 
 # ── 切换为非特权用户 ──────────────────────────────────────
 USER byclaw

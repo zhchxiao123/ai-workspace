@@ -13,8 +13,8 @@ from typing import Optional
 
 import click
 
-from aicm.config import load_config, parse_conf
-from aicm.compose import write_compose
+from coderfleet.config import load_config, parse_conf
+from coderfleet.compose import write_compose
 
 
 # ── helpers ───────────────────────────────────────────────────
@@ -84,10 +84,10 @@ def cmd_build(
     dockerfile = ws / "Dockerfile"
     if not dockerfile.exists():
         raise click.ClickException(
-            f"找不到 Dockerfile（{dockerfile}），请先执行 aicm init"
+            f"找不到 Dockerfile（{dockerfile}），请先执行 coderfleet init"
         )
 
-    image_name = cfg.get("IMAGE_NAME", "ai-code-manager")
+    image_name = cfg.get("IMAGE_NAME", "coderfleet")
     image_tag = tag_override or cfg.get("IMAGE_TAG", "latest")
     image = f"{image_name}:{image_tag}"
     platform = platform_override or cfg.get("BUILD_PLATFORM", "linux/amd64")
@@ -141,7 +141,7 @@ def cmd_apply(ctx: click.Context) -> None:
         raise click.ClickException("容器启动失败")
 
     click.echo()
-    click.secho("✓ 完成！使用 aicm status 查看状态", fg="green")
+    click.secho("✓ 完成！使用 coderfleet status 查看状态", fg="green")
 
 
 @click.command("up")
@@ -218,21 +218,21 @@ def cmd_status(ctx: click.Context) -> None:
     click.echo()
     click.echo("  ── 代理中继 " + "─" * 56)
     r = subprocess.run(
-        ["docker", "inspect", "aicm-proxy-relay",
+        ["docker", "inspect", "coderfleet-proxy-relay",
          "--format", "{{.State.Health.Status}}"],
         capture_output=True, text=True,
     )
     health = r.stdout.strip() if r.returncode == 0 else "未运行"
     if health == "healthy":
-        click.echo(f"  aicm-proxy-relay: {click.style(health, fg='green')}")
+        click.echo(f"  coderfleet-proxy-relay: {click.style(health, fg='green')}")
     elif health == "starting":
-        click.echo(f"  aicm-proxy-relay: {click.style(health + '（启动中）', fg='yellow')}")
+        click.echo(f"  coderfleet-proxy-relay: {click.style(health + '（启动中）', fg='yellow')}")
     else:
-        click.echo(f"  aicm-proxy-relay: {click.style(health, fg='red')}")
+        click.echo(f"  coderfleet-proxy-relay: {click.style(health, fg='red')}")
 
     click.echo()
     click.echo("  ── 镜像信息 " + "─" * 56)
-    image = f"{cfg.get('IMAGE_NAME', 'ai-code-manager')}:{cfg.get('IMAGE_TAG', 'latest')}"
+    image = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
     ri = subprocess.run(
         ["docker", "image", "inspect", image,
          "--format", "{{.Created}}\t{{.Size}}"],
@@ -251,7 +251,7 @@ def cmd_status(ctx: click.Context) -> None:
         )
     else:
         click.echo(
-            f"  {image}: {click.style('未构建', fg='red')}，请执行 aicm build"
+            f"  {image}: {click.style('未构建', fg='red')}，请执行 coderfleet build"
         )
     click.echo()
 
@@ -297,7 +297,7 @@ def cmd_enter(ctx: click.Context, project: str) -> None:
         ctr = _container_name(project, acc_type)
 
         if not _is_running(ctr):
-            raise click.ClickException(f"容器 {ctr} 未运行，请先执行：aicm up")
+            raise click.ClickException(f"容器 {ctr} 未运行，请先执行：coderfleet up")
 
         click.secho(f"进入 {ctr}（类型：{acc_type}）...", dim=True)
         os.execvp("docker", ["docker", "exec", "-it", ctr, "bash"])

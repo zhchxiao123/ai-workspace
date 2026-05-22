@@ -64,13 +64,13 @@ function applySidebarCollapsed(collapsed) {
 }
 
 function initSidebarState() {
-  applySidebarCollapsed(localStorage.getItem('aicm.sidebarCollapsed') === 'true');
+  applySidebarCollapsed(localStorage.getItem('coderfleet.sidebarCollapsed') === 'true');
 }
 
 function toggleSidebar() {
   const layout = document.querySelector('.layout');
   const collapsed = !(layout?.classList.contains('sidebar-collapsed'));
-  localStorage.setItem('aicm.sidebarCollapsed', collapsed ? 'true' : 'false');
+  localStorage.setItem('coderfleet.sidebarCollapsed', collapsed ? 'true' : 'false');
   applySidebarCollapsed(collapsed);
 }
 

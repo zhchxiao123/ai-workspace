@@ -19,8 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from aicm.server import docker_mgr
-from aicm.server.models import (
+from coderfleet.server import docker_mgr
+from coderfleet.server.models import (
     Account,
     AccountAuth,
     AccountProxy,
@@ -47,7 +47,7 @@ class Scheduler:
 
     @staticmethod
     def task_process_marker(task_id: str) -> str:
-        return f"aicm-task-{task_id}"
+        return f"coderfleet-task-{task_id}"
 
     @staticmethod
     def build_cli_command(
@@ -80,7 +80,7 @@ class Scheduler:
             # 通过 stdin 传入 prompt，兼容所有 claude CLI 版本（部分版本不再接受位置参数）
             inner_cmd = (
                 f"printf '%s\\n' {escaped_prompt} | "
-                f"AICM_TASK_ID={task_env} exec -a {marker} "
+                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
                 f"claude -p {permission}{output_format}{resume}"
             )
         else:
@@ -93,20 +93,20 @@ class Scheduler:
                 danger_flag = " --dangerously-bypass-approvals-and-sandbox" if auto else ""
                 inner_cmd = (
                     f"printf '%s\\n' {escaped_prompt} | "
-                    f"AICM_TASK_ID={task_env} exec -a {marker} "
+                    f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
                     f"codex exec resume {shlex.quote(native_session_id)} --json{danger_flag}{image_flags}"
                 )
             else:
                 inner_cmd = (
                     f"printf '%s\\n' {escaped_prompt} | "
-                    f"AICM_TASK_ID={task_env} exec -a {marker} "
+                    f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
                     f"codex exec --json --sandbox {sandbox}{image_flags}"
                 )
         if container_workdir:
             inner_cmd = f"cd {shlex.quote(container_workdir)} && {inner_cmd}"
 
-        task_log  = f"/workspace/.aicm-tasks/{task_id}.log"
-        task_exit = f"/workspace/.aicm-tasks/{task_id}.exit"
+        task_log  = f"/workspace/.coderfleet-tasks/{task_id}.log"
+        task_exit = f"/workspace/.coderfleet-tasks/{task_id}.exit"
         # 用子 shell ( ... ) 包裹 inner_cmd：exec -a 替换的是子 shell 进程，
         # 外层 bash 在子 shell 退出后仍可执行 echo $? 写入 exit 文件。
         # 若不加括号，exec -a 会直接替换外层 bash，分号后的 echo $? 永远不会执行。
@@ -115,14 +115,14 @@ class Scheduler:
             f"; echo $? > {shlex.quote(task_exit)}"
         )
         return (
-            f"mkdir -p /workspace/.aicm-tasks"
+            f"mkdir -p /workspace/.coderfleet-tasks"
             f" && setsid bash -c {shlex.quote(wrapper_body)} &"
         )
 
     @staticmethod
     def build_usage_status_command(acc_type: AccountType) -> str:
         if acc_type == AccountType.codex:
-            return "aicm-usage-status codex 2>&1"
+            return "coderfleet-usage-status codex 2>&1"
         return ""
 
     @staticmethod
@@ -543,7 +543,7 @@ class Scheduler:
         log_path = self.get_log_path(task.id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8") as f:
-            f.write("=== AICM Task Log ===\n")
+            f.write("=== CoderFleet Task Log ===\n")
             f.write(f"id:      {task.id}\n")
             f.write(f"status:  failed\n")
             f.write(f"prompt:  {task.prompt}\n")
@@ -799,7 +799,7 @@ class Scheduler:
     def _write_log_header(self, log_path: Path, task: Task, acc: Account, container_workdir: str = "", container_name: str = "") -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
-            f.write("=== AICM Task Log ===\n")
+            f.write("=== CoderFleet Task Log ===\n")
             f.write(f"id:      {task.id}\n")
             f.write(f"account: {acc.name} ({acc.type.value})\n")
             f.write(f"project: {task.project}\n")
@@ -1048,11 +1048,11 @@ class Scheduler:
 
     @staticmethod
     def _host_task_log(project_root: Path, task_id: str) -> Path:
-        return project_root / ".aicm-tasks" / f"{task_id}.log"
+        return project_root / ".coderfleet-tasks" / f"{task_id}.log"
 
     @staticmethod
     def _host_task_exit(project_root: Path, task_id: str) -> Path:
-        return project_root / ".aicm-tasks" / f"{task_id}.exit"
+        return project_root / ".coderfleet-tasks" / f"{task_id}.exit"
 
     def _cleanup_container_task_files(self, task: Task) -> None:
         project_root = self._get_project_root(task)

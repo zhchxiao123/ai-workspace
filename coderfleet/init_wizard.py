@@ -1,5 +1,5 @@
 """
-init_wizard.py — aicm init 交互式初始化向导
+init_wizard.py — coderfleet init 交互式初始化向导
 
 向导流程：
 1. 确认工作区路径
@@ -18,14 +18,14 @@ from pathlib import Path
 
 import click
 
-from aicm.config import ensure_workspace, get_workspace, load_config
+from coderfleet.config import ensure_workspace, get_workspace, load_config
 
 # ── 工具函数 ──────────────────────────────────────────────
 
 
 def _data_file(name: str) -> Path:
-    """返回 aicm/data/ 中打包资源文件的路径。"""
-    pkg = importlib.resources.files("aicm.data")
+    """返回 coderfleet/data/ 中打包资源文件的路径。"""
+    pkg = importlib.resources.files("coderfleet.data")
     return Path(str(pkg / name))
 
 
@@ -34,8 +34,8 @@ def _write_config(ws: Path, values: dict[str, str]) -> None:
     conf_path = ws / "config.conf"
     lines = [
         "# ============================================================",
-        "#  config.conf — AI Code Manager 全局配置",
-        "#  修改后执行 aicm apply 生效",
+        "#  config.conf — CoderFleet 全局配置",
+        "#  修改后执行 coderfleet apply 生效",
         "# ============================================================",
         "",
         "# ── 镜像配置 ──────────────────────────────────────────────",
@@ -83,7 +83,7 @@ def _create_empty_conf(path: Path, example_name: str) -> None:
 def run_init_wizard(ws: Path) -> None:
     """交互式初始化工作区。"""
     click.echo()
-    click.secho("AICM 初始化向导", bold=True)
+    click.secho("CoderFleet 初始化向导", bold=True)
     click.echo("=" * 40)
 
     # ── 步骤 1：确认工作区 ──────────────────────────────
@@ -129,7 +129,7 @@ def run_init_wizard(ws: Path) -> None:
         "linux/arm64" if _platform.machine() in ("arm64", "aarch64") else "linux/amd64"
     )
 
-    image_name = click.prompt("镜像名称", default="ai-code-manager")
+    image_name = click.prompt("镜像名称", default="coderfleet")
     image_tag = click.prompt("镜像标签", default="latest")
     build_platform = click.prompt("构建平台", default=default_platform)
 
@@ -206,22 +206,22 @@ def _print_next_steps(ws: Path) -> None:
     click.secho("初始化完成！后续步骤：", bold=True)
     click.echo()
     click.echo(f"  1. 构建 Docker 镜像（首次约 5-10 分钟）：")
-    click.secho(f"       aicm build", fg="cyan")
+    click.secho(f"       coderfleet build", fg="cyan")
     click.echo(f"  2. 添加账号：")
-    click.secho(f"       aicm account add <名称> TYPE=claude", fg="cyan")
+    click.secho(f"       coderfleet account add <名称> TYPE=claude", fg="cyan")
     click.echo(f"  3. 添加项目：")
-    click.secho(f"       aicm project add <名称> <账号名> ~/projects/myproject", fg="cyan")
+    click.secho(f"       coderfleet project add <名称> <账号名> ~/projects/myproject", fg="cyan")
     click.echo(f"  4. 应用配置并启动容器：")
-    click.secho(f"       aicm apply", fg="cyan")
+    click.secho(f"       coderfleet apply", fg="cyan")
     click.echo(f"  5. 登录账号：")
-    click.secho(f"       aicm login <账号名>", fg="cyan")
+    click.secho(f"       coderfleet login <账号名>", fg="cyan")
     click.echo(f"  6. 启动 Web UI：")
-    click.secho(f"       aicm server", fg="cyan")
+    click.secho(f"       coderfleet server", fg="cyan")
     click.echo()
     click.echo(f"工作区位置：{ws}")
-    if ws != Path.home() / ".aicm":
+    if ws != Path.home() / ".coderfleet":
         click.echo(
-            f"提示：非默认工作区，运行 aicm 命令时需设置环境变量：\n"
-            f"  export AICM_WORKSPACE={ws}"
+            f"提示：非默认工作区，运行 coderfleet 命令时需设置环境变量：\n"
+            f"  export CODERFLEET_WORKSPACE={ws}"
         )
     click.echo()

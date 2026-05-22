@@ -1,8 +1,8 @@
 """
-task_cmds.py — aicm task 子命令
+task_cmds.py — coderfleet task 子命令
 
-通过 HTTP 调用 AICM 调度服务 API，需先执行 aicm server 启动服务。
-AICM_API 环境变量可覆盖服务地址（默认 http://localhost:8765）。
+通过 HTTP 调用 CoderFleet 调度服务 API，需先执行 coderfleet server 启动服务。
+CODERFLEET_API 环境变量可覆盖服务地址（默认 http://localhost:8765）。
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import httpx
 # ── 工具函数 ──────────────────────────────────────────────
 
 def _api_base() -> str:
-    return os.environ.get("AICM_API", "http://localhost:8765").rstrip("/")
+    return os.environ.get("CODERFLEET_API", "http://localhost:8765").rstrip("/")
 
 
 def _require_server() -> str:
@@ -28,8 +28,8 @@ def _require_server() -> str:
         httpx.get(f"{api}/api/health", timeout=3).raise_for_status()
     except Exception:
         raise click.ClickException(
-            f"AICM 服务未启动，请先执行：aicm server\n"
-            f"（或设置 AICM_API=<地址> 指向远端服务）"
+            f"CoderFleet 服务未启动，请先执行：coderfleet server\n"
+            f"（或设置 CODERFLEET_API=<地址> 指向远端服务）"
         )
     return api
 
@@ -131,8 +131,8 @@ def cmd_task_run(
         click.secho(f"  状态：排队中（账号忙碌）", fg="yellow")
     if conv:
         click.echo(f"  任务链：{conv}")
-    click.echo(f"  查看日志：aicm task logs {d['id']}")
-    click.echo(f"  实时跟踪：aicm task logs {d['id']} -f")
+    click.echo(f"  查看日志：coderfleet task logs {d['id']}")
+    click.echo(f"  实时跟踪：coderfleet task logs {d['id']} -f")
 
 
 # ── task list ─────────────────────────────────────────────

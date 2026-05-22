@@ -5,15 +5,15 @@ import re
 from pathlib import Path
 
 
-DEFAULT_WORKSPACE = Path.home() / ".aicm"
+DEFAULT_WORKSPACE = Path.home() / ".coderfleet"
 
 
 def get_workspace() -> Path:
     """
-    Resolve AICM workspace directory.
-    Priority: AICM_WORKSPACE env var → ~/.aicm/
+    Resolve CoderFleet workspace directory.
+    Priority: CODERFLEET_WORKSPACE env var → ~/.coderfleet/
     """
-    env = os.environ.get("AICM_WORKSPACE", "")
+    env = os.environ.get("CODERFLEET_WORKSPACE", "")
     if env:
         return Path(env).expanduser().resolve()
     return DEFAULT_WORKSPACE

@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aicm.server import scheduler as scheduler_mod
-from aicm.server.models import (
+from coderfleet.server import scheduler as scheduler_mod
+from coderfleet.server.models import (
     Account,
     AccountAuth,
     AccountProxy,
@@ -21,16 +21,16 @@ from aicm.server.models import (
     Task,
     TaskStatus,
 )
-from aicm.server.scheduler import Scheduler
+from coderfleet.server.scheduler import Scheduler
 
 
 def _assert_detached_command(command: str, task_id: str) -> None:
     """共享断言：验证命令使用 setsid 包装、写入正确的日志和 exit 文件。"""
-    assert command.startswith("mkdir -p /workspace/.aicm-tasks &&"), command
+    assert command.startswith("mkdir -p /workspace/.coderfleet-tasks &&"), command
     assert "setsid bash -c" in command, command
-    assert f"exec -a aicm-task-{task_id}" in command, command
-    assert f"/workspace/.aicm-tasks/{task_id}.log" in command, command
-    assert f"/workspace/.aicm-tasks/{task_id}.exit" in command, command
+    assert f"exec -a coderfleet-task-{task_id}" in command, command
+    assert f"/workspace/.coderfleet-tasks/{task_id}.log" in command, command
+    assert f"/workspace/.coderfleet-tasks/{task_id}.exit" in command, command
     assert command.rstrip().endswith("&"), command
 
 
@@ -121,7 +121,7 @@ def test_build_cli_command_uses_headless_claude_permission_modes() -> None:
 def test_build_usage_status_command_for_codex() -> None:
     command = Scheduler.build_usage_status_command(AccountType.codex)
 
-    assert command == "aicm-usage-status codex 2>&1"
+    assert command == "coderfleet-usage-status codex 2>&1"
 
 
 def test_build_usage_status_command_skips_unsupported_cli() -> None:
@@ -187,7 +187,7 @@ def test_reconcile_dead_task_with_exit_zero_marked_done(
         project=str(tmp_path / "repo"),
     )
     task.save(sched.tasks_dir)
-    exit_dir = tmp_path / ".aicm-tasks"
+    exit_dir = tmp_path / ".coderfleet-tasks"
     exit_dir.mkdir()
     (exit_dir / "done-1.exit").write_text("0")
     monkeypatch.setattr(sched, "is_task_process_alive", lambda _t: False)

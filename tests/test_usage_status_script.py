@@ -7,12 +7,12 @@ from types import ModuleType
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "aicm_usage_status.py"
+SCRIPT = ROOT / "scripts" / "coderfleet_usage_status.py"
 DOCKERFILE = ROOT / "Dockerfile"
 
 
 def load_usage_status_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("aicm_usage_status", SCRIPT)
+    spec = importlib.util.spec_from_file_location("coderfleet_usage_status", SCRIPT)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -28,8 +28,8 @@ def test_dockerfile_installs_usage_status_helper() -> None:
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
     assert "pexpect" in dockerfile
-    assert "aicm_usage_status.py" in dockerfile
-    assert "/usr/local/bin/aicm-usage-status" in dockerfile
+    assert "coderfleet_usage_status.py" in dockerfile
+    assert "/usr/local/bin/coderfleet-usage-status" in dockerfile
 
 
 def test_extract_codex_usage_summary_from_status_box() -> None:

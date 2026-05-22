@@ -1,5 +1,5 @@
 """
-main.py — AICM 调度服务入口
+main.py — CoderFleet 调度服务入口
 
 API 路由：
   GET  /api/accounts              列出所有账号及状态
@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from aicm.server.models import (
+from coderfleet.server.models import (
     AccountResponse,
     AccountType,
     Conversation,
@@ -43,8 +43,8 @@ from aicm.server.models import (
     TaskResponse,
     TaskStatus,
 )
-from aicm.server.scheduler import Scheduler
-from aicm.server.terminal import TerminalSession, resolve_terminal_target
+from coderfleet.server.scheduler import Scheduler
+from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
 
 
 class ConversationCreateRequest(BaseModel):
@@ -54,15 +54,15 @@ class ConversationCreateRequest(BaseModel):
 
 # ── 初始化 ────────────────────────────────────────────────
 
-WORKSPACE_DIR = Path(os.environ.get("AICM_WORKSPACE", Path.home() / ".aicm"))
+WORKSPACE_DIR = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
 scheduler     = Scheduler(WORKSPACE_DIR)
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(
-    title       = "AICM Scheduler API",
-    description = "AI Code Manager 任务调度服务",
+    title       = "CoderFleet Scheduler API",
+    description = "CoderFleet 任务调度服务",
     version     = "0.1.0",
 )
 
@@ -168,7 +168,7 @@ async def upload_image(
     if ext not in _ALLOWED_IMAGE_EXTS:
         raise HTTPException(status_code=400, detail=f"不支持的图片格式：{ext}")
 
-    upload_dir = Path(project.path) / ".aicm-uploads"
+    upload_dir = Path(project.path) / ".coderfleet-uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     file_id = uuid.uuid4().hex[:16]
@@ -179,7 +179,7 @@ async def upload_image(
     save_path.write_bytes(content)
 
     return {
-        "container_path": f"/workspace/.aicm-uploads/{filename}",
+        "container_path": f"/workspace/.coderfleet-uploads/{filename}",
         "preview_url": f"/api/uploads/{project_name}/{filename}",
         "filename": original_name,
     }
@@ -193,7 +193,7 @@ async def serve_upload(project_name: str, filename: str):
         raise HTTPException(status_code=404, detail="项目不存在")
 
     safe_name = Path(filename).name
-    file_path = Path(project.path) / ".aicm-uploads" / safe_name
+    file_path = Path(project.path) / ".coderfleet-uploads" / safe_name
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
 
@@ -538,9 +538,9 @@ async def clean_tasks(keep: int = Query(30, description="保留最近 N 条记�
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "aicm.server.main:app",
+        "coderfleet.server.main:app",
         host    = "0.0.0.0",
-        port    = int(os.environ.get("AICM_PORT", 8765)),
+        port    = int(os.environ.get("CODERFLEET_PORT", 8765)),
         reload  = False,
         workers = 1,        # 单进程，scheduler 状态在内存里
     )

@@ -1,17 +1,17 @@
-# AI Code Manager (aicm)
+# CoderFleet (coderfleet)
 
 **更适合中国开发者（CN）体质的多账号 AI 辅助开发方案。**
 
 <video src="https://github.com/user-attachments/assets/37bee884-09c7-40ca-bc7b-87ce26422c8c" controls width="100%"></video>
 
-### 💡 为什么需要 AICM？
+### 💡 为什么需要 CoderFleet？
 
 在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex）经常面临尴尬的使用瓶颈：
 * **单账号（Plus 会员）的额度不够用**，频繁遭遇大模型服务商的 Rate Limit 或当日使用上限；
 * **高倍数套餐（如 5x/10x/20x 的账号会员）又极其昂贵**，在周期内往往使用量根本用不完，性价比极低；
 * 最优解通常是**自己申请 2 个或多个普通/Plus 账号轮流使用**，但在单台机器上频繁切换账号、管理认证数据、以及维护隔离的网络环境极其繁杂。
 
-**AICM 正是为此而生！**
+**CoderFleet 正是为此而生！**
 
 它允许你在单台宿主机上同时运行多个 **Codex CLI** 和 **Claude Code** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
 
@@ -50,24 +50,24 @@ uv python install 3.12
 
 ### 方式一：uv tool 安装（推荐，新用户）
 
-`uv tool` 等价于 pipx，将 aicm 装进独立隔离环境，不污染系统 Python。
+`uv tool` 等价于 pipx，将 coderfleet 装进独立隔离环境，不污染系统 Python。
 
 ```bash
-uv tool install aicm
+uv tool install coderfleet
 ```
 
-安装完成后，`aicm` 命令全局可用，工作区默认位于 `~/.aicm/`。
+安装完成后，`coderfleet` 命令全局可用，工作区默认位于 `~/.coderfleet/`。
 
 > 如果未安装 uv，也可用 pipx：
 > ```bash
-> pipx install aicm
+> pipx install coderfleet
 > ```
 
 ### 方式二：克隆仓库（开发者 / 老用户）
 
 ```bash
-git clone https://github.com/your-org/aicm.git
-cd aicm
+git clone https://github.com/your-org/coderfleet.git
+cd coderfleet
 
 # 用 uv 创建虚拟环境并安装（推荐）
 uv venv && source .venv/bin/activate
@@ -77,27 +77,25 @@ uv pip install -e .
 pip install -e .
 ```
 
-> **向后兼容**：`./aicm.sh` 已改为薄包装层，将所有命令透传给 Python CLI，原有工作流完全不变。克隆目录自动作为工作区，无需额外配置。详见 [从 aicm.sh 迁移指南](changelog/migrate-from-aicm-sh.md)。
-
----
+> 老用户请参考 [从 `./aicm.sh` 迁移到 `coderfleet`](changelog/migrate-from-aicm-to-coderfleet.md)。旧的 `./aicm.sh` 包装脚本不再保留。
 
 ## 快速开始
 
 ### 1. 初始化工作区
 
 ```bash
-aicm init
+coderfleet init
 ```
 
 交互式向导将引导你：
-- 确认工作区目录（默认 `~/.aicm/`）
+- 确认工作区目录（默认 `~/.coderfleet/`）
 - 填写宿主机代理端口（HTTP / SOCKS5）
 - 设置 Docker 镜像名称和构建平台
 
 初始化完成后，工作区结构如下：
 
 ```
-~/.aicm/
+~/.coderfleet/
 ├── config.conf        # 全局配置（镜像、代理、网络）
 ├── accounts.conf      # 账号配置
 ├── projects.conf      # 项目配置
@@ -113,7 +111,7 @@ aicm init
 ### 2. 构建镜像
 
 ```bash
-aicm build
+coderfleet build
 ```
 
 首次构建约需 5~10 分钟，镜像包含：
@@ -129,24 +127,24 @@ aicm build
 
 ```bash
 # Codex 账号
-aicm account add alice TYPE=codex
-aicm project add app-a alice ~/projects/app-a
+coderfleet account add alice TYPE=codex
+coderfleet project add app-a alice ~/projects/app-a
 
 # Claude Code 账号
-aicm account add bob TYPE=claude
-aicm project add app-b bob ~/projects/app-b
+coderfleet account add bob TYPE=claude
+coderfleet project add app-b bob ~/projects/app-b
 ```
 
 ### 4. 生成配置并启动容器
 
 ```bash
-aicm apply
+coderfleet apply
 ```
 
 ### 5. 登录账号
 
 ```bash
-aicm login alice
+coderfleet login alice
 ```
 
 CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复制 code → 粘贴回终端。
@@ -157,8 +155,8 @@ CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复�
 
 ```bash
 # 打开多个终端
-aicm enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice）
-aicm enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
+coderfleet enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice）
+coderfleet enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
 ```
 
 进入后使用对应 CLI：
@@ -173,10 +171,10 @@ claude "帮我重构这个函数"
 
 ### 7. 启动调度服务与 Web 控制台
 
-除了交互式进入容器，AICM 还提供 **FastAPI 任务调度服务与 Web 聊天控制台**，可在宿主机直接触发并监控容器内的异步开发任务。
+除了交互式进入容器，CoderFleet 还提供 **FastAPI 任务调度服务与 Web 聊天控制台**，可在宿主机直接触发并监控容器内的异步开发任务。
 
 ```bash
-aicm server
+coderfleet server
 ```
 
 启动后可访问：
@@ -189,20 +187,20 @@ aicm server
 
 ```bash
 # 一次性开发任务
-aicm task run "在 auth.py 中添加 JWT 生成逻辑" --project app-b
+coderfleet task run "在 auth.py 中添加 JWT 生成逻辑" --project app-b
 
 # 全自动模式（跳过 CLI 权限确认）
-aicm task run "运行并修复所有 lint 错误" --project app-b --auto
+coderfleet task run "运行并修复所有 lint 错误" --project app-b --auto
 
 # 开启新的对话链（维持上下文）
-aicm task run "开始实现支付接口" --project app-b --new-chain 支付功能
+coderfleet task run "开始实现支付接口" --project app-b --new-chain 支付功能
 
 # 续接已有对话上下文
-aicm task run "在刚才的支付接口上增加退款支持" --conversation <任务链ID>
+coderfleet task run "在刚才的支付接口上增加退款支持" --conversation <任务链ID>
 
 # 查看任务列表与实时日志
-aicm task list
-aicm task logs <任务ID> -f
+coderfleet task list
+coderfleet task logs <任务ID> -f
 ```
 
 ---
@@ -213,50 +211,50 @@ aicm task logs <任务ID> -f
 
 | 命令 | 说明 |
 |------|------|
-| `aicm init` | 交互式初始化工作区（首次使用） |
-| `aicm build` | 构建自定义 Docker 镜像 |
-| `aicm apply` | 重新生成 docker-compose.yml 并重启所有容器 |
-| `aicm up` | 启动所有容器 |
-| `aicm down` | 停止所有容器 |
-| `aicm restart` | 重启所有容器 |
-| `aicm status` | 查看容器、代理中继和镜像状态 |
-| `aicm server [--port N]` | 启动 FastAPI 调度服务及 Web UI（默认端口 8765） |
+| `coderfleet init` | 交互式初始化工作区（首次使用） |
+| `coderfleet build` | 构建自定义 Docker 镜像 |
+| `coderfleet apply` | 重新生成 docker-compose.yml 并重启所有容器 |
+| `coderfleet up` | 启动所有容器 |
+| `coderfleet down` | 停止所有容器 |
+| `coderfleet restart` | 重启所有容器 |
+| `coderfleet status` | 查看容器、代理中继和镜像状态 |
+| `coderfleet server [--port N]` | 启动 FastAPI 调度服务及 Web UI（默认端口 8765） |
 
 ### 账号管理
 
 | 命令 | 说明 |
 |------|------|
-| `aicm account add <名称> TYPE=codex\|claude [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
-| `aicm account remove <名称>` | 删除账号（自动停止关联容器） |
-| `aicm account list` | 列出所有账号及运行状态 |
-| `aicm login <账号名\|all>` | 登录账号并持久化认证文件 |
+| `coderfleet account add <名称> TYPE=codex\|claude [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `coderfleet account remove <名称>` | 删除账号（自动停止关联容器） |
+| `coderfleet account list` | 列出所有账号及运行状态 |
+| `coderfleet login <账号名\|all>` | 登录账号并持久化认证文件 |
 
 ### 项目管理
 
 | 命令 | 说明 |
 |------|------|
-| `aicm project add <名称> <账号名> <项目路径>` | 添加项目 |
-| `aicm project remove <名称>` | 删除项目 |
-| `aicm project list` | 列出所有项目 |
+| `coderfleet project add <名称> <账号名> <项目路径>` | 添加项目 |
+| `coderfleet project remove <名称>` | 删除项目 |
+| `coderfleet project list` | 列出所有项目 |
 
 ### 容器操作
 
 | 命令 | 说明 |
 |------|------|
-| `aicm enter <项目名>` | 进入项目容器 shell（TTY 直连） |
-| `aicm logs [项目名]` | 查看日志（不加参数看全部容器） |
-| `aicm check-proxy` | 验证代理隔离及出口 IP |
+| `coderfleet enter <项目名>` | 进入项目容器 shell（TTY 直连） |
+| `coderfleet logs [项目名]` | 查看日志（不加参数看全部容器） |
+| `coderfleet check-proxy` | 验证代理隔离及出口 IP |
 
 ### 任务管理（需先启动 server）
 
 | 命令 | 说明 |
 |------|------|
-| `aicm task run "<prompt>" [--project 名称] [--auto] [--at ISO时间]` | 提交异步任务 |
-| `aicm task list [--status 状态] [--account 账号]` | 查看任务列表 |
-| `aicm task status <任务ID>` | 查看任务详情 |
-| `aicm task logs <任务ID> [-f]` | 查看任务日志（`-f` 实时跟踪） |
-| `aicm task kill <任务ID>` | 终止任务 |
-| `aicm task clean [N]` | 清理历史记录（保留最近 N 条，默认 30） |
+| `coderfleet task run "<prompt>" [--project 名称] [--auto] [--at ISO时间]` | 提交异步任务 |
+| `coderfleet task list [--status 状态] [--account 账号]` | 查看任务列表 |
+| `coderfleet task status <任务ID>` | 查看任务详情 |
+| `coderfleet task logs <任务ID> [-f]` | 查看任务日志（`-f` 实时跟踪） |
+| `coderfleet task kill <任务ID>` | 终止任务 |
+| `coderfleet task clean [N]` | 清理历史记录（保留最近 N 条，默认 30） |
 
 ---
 
@@ -264,11 +262,11 @@ aicm task logs <任务ID> -f
 
 ### config.conf
 
-由 `aicm init` 自动生成，修改后执行 `aicm apply` 生效。
+由 `coderfleet init` 自动生成，修改后执行 `coderfleet apply` 生效。
 
 ```conf
 # 自建镜像名称和标签
-IMAGE_NAME=ai-code-manager
+IMAGE_NAME=coderfleet
 IMAGE_TAG=latest
 BUILD_PLATFORM=linux/amd64   # Apple Silicon 改为 linux/arm64
 
@@ -309,8 +307,8 @@ NAME=local       TYPE=claude  PROXY=off
 `AUTH=env` 用于 Claude Code API key 场景：
 
 ```bash
-aicm account add claude-api TYPE=claude --auth env
-# 然后编辑 ~/.aicm/accounts/claude-api/env
+coderfleet account add claude-api TYPE=claude --auth env
+# 然后编辑 ~/.coderfleet/accounts/claude-api/env
 ```
 
 示例 env 文件：
@@ -347,7 +345,7 @@ NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 [claude-bob]   ──┤── intnet（internal=true，无公网路由）
 [codex-carol]  ──┘         │
                             ▼
-                    [aicm-proxy-relay]（gost）
+                    [coderfleet-proxy-relay]（gost）
                             │  HTTP → 宿主机代理
                             ▼
                     宿主机代理（Clash/v2ray）
@@ -358,13 +356,13 @@ NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 
 关键设计：
 - `intnet` 设置 `internal: true`，Docker 不添加公网路由，容器物理上无法直连公网
-- 所有出站流量必须经过 `aicm-proxy-relay` 才能到达公网
+- 所有出站流量必须经过 `coderfleet-proxy-relay` 才能到达公网
 - `PROXY=off` 账号的项目接入普通外网网络，不经过中继（适合内网服务）
 
 验证代理隔离：
 
 ```bash
-aicm check-proxy
+coderfleet check-proxy
 ```
 
 正常输出：
@@ -402,15 +400,15 @@ aicm check-proxy
 ## 项目结构
 
 ```
-aicm/                      # Python 包
+coderfleet/                      # Python 包
 ├── cli.py                 # Click 命令组入口
 ├── config.py              # 工作区路径解析、.conf 文件读写
 ├── config_cmds.py         # account / project 子命令
 ├── compose.py             # docker-compose.yml 生成器（pyyaml）
 ├── docker_ops.py          # build / apply / up / down / enter 等命令
-├── login_cmd.py           # aicm login（TTY 直通，os.execvp）
-├── task_cmds.py           # aicm task 子命令（HTTP 调用 server）
-├── init_wizard.py         # aicm init 交互式向导
+├── login_cmd.py           # coderfleet login（TTY 直通，os.execvp）
+├── task_cmds.py           # coderfleet task 子命令（HTTP 调用 server）
+├── init_wizard.py         # coderfleet init 交互式向导
 ├── data/                  # 打包进 wheel 的资源文件
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -422,7 +420,6 @@ aicm/                      # Python 包
     ├── docker_mgr.py      # Docker exec 封装
     ├── terminal.py        # WebSocket ↔ docker exec -it 桥接
     └── static/            # Web UI（原生 JS，无构建步骤）
-aicm.sh                    # 薄包装层，透传给 Python CLI（向后兼容）
 pyproject.toml             # pip/pipx 打包配置
 ```
 
@@ -440,14 +437,14 @@ pyproject.toml             # pip/pipx 打包配置
 
 **Q: macOS Apple Silicon（M 系列芯片）能用吗？**
 
-可以，`aicm init` 会自动检测并默认选择 `linux/arm64`。若需 amd64 模拟，修改 `config.conf` 中的 `BUILD_PLATFORM=linux/amd64` 后重新 `aicm build`。
+可以，`coderfleet init` 会自动检测并默认选择 `linux/arm64`。若需 amd64 模拟，修改 `config.conf` 中的 `BUILD_PLATFORM=linux/amd64` 后重新 `coderfleet build`。
 
 **Q: 删除账号后认证数据还在吗？**
 
-`aicm account remove <名称>` 只从 `accounts.conf` 移除配置，`accounts/<名称>/` 目录保留。需要彻底清除时手动执行：
+`coderfleet account remove <名称>` 只从 `accounts.conf` 移除配置，`accounts/<名称>/` 目录保留。需要彻底清除时手动执行：
 
 ```bash
-rm -rf ~/.aicm/accounts/<名称>
+rm -rf ~/.coderfleet/accounts/<名称>
 ```
 
 **Q: 如何更新 CLI 版本？**
@@ -455,29 +452,19 @@ rm -rf ~/.aicm/accounts/<名称>
 修改工作区 `Dockerfile` 中对应的 `npm install -g` 命令，然后重新构建：
 
 ```bash
-aicm build
-aicm restart
-```
-
-**Q: 老用户如何从 aicm.sh 迁移？**
-
-无需迁移，`./aicm.sh` 已更新为薄包装层，自动透传命令给 Python CLI。也可直接安装后用 `aicm` 命令，两者完全等价：
-
-```bash
-pip install -e .           # 在仓库目录中
-export AICM_WORKSPACE=/path/to/your/workspace   # 指向已有工作区
-aicm status
+coderfleet build
+coderfleet restart
 ```
 
 **Q: 多个账号能同时工作吗？**
 
-可以，每个账号是独立容器，互不影响。打开多个终端窗口，分别 `aicm enter <项目名>` 进入即可。
+可以，每个账号是独立容器，互不影响。打开多个终端窗口，分别 `coderfleet enter <项目名>` 进入即可。
 
 ---
 
 ## 自定义镜像
 
-如需在镜像中添加更多工具，编辑工作区的 `Dockerfile`（路径：`~/.aicm/Dockerfile`），然后重新构建：
+如需在镜像中添加更多工具，编辑工作区的 `Dockerfile`（路径：`~/.coderfleet/Dockerfile`），然后重新构建：
 
 ```dockerfile
 # 示例：添加 Java
@@ -485,6 +472,6 @@ RUN apt-get update && apt-get install -y openjdk-21-jdk
 ```
 
 ```bash
-aicm build
-aicm restart
+coderfleet build
+coderfleet restart
 ```

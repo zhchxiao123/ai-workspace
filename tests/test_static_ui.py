@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATIC_DIR = ROOT / "aicm" / "server" / "static"
+STATIC_DIR = ROOT / "coderfleet" / "server" / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
 
@@ -136,8 +136,8 @@ def test_sidebar_can_collapse_with_persisted_state() -> None:
     assert 'aria-expanded="true"' in html
     assert "function toggleSidebar" in source
     assert "function applySidebarCollapsed" in source
-    assert "localStorage.getItem('aicm.sidebarCollapsed')" in source
-    assert "localStorage.setItem('aicm.sidebarCollapsed'" in source
+    assert "localStorage.getItem('coderfleet.sidebarCollapsed')" in source
+    assert "localStorage.setItem('coderfleet.sidebarCollapsed'" in source
     assert "sidebar-collapsed" in source
     assert "sidebar-label" in html
     assert "brand-text" in html

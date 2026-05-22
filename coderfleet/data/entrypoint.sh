@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  AI Code Manager — 容器启动脚本
+#  CoderFleet — 容器启动脚本
 #  负责：代理验证、认证目录初始化、启动保活进程
 # ============================================================
 
@@ -8,18 +8,18 @@ set -e
 
 # ── 打印启动信息 ─────────────────────────────────────────
 echo "========================================"
-echo "  AI Code Manager Container"
-echo "  账号：${AICM_ACCOUNT_NAME:-unknown}"
-echo "  类型：${AICM_ACCOUNT_TYPE:-unknown}"
-echo "  认证：${AICM_ACCOUNT_AUTH:-login}"
+echo "  CoderFleet Container"
+echo "  账号：${CODERFLEET_ACCOUNT_NAME:-unknown}"
+echo "  类型：${CODERFLEET_ACCOUNT_TYPE:-unknown}"
+echo "  认证：${CODERFLEET_ACCOUNT_AUTH:-login}"
 echo "========================================"
 
 # ── 等待代理中继就绪 ──────────────────────────────────────
-if [ "${AICM_ACCOUNT_PROXY:-relay}" = "off" ]; then
+if [ "${CODERFLEET_ACCOUNT_PROXY:-relay}" = "off" ]; then
     echo "账号代理：关闭（不等待代理中继）"
 else
-    PROXY_HOST="${AICM_RELAY_IP:-172.20.0.2}"
-    PROXY_PORT="${AICM_RELAY_PORT:-7890}"
+    PROXY_HOST="${CODERFLEET_RELAY_IP:-172.20.0.2}"
+    PROXY_PORT="${CODERFLEET_RELAY_PORT:-7890}"
     MAX_WAIT=30
     waited=0
 
@@ -36,7 +36,7 @@ else
 fi
 
 # ── 初始化认证目录 ────────────────────────────────────────
-ACCOUNT_TYPE="${AICM_ACCOUNT_TYPE:-codex}"
+ACCOUNT_TYPE="${CODERFLEET_ACCOUNT_TYPE:-codex}"
 case "$ACCOUNT_TYPE" in
     codex)
         mkdir -p "$CODEX_HOME"
@@ -45,7 +45,7 @@ case "$ACCOUNT_TYPE" in
     claude)
         mkdir -p "$CLAUDE_CONFIG_DIR"
         echo "Claude 认证目录：$CLAUDE_CONFIG_DIR"
-        if [ "${AICM_ACCOUNT_AUTH:-login}" = "env" ]; then
+        if [ "${CODERFLEET_ACCOUNT_AUTH:-login}" = "env" ]; then
             echo "Claude 环境变量认证：已启用"
         fi
         ;;

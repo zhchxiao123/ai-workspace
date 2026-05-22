@@ -9,9 +9,9 @@ import struct
 import termios
 from dataclasses import dataclass
 
-from aicm.server import docker_mgr
-from aicm.server.models import Account, Project
-from aicm.server.scheduler import Scheduler
+from coderfleet.server import docker_mgr
+from coderfleet.server.models import Account, Project
+from coderfleet.server.scheduler import Scheduler
 
 
 @dataclass(frozen=True)

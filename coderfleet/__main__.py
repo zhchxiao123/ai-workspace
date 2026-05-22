@@ -1,4 +1,4 @@
-from aicm.cli import main
+from coderfleet.cli import main
 
 if __name__ == "__main__":
     main()

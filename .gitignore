@@ -1,4 +1,4 @@
-# ── 自动生成的编排文件（由 aicm.sh apply 生成）──────────
+# ── 自动生成的编排文件（由 coderfleet apply 生成）──────────
 docker-compose.yml
 
 # ── 账号认证数据（敏感凭据，绝对不能入库）────────────────
@@ -10,7 +10,8 @@ tasks/*.log
 !tasks/.gitkeep
 
 # ── 容器任务临时文件（I/O 解耦写入项目目录）──────────────
-.aicm-tasks/
+.coderfleet-tasks/
+.*-tasks/
 
 # ── 任务链会话记录 ────────────────────────────────────────
 conversations/*.json
@@ -48,6 +49,7 @@ projects.conf
 
 core
 
-.aicm-uploads
+.coderfleet-uploads
+.*-uploads
 
 server.log

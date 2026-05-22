@@ -1,5 +1,5 @@
 """
-login_cmd.py — aicm login 命令
+login_cmd.py — coderfleet login 命令
 
 交互式账号登录，通过 docker exec（已运行容器）或 docker run（临时容器）
 执行 claude login / codex login --device-auth。
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from aicm.config import load_config, parse_conf
+from coderfleet.config import load_config, parse_conf
 
 
 # ── helpers ───────────────────────────────────────────────────
@@ -88,18 +88,18 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
 
     # No running container → start a temporary one
     cfg = load_config(ws)
-    image = f"{cfg.get('IMAGE_NAME', 'ai-code-manager')}:{cfg.get('IMAGE_TAG', 'latest')}"
+    image = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
     platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
     proxy_host = cfg.get("PROXY_HOST", "host.docker.internal")
     proxy_port = cfg.get("PROXY_HTTP_PORT", "7890")
     proxy_url = f"http://{proxy_host}:{proxy_port}"
     auth_dst = "/home/byclaw/.codex" if acc_type == "codex" else "/home/byclaw/.claude"
     auth_src = str(ws / "accounts" / target)
-    login_ctr = f"aicm-login-{acc_type}-{target}"
+    login_ctr = f"coderfleet-login-{acc_type}-{target}"
 
     r = subprocess.run(["docker", "image", "inspect", image], capture_output=True)
     if r.returncode != 0:
-        raise click.ClickException(f"镜像 {image} 不存在，请先执行：aicm build")
+        raise click.ClickException(f"镜像 {image} 不存在，请先执行：coderfleet build")
 
     Path(auth_src).mkdir(parents=True, exist_ok=True)
     subprocess.run(["docker", "rm", "-f", login_ctr], capture_output=True)
@@ -121,10 +121,10 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
         "-e", "no_proxy=localhost,127.0.0.1",
         "-e", "CODEX_HOME=/home/byclaw/.codex",
         "-e", "CLAUDE_CONFIG_DIR=/home/byclaw/.claude",
-        "-e", f"AICM_ACCOUNT_NAME={target}",
-        "-e", f"AICM_ACCOUNT_TYPE={acc_type}",
-        "-e", f"AICM_RELAY_IP={proxy_host}",
-        "-e", f"AICM_RELAY_PORT={proxy_port}",
+        "-e", f"CODERFLEET_ACCOUNT_NAME={target}",
+        "-e", f"CODERFLEET_ACCOUNT_TYPE={acc_type}",
+        "-e", f"CODERFLEET_RELAY_IP={proxy_host}",
+        "-e", f"CODERFLEET_RELAY_PORT={proxy_port}",
         "-v", f"{auth_src}:{auth_dst}",
         "-w", "/workspace",
         image, cli,

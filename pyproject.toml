@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aicm"
+name = "coderfleet"
 version = "0.1.0"
-description = "AI Code Manager - Run multiple Claude Code/Codex accounts in isolated Docker containers"
+description = "CoderFleet - Run multiple Claude Code/Codex accounts in isolated Docker containers"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-aicm = "aicm.cli:main"
+coderfleet = "coderfleet.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aicm"]
+packages = ["coderfleet"]

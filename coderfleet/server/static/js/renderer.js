@@ -117,7 +117,7 @@ class ChatLogRenderer {
     for (const raw of lines) {
       const line = raw.trimEnd();
       if (state === 'before') {
-        if (line.startsWith('=== AICM Task Log ===')) { state = 'header'; headerLines = [line]; }
+        if (line.startsWith('=== CoderFleet Task Log ===')) { state = 'header'; headerLines = [line]; }
         continue;
       }
       if (state === 'header') {
@@ -142,7 +142,7 @@ class ChatLogRenderer {
   push(line) {
     if (!line.trim()) return;
 
-    if (line.startsWith('=== AICM Task Log ===')) {
+    if (line.startsWith('=== CoderFleet Task Log ===')) {
       if (this.inner && this.inner.querySelector('.chat-meta-block')) {
         return;
       }
@@ -172,7 +172,7 @@ class ChatLogRenderer {
     }
 
     // 跳过已渲染的头尾标记（初次全量加载后 SSE 会重复推）
-    if (line.startsWith('=== AICM') || line.startsWith('======')) return;
+    if (line.startsWith('=== CoderFleet') || line.startsWith('======')) return;
     if (line.startsWith('id:') || line.startsWith('account:') ||
       line.startsWith('project:') || line.startsWith('started:') ||
       line.startsWith('prompt:') || line.startsWith('container')) return;

@@ -10,4 +10,4 @@ from unittest.mock import MagicMock, patch
 # Docker to be installed in the environment.
 _mock_run = MagicMock(return_value=MagicMock(returncode=0, stdout="Docker Compose version v2.0.0", stderr=""))
 with patch("subprocess.run", _mock_run):
-    from aicm.server import docker_mgr  # noqa: F401
+    from coderfleet.server import docker_mgr  # noqa: F401
