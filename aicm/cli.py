@@ -26,6 +26,7 @@ from aicm.docker_ops import (
     cmd_build, cmd_apply, cmd_up, cmd_down,
     cmd_restart, cmd_status, cmd_logs, cmd_enter, cmd_check_proxy,
 )
+from aicm.login_cmd import cmd_login
 
 main.add_command(task_group)
 main.add_command(account_group)
@@ -39,6 +40,7 @@ main.add_command(cmd_status)
 main.add_command(cmd_logs)
 main.add_command(cmd_enter)
 main.add_command(cmd_check_proxy)
+main.add_command(cmd_login)
 
 
 @main.command("init")
