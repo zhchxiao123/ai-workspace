@@ -118,6 +118,7 @@ cp projects.conf  ~/.aicm/
 # 运行时文件
 cp Dockerfile     ~/.aicm/
 cp entrypoint.sh  ~/.aicm/
+cp -r scripts/    ~/.aicm/scripts/
 
 # 认证数据（最重要，登录态在这里）
 cp -r accounts/   ~/.aicm/accounts/

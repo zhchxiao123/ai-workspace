@@ -103,6 +103,7 @@ aicm init
 ├── projects.conf      # 项目配置
 ├── Dockerfile         # 自建统一镜像
 ├── entrypoint.sh      # 容器启动脚本
+├── scripts/           # 镜像构建时打包进容器的辅助脚本
 ├── docker-compose.yml # 自动生成，勿手动编辑
 └── accounts/          # 各账号认证数据（自动管理）
     ├── alice/
