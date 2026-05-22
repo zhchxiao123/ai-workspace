@@ -13,57 +13,72 @@
 
 **AICM 正是为此而生！**
 
-它允许你在单台宿主机上同时运行多个 **Codex CLI** 和 **Claude Code** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现“多账号额度无缝叠加、轮询提效”。
+它允许你在单台宿主机上同时运行多个 **Codex CLI** 和 **Claude Code** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
 
 ---
 
-## 目录结构
+## 安装
 
-```
-ai-workspace/
-├── aicm.sh           # 主控脚本（唯一入口）
-├── Dockerfile        # 自建统一镜像
-├── entrypoint.sh     # 容器启动脚本
-├── config.conf       # 全局配置（镜像、代理、网络）
-├── accounts.conf     # 账号配置
-├── docker-compose.yml  # 自动生成，勿手动编辑
-└── accounts/
-    ├── alice/        # 账号 alice 的认证数据（自动创建）
-    └── bob/
+### 方式一：pipx 安装（推荐，新用户）
+
+```bash
+pipx install aicm
 ```
 
-## 环境要求
+安装完成后，`aicm` 命令全局可用，工作区默认位于 `~/.aicm/`。
 
-- Docker Desktop（macOS / Linux）或 Docker Engine + docker-compose
-- Python 3（系统自带，用于生成 compose 文件）
+### 方式二：克隆仓库（开发者 / 老用户）
+
+```bash
+git clone https://github.com/your-org/aicm.git
+cd aicm
+pip install -e .       # 可编辑安装，aicm 命令指向当前代码
+# 或者直接使用原有脚本（向后兼容）
+./aicm.sh <子命令>
+```
+
+> **向后兼容**：`./aicm.sh` 已改为薄包装层，将所有命令透传给 Python CLI，原有工作流完全不变。克隆目录自动作为工作区，无需额外配置。
+
+### 环境要求
+
+- Python 3.10+
+- Docker Desktop（macOS / Linux）或 Docker Engine + Compose V2
 - 宿主机已运行代理软件（Clash / v2ray 等），并开启 allow-lan
 
 ---
 
 ## 快速开始
 
-### 1. 赋权
+### 1. 初始化工作区
 
 ```bash
-chmod +x aicm.sh entrypoint.sh
+aicm init
 ```
 
-### 2. 配置代理端口
+交互式向导将引导你：
+- 确认工作区目录（默认 `~/.aicm/`）
+- 填写宿主机代理端口（HTTP / SOCKS5）
+- 设置 Docker 镜像名称和构建平台
 
-编辑 `config.conf`，填入你的代理工具实际端口：
+初始化完成后，工作区结构如下：
 
-```conf
-PROXY_HTTP_PORT=7890    # Clash HTTP 端口
-PROXY_SOCKS5_PORT=7891  # Clash SOCKS5 端口
+```
+~/.aicm/
+├── config.conf        # 全局配置（镜像、代理、网络）
+├── accounts.conf      # 账号配置
+├── projects.conf      # 项目配置
+├── Dockerfile         # 自建统一镜像
+├── entrypoint.sh      # 容器启动脚本
+├── docker-compose.yml # 自动生成，勿手动编辑
+└── accounts/          # 各账号认证数据（自动管理）
+    ├── alice/
+    └── bob/
 ```
 
-> **重要**：宿主机代理必须监听 `0.0.0.0`（不能只监听 127.0.0.1）。
-> Clash 配置里设置 `allow-lan: true` 即可。
-
-### 3. 构建镜像
+### 2. 构建镜像
 
 ```bash
-./aicm.sh build
+aicm build
 ```
 
 首次构建约需 5~10 分钟，镜像包含：
@@ -75,40 +90,40 @@ PROXY_SOCKS5_PORT=7891  # Clash SOCKS5 端口
 - Codex CLI（`@openai/codex`）
 - Claude Code（`@anthropic-ai/claude-code`）
 
-### 4. 添加账号
+### 3. 添加账号与项目
 
 ```bash
 # Codex 账号
-./aicm.sh account add alice TYPE=codex
-./aicm.sh project add app-a alice ~/projects/app-a
+aicm account add alice TYPE=codex
+aicm project add app-a alice ~/projects/app-a
 
 # Claude Code 账号
-./aicm.sh account add bob TYPE=claude
-./aicm.sh project add app-b bob ~/projects/app-b
+aicm account add bob TYPE=claude
+aicm project add app-b bob ~/projects/app-b
 ```
 
-### 5. 生成配置并启动
+### 4. 生成配置并启动容器
 
 ```bash
-./aicm.sh apply
+aicm apply
 ```
 
-### 6. 登录账号
+### 5. 登录账号
 
 ```bash
-./aicm.sh login alice
+aicm login alice
 ```
 
-每个账号会输出一个授权 URL，在宿主机浏览器打开 → 完成授权 → 复制 code → 粘贴回终端。
+CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复制 code → 粘贴回终端。
 
-如果账号容器还没有启动，`login` 会自动启动一个临时认证容器，只挂载 `accounts/<账号名>` 目录；登录结束后容器删除，认证文件会保留。
+如果账号容器还未启动，`login` 会自动拉起一个临时认证容器；登录结束后容器删除，认证文件保留在 `accounts/<账号名>/`。
 
-### 7. 进入容器工作
+### 6. 进入容器工作
 
 ```bash
 # 打开多个终端
-./aicm.sh enter app-a   # 进入 app-a 项目容器（使用 Codex 账号）
-./aicm.sh enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号）
+aicm enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice）
+aicm enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
 ```
 
 进入后使用对应 CLI：
@@ -121,68 +136,92 @@ codex "帮我实现用户认证模块"
 claude "帮我重构这个函数"
 ```
 
-### 8. 启动调度服务与 Web 交互控制台
+### 7. 启动调度服务与 Web 控制台
 
-除了在容器内以交互方式工作外，AICM 还提供了一个 **FastAPI 任务调度服务与 Web 聊天控制台**，使用户能够在宿主机直接触发和监控隔离容器内的异步开发任务。
-
-运行以下命令启动服务：
+除了交互式进入容器，AICM 还提供 **FastAPI 任务调度服务与 Web 聊天控制台**，可在宿主机直接触发并监控容器内的异步开发任务。
 
 ```bash
-./aicm.sh server
+aicm server
 ```
 
-启动后，可在宿主机浏览器中访问：
-* **Web UI 对话控制台**：[http://localhost:8765](http://localhost:8765)（提供多任务聊天界面、任务日志流式追踪、以及 WebSocket 实现的容器直连 Web 终端）
-* **API 交互式文档**：[http://localhost:8765/docs](http://localhost:8765/docs)
+启动后可访问：
+- **Web UI 对话控制台**：[http://localhost:8765](http://localhost:8765)（多任务聊天界面、日志流式追踪、WebSocket 容器终端）
+- **API 交互式文档**：[http://localhost:8765/docs](http://localhost:8765/docs)
 
-### 9. 命令行异步任务 (Task)
+### 8. 命令行异步任务
 
-在服务运行期间，你也可以在宿主机直接通过命令行提交后台异步任务，任务结果与对话链会自动被调度器维护和续接：
+服务运行期间，可在宿主机直接提交后台任务：
 
 ```bash
-# 提交一个一次性异步开发任务（指定项目）
-./aicm.sh task run "在 auth.py 中添加 JWT 生成逻辑" --project app-b
+# 一次性开发任务
+aicm task run "在 auth.py 中添加 JWT 生成逻辑" --project app-b
 
-# 提交全自动模式任务（跳过 CLI 的确认提问，直接接受修改）
-./aicm.sh task run "运行并修复所有 lint 错误" --project app-b --auto
+# 全自动模式（跳过 CLI 权限确认）
+aicm task run "运行并修复所有 lint 错误" --project app-b --auto
 
-# 开启一个新的对话链（维持上下文）
-./aicm.sh task run "开始实现支付接口" --project app-b --new-chain 支付功能
+# 开启新的对话链（维持上下文）
+aicm task run "开始实现支付接口" --project app-b --new-chain 支付功能
 
-# 续接已有的对话上下文
-./aicm.sh task run "在刚才的支付接口上增加退款支持" --conversation <任务链ID>
+# 续接已有对话上下文
+aicm task run "在刚才的支付接口上增加退款支持" --conversation <任务链ID>
 
-# 查看历史任务列表与实时流日志追踪
-./aicm.sh task list
-./aicm.sh task logs <任务ID> -f
+# 查看任务列表与实时日志
+aicm task list
+aicm task logs <任务ID> -f
 ```
 
 ---
 
-
 ## 命令速查
+
+### 生命周期
 
 | 命令 | 说明 |
 |------|------|
-| `./aicm.sh build` | 构建自定义镜像 |
-| `./aicm.sh account add <名称> TYPE=codex\|claude [AUTH=login\|env] [ENV_FILE=路径] [PROXY=relay\|off]` | 添加账号 |
-| `./aicm.sh account remove <名称>` | 删除账号 |
-| `./aicm.sh account list` | 列出所有账号及状态 |
-| `./aicm.sh project add <名称> <账号名> <项目路径>` | 添加项目 |
-| `./aicm.sh project remove <名称>` | 删除项目 |
-| `./aicm.sh project list` | 列出所有项目 |
-| `./aicm.sh apply` | 重新生成配置并重启所有容器 |
-| `./aicm.sh up` | 启动所有容器 |
-| `./aicm.sh down` | 停止所有容器 |
-| `./aicm.sh restart` | 重启所有容器 |
-| `./aicm.sh status` | 查看容器和镜像状态 |
-| `./aicm.sh logs [项目名]` | 查看日志（不加参数看全部） |
-| `./aicm.sh enter <项目名>` | 进入项目容器 shell |
-| `./aicm.sh login <账号名\|all>` | 登录账号并持久化认证文件 |
-| `./aicm.sh check-proxy` | 验证代理隔离是否生效 |
-| `./aicm.sh task <子命令>` | 在宿主机发起、查看、管理异步任务（具体子命令运行 `./aicm.sh task` 查看） |
-| `./aicm.sh server` | 启动 FastAPI 调度服务及 Web UI 界面（默认端口 8765） |
+| `aicm init` | 交互式初始化工作区（首次使用） |
+| `aicm build` | 构建自定义 Docker 镜像 |
+| `aicm apply` | 重新生成 docker-compose.yml 并重启所有容器 |
+| `aicm up` | 启动所有容器 |
+| `aicm down` | 停止所有容器 |
+| `aicm restart` | 重启所有容器 |
+| `aicm status` | 查看容器、代理中继和镜像状态 |
+| `aicm server [--port N]` | 启动 FastAPI 调度服务及 Web UI（默认端口 8765） |
 
+### 账号管理
+
+| 命令 | 说明 |
+|------|------|
+| `aicm account add <名称> TYPE=codex\|claude [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `aicm account remove <名称>` | 删除账号（自动停止关联容器） |
+| `aicm account list` | 列出所有账号及运行状态 |
+| `aicm login <账号名\|all>` | 登录账号并持久化认证文件 |
+
+### 项目管理
+
+| 命令 | 说明 |
+|------|------|
+| `aicm project add <名称> <账号名> <项目路径>` | 添加项目 |
+| `aicm project remove <名称>` | 删除项目 |
+| `aicm project list` | 列出所有项目 |
+
+### 容器操作
+
+| 命令 | 说明 |
+|------|------|
+| `aicm enter <项目名>` | 进入项目容器 shell（TTY 直连） |
+| `aicm logs [项目名]` | 查看日志（不加参数看全部容器） |
+| `aicm check-proxy` | 验证代理隔离及出口 IP |
+
+### 任务管理（需先启动 server）
+
+| 命令 | 说明 |
+|------|------|
+| `aicm task run "<prompt>" [--project 名称] [--auto] [--at ISO时间]` | 提交异步任务 |
+| `aicm task list [--status 状态] [--account 账号]` | 查看任务列表 |
+| `aicm task status <任务ID>` | 查看任务详情 |
+| `aicm task logs <任务ID> [-f]` | 查看任务日志（`-f` 实时跟踪） |
+| `aicm task kill <任务ID>` | 终止任务 |
+| `aicm task clean [N]` | 清理历史记录（保留最近 N 条，默认 30） |
 
 ---
 
@@ -190,26 +229,27 @@ claude "帮我重构这个函数"
 
 ### config.conf
 
+由 `aicm init` 自动生成，修改后执行 `aicm apply` 生效。
+
 ```conf
 # 自建镜像名称和标签
 IMAGE_NAME=ai-code-manager
 IMAGE_TAG=latest
+BUILD_PLATFORM=linux/amd64   # Apple Silicon 改为 linux/arm64
 
 # 宿主机代理（容器通过 host.docker.internal 访问）
 PROXY_HOST=host.docker.internal
-PROXY_HTTP_PORT=7890      # HTTP 代理端口（优先）
-PROXY_SOCKS5_PORT=7891    # SOCKS5 端口（备用）
+PROXY_HTTP_PORT=7890
+PROXY_SOCKS5_PORT=7891
 
 # 内部网络
-INTERNAL_SUBNET=172.21.0.0/16   # 隔离网络网段
-RELAY_IP=172.21.0.2             # 代理中继容器固定 IP
-RELAY_LISTEN_PORT=7890          # 中继对内网监听端口
+INTERNAL_SUBNET=172.21.0.0/16
+RELAY_IP=172.21.0.2
+RELAY_LISTEN_PORT=7890
 
-# 代理中继镜像（gost 支持 HTTP/SOCKS5 协议转换）
+# 代理中继镜像
 RELAY_IMAGE=gogost/gost:3
 ```
-
-修改 `config.conf` 后执行 `./aicm.sh apply` 生效。
 
 ### accounts.conf
 
@@ -227,31 +267,25 @@ NAME=local       TYPE=claude  PROXY=off
 |------|------|------|
 | `NAME` | 是 | 账号名，只允许字母/数字/连字符 |
 | `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code |
-| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code 可用 `env` 通过环境变量认证 |
-| `ENV_FILE` | 否 | 传给 Docker Compose 的环境变量文件；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
-| `PROXY` | 否 | 默认 `relay`，该账号下项目使用代理中继；`off` 表示该账号下项目不注入代理变量，并连接普通外网网络 |
+| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code 可用 `env` 通过 API Key 认证 |
+| `ENV_FILE` | 否 | Docker Compose env_file 路径；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
+| `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量，连接普通网络 |
 
-`AUTH=env` 目前用于 Claude Code API key 场景。可以先添加账号，后续再编辑默认 env 文件：
+`AUTH=env` 用于 Claude Code API key 场景：
 
 ```bash
-./aicm.sh account add claude-api TYPE=claude AUTH=env
-# 默认配置文件：./accounts/claude-api/env
+aicm account add claude-api TYPE=claude --auth env
+# 然后编辑 ~/.aicm/accounts/claude-api/env
 ```
 
-示例 `accounts/claude-api/env`：
+示例 env 文件：
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
-# 可选：通过网关或代理转发 Claude API
 # ANTHROPIC_BASE_URL=https://api.anthropic.com
-# ANTHROPIC_MODEL=claude-sonnet-4-5
 ```
 
-注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`，即使该账号也有订阅登录态，仍可能走 API 计费。执行 `/status` 可确认当前认证方式。
-
-修改 `accounts.conf` 后执行 `./aicm.sh apply` 生效。
-
-`PROXY=off` 适合只访问内网、局域网服务，或希望某个账号关联的项目完全不经过代理的场景。使用该账号的项目不会等待 `aicm-proxy-relay`，也不会设置 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 等变量。
+> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`，`login all` 会自动跳过 `AUTH=env` 账号。
 
 ### projects.conf
 
@@ -259,7 +293,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 # 格式：NAME=<名称>  ACCOUNT=<账号名>  PATH=<项目路径>
 NAME=my-app      ACCOUNT=alice  PATH=~/projects/my-app
 NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
-NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 ```
 
 字段说明：
@@ -267,10 +300,8 @@ NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `NAME` | 是 | 项目名，只允许字母/数字/连字符 |
-| `ACCOUNT` | 是 | 运行这个项目时使用的账号名 |
-| `PATH` | 是 | 挂载进容器 `/workspace/<项目名>` 的宿主机项目目录，支持 `~` |
-
-修改 `projects.conf` 后执行 `./aicm.sh apply` 生效。
+| `ACCOUNT` | 是 | 使用的账号名 |
+| `PATH` | 是 | 挂载进容器 `/workspace` 的宿主机目录，支持 `~` |
 
 ---
 
@@ -282,7 +313,7 @@ NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 [codex-carol]  ──┘         │
                             ▼
                     [aicm-proxy-relay]（gost）
-                            │  HTTP 优先，SOCKS5 备用
+                            │  HTTP → 宿主机代理
                             ▼
                     宿主机代理（Clash/v2ray）
                             │
@@ -291,47 +322,74 @@ NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 ```
 
 关键设计：
-
 - `intnet` 设置 `internal: true`，Docker 不添加公网路由，容器物理上无法直连公网
 - 所有出站流量必须经过 `aicm-proxy-relay` 才能到达公网
-- gost 对内网提供统一 HTTP 代理接口，上游优先 HTTP，自动 fallback SOCKS5
+- `PROXY=off` 账号的项目接入普通外网网络，不经过中继（适合内网服务）
 
 验证代理隔离：
 
 ```bash
-./aicm.sh check-proxy
+aicm check-proxy
 ```
 
 正常输出：
 
 ```
 ── 代理连通性（应全部通）
-  codex-alice  → proxy-relay: ✓ 通
-  claude-bob   → proxy-relay: ✓ 通
+  claude-bob   → proxy-relay: 通
+  codex-alice  → proxy-relay: 通
 
 ── 直连公网封锁（应全部封锁）
-  codex-alice  → 8.8.8.8:443: ✓ 已封锁
-  claude-bob   → 8.8.8.8:443: ✓ 已封锁
+  claude-bob   → 8.8.8.8:443: 已封锁
+  codex-alice  → 8.8.8.8:443: 已封锁
 
 ── 代理出口 IP
-  codex-alice  出口 IP: x.x.x.x
   claude-bob   出口 IP: x.x.x.x
+  codex-alice  出口 IP: x.x.x.x
 ```
 
 ---
 
 ## 认证机制
 
-两种 CLI 的认证目录不同，挂载方式也不同：
+两种 CLI 的认证目录挂载方式：
 
-| CLI | 认证目录（容器内） | 环境变量 | 本地存储位置 |
-|-----|--------------------|----------|-------------|
-| Codex | `/home/byclaw/.codex` | `CODEX_HOME` | `accounts/<名称>/` |
-| Claude Code | `/home/byclaw/.claude` | `CLAUDE_CONFIG_DIR` | `accounts/<名称>/` |
-| Claude Code API key | 同上 | `ANTHROPIC_API_KEY` 等 | `ENV_FILE` 指定的文件 |
+| CLI | 认证目录（容器内） | 本地存储 |
+|-----|--------------------|----------|
+| Codex | `/home/byclaw/.codex` | `accounts/<名称>/` |
+| Claude Code | `/home/byclaw/.claude` | `accounts/<名称>/` |
+| Claude Code API key | 同上 | `ENV_FILE` 指定文件 |
 
-每个账号的认证数据独立存储在 `accounts/<名称>/` 目录中，容器删除重建后无需重新登录。
-使用 `AUTH=env` 的 Claude Code 账号不需要执行 `./aicm.sh login`，`login all` 会自动跳过这类账号。
+每个账号的认证数据独立存储，容器删除重建后无需重新登录。
+
+---
+
+## 项目结构
+
+```
+aicm/                      # Python 包
+├── cli.py                 # Click 命令组入口
+├── config.py              # 工作区路径解析、.conf 文件读写
+├── config_cmds.py         # account / project 子命令
+├── compose.py             # docker-compose.yml 生成器（pyyaml）
+├── docker_ops.py          # build / apply / up / down / enter 等命令
+├── login_cmd.py           # aicm login（TTY 直通，os.execvp）
+├── task_cmds.py           # aicm task 子命令（HTTP 调用 server）
+├── init_wizard.py         # aicm init 交互式向导
+├── data/                  # 打包进 wheel 的资源文件
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   └── *.conf.example
+└── server/                # FastAPI 调度服务
+    ├── main.py            # REST API + WebSocket 终端
+    ├── scheduler.py       # 任务队列与执行引擎
+    ├── models.py          # Pydantic 数据模型
+    ├── docker_mgr.py      # Docker exec 封装
+    ├── terminal.py        # WebSocket ↔ docker exec -it 桥接
+    └── static/            # Web UI（原生 JS，无构建步骤）
+aicm.sh                    # 薄包装层，透传给 Python CLI（向后兼容）
+pyproject.toml             # pip/pipx 打包配置
+```
 
 ---
 
@@ -339,7 +397,7 @@ NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 
 **Q: 构建镜像时速度很慢怎么办？**
 
-镜像构建需要下载 Node.js、Python 以及两个 CLI 包，确保代理正常即可。构建时 Docker 也会使用宿主机的代理（需在 Docker Desktop 设置中配置代理）。
+镜像需要下载 Node.js、Python 以及两个 CLI 包，确保宿主机代理正常且 Docker Desktop 已配置代理即可。
 
 **Q: 登录时浏览器无法弹出？**
 
@@ -347,34 +405,44 @@ NAME=local-app   ACCOUNT=local  PATH=~/projects/local-app
 
 **Q: macOS Apple Silicon（M 系列芯片）能用吗？**
 
-可以，镜像构建时指定 `linux/amd64` 平台，Docker Desktop 会通过 Rosetta 模拟运行。如需原生 arm64 支持，修改 `config.conf` 中的 `BUILD_PLATFORM=linux/arm64`（需确认 CLI 支持该平台）。
+可以，`aicm init` 会自动检测并默认选择 `linux/arm64`。若需 amd64 模拟，修改 `config.conf` 中的 `BUILD_PLATFORM=linux/amd64` 后重新 `aicm build`。
 
 **Q: 删除账号后认证数据还在吗？**
 
-`./aicm.sh account remove <名称>` 只从 `accounts.conf` 移除配置，`accounts/<名称>/` 目录保留。需要彻底清除时手动执行：
+`aicm account remove <名称>` 只从 `accounts.conf` 移除配置，`accounts/<名称>/` 目录保留。需要彻底清除时手动执行：
 
 ```bash
-rm -rf accounts/<名称>
+rm -rf ~/.aicm/accounts/<名称>
 ```
 
 **Q: 如何更新 CLI 版本？**
 
-修改 Dockerfile 中对应的 `npm install -g` 命令（加版本号），然后重新构建：
+修改工作区 `Dockerfile` 中对应的 `npm install -g` 命令，然后重新构建：
 
 ```bash
-./aicm.sh build
-./aicm.sh restart
+aicm build
+aicm restart
+```
+
+**Q: 老用户如何从 aicm.sh 迁移？**
+
+无需迁移，`./aicm.sh` 已更新为薄包装层，自动透传命令给 Python CLI。也可直接安装后用 `aicm` 命令，两者完全等价：
+
+```bash
+pip install -e .           # 在仓库目录中
+export AICM_WORKSPACE=/path/to/your/workspace   # 指向已有工作区
+aicm status
 ```
 
 **Q: 多个账号能同时工作吗？**
 
-可以，每个账号是独立容器，互不影响。打开多个终端窗口，分别 `./aicm.sh enter <项目名>` 进入即可。
+可以，每个账号是独立容器，互不影响。打开多个终端窗口，分别 `aicm enter <项目名>` 进入即可。
 
 ---
 
 ## 自定义镜像
 
-如需在镜像中添加更多工具，编辑 `Dockerfile`，然后重新构建：
+如需在镜像中添加更多工具，编辑工作区的 `Dockerfile`（路径：`~/.aicm/Dockerfile`），然后重新构建：
 
 ```dockerfile
 # 示例：添加 Java
@@ -382,23 +450,6 @@ RUN apt-get update && apt-get install -y openjdk-21-jdk
 ```
 
 ```bash
-./aicm.sh build
-./aicm.sh restart
+aicm build
+aicm restart
 ```
-
----
-
-## 项目文件说明
-
-| 文件 | 说明 |
-|------|------|
-| `aicm.sh` | 主控脚本，所有操作的入口 |
-| `Dockerfile` | 自建镜像定义，修改后需重新 build |
-| `entrypoint.sh` | 容器启动脚本，负责代理等待和目录初始化 |
-| `config.conf` | 全局配置，修改后需 apply |
-| `accounts.conf` | 账号配置，修改后需 apply |
-| `docker-compose.yml` | 自动生成，**不要手动编辑** |
-| `accounts/` | 各账号认证数据目录（自动管理） |
-| `server/` | FastAPI 后台调度服务、WebSocket 终端以及 Web UI 对话界面的源码与资源 |
-| `tasks/` | 自动创建，存储后台异步任务的状态 JSON 与对应执行日志 |
-
