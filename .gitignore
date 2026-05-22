@@ -45,3 +45,7 @@ projects.conf
 *.mp4
 
 .claude/worktrees
+
+core
+
+.aicm-uploads
