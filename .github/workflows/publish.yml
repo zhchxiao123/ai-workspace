@@ -35,13 +35,15 @@ jobs:
           python-version: "3.12"
 
       - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           python - <<'PY'
           import os
           import tomllib
           from pathlib import Path
 
-          tag = os.environ["GITHUB_REF_NAME"]
+          tag = os.environ["RELEASE_TAG"]
           version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
           expected = f"v{version}"
           if tag not in {version, expected}:
