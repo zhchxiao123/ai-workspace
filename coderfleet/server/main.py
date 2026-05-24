@@ -37,14 +37,21 @@ from coderfleet.server.models import (
     Conversation,
     ConversationResponse,
     ConversationStatus,
+    LogicalProject,
+    Pipeline,
+    PipelineResponse,
     ProjectResponse,
     Task,
     TaskCreateRequest,
     TaskResponse,
     TaskStatus,
+    TemplateCreateRequest,
+    TemplateRunRequest,
+    WorkflowTemplateResponse,
 )
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
+from coderfleet.server.push_manager import PushManager
 
 
 class ConversationCreateRequest(BaseModel):
@@ -56,6 +63,7 @@ class ConversationCreateRequest(BaseModel):
 
 WORKSPACE_DIR = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
 scheduler     = Scheduler(WORKSPACE_DIR)
+push_manager  = PushManager(WORKSPACE_DIR)
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -79,6 +87,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.on_event("startup")
 async def reconcile_tasks_on_startup():
+    scheduler._push_manager = push_manager
     await scheduler.reconcile_running_tasks()
     scheduler.start_scheduling_loop()
 
@@ -89,6 +98,47 @@ async def index():
     if not html.exists():
         return PlainTextResponse("Web UI not found.", status_code=404)
     return FileResponse(html)
+
+
+@app.get("/m", include_in_schema=False)
+async def mobile():
+    html = STATIC_DIR / "mobile.html"
+    if not html.exists():
+        return PlainTextResponse("Mobile UI not found.", status_code=404)
+    return FileResponse(html)
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    return FileResponse(STATIC_DIR / "sw.js", media_type="application/javascript")
+
+
+# ── Web Push ───────────────────────────────────────────────
+
+class PushSubscribeRequest(BaseModel):
+    subscription: dict
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
+@app.get("/api/push/vapid-public-key")
+async def get_vapid_public_key():
+    key = push_manager.public_key_b64
+    if not key:
+        raise HTTPException(503, "Web Push 不可用（pywebpush 未安装）")
+    return {"publicKey": key}
+
+
+@app.post("/api/push/subscribe", status_code=204)
+async def push_subscribe(req: PushSubscribeRequest):
+    push_manager.add_subscription(req.subscription)
+
+
+@app.post("/api/push/unsubscribe", status_code=204)
+async def push_unsubscribe(req: PushUnsubscribeRequest):
+    push_manager.remove_subscription(req.endpoint)
 
 
 # ── 健康检查 ──────────────────────────────────────────────
@@ -131,6 +181,9 @@ async def create_task(req: TaskCreateRequest):
             project_name      = req.project_name,
             images            = req.images,
             execute_at        = req.execute_at,
+            parent_task_id = req.parent_task_id,
+            depends_on     = req.depends_on,
+            pipeline_id    = req.pipeline_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -531,6 +584,160 @@ async def stream_logs(
 async def clean_tasks(keep: int = Query(30, description="保留最近 N 条记录")):
     cleaned = scheduler.clean_tasks(keep=keep)
     return {"cleaned": cleaned, "kept": keep}
+
+
+# ── 派生子任务 ────────────────────────────────────────────
+
+class SubtaskCreateRequest(BaseModel):
+    prompt:          str
+    project_name:    str
+    auto:            bool = True
+    wait_for_parent: bool = True
+    pipeline_id:     Optional[str] = None
+    images:          list[str] = []
+
+
+@app.post("/api/tasks/{task_id}/subtasks", response_model=TaskResponse, status_code=201)
+async def create_subtask(task_id: str, req: SubtaskCreateRequest):
+    try:
+        task = await scheduler.spawn_subtask(
+            parent_task_id  = task_id,
+            prompt          = req.prompt,
+            project_name    = req.project_name,
+            auto            = req.auto,
+            wait_for_parent = req.wait_for_parent,
+            pipeline_id     = req.pipeline_id,
+            images          = req.images,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return TaskResponse.from_task(task)
+
+
+# ── 逻辑项目（按路径分组） ────────────────────────────────
+
+@app.get("/api/projects/logical", response_model=list[LogicalProject])
+async def list_logical_projects():
+    return scheduler.get_logical_projects()
+
+
+# ── Pipeline CRUD ─────────────────────────────────────────
+
+class PipelineCreateRequest(BaseModel):
+    name:         str
+    project_name: str = ""
+    task_ids:     list[str] = []
+
+
+class PipelineAddTaskRequest(BaseModel):
+    task_id: str
+
+
+@app.get("/api/pipelines", response_model=list[PipelineResponse])
+async def list_pipelines():
+    pipelines = scheduler.list_pipelines()
+    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    return [
+        PipelineResponse.from_pipeline(p, [all_tasks[tid] for tid in p.task_ids if tid in all_tasks])
+        for p in pipelines
+    ]
+
+
+@app.post("/api/pipelines", response_model=PipelineResponse, status_code=201)
+async def create_pipeline(req: PipelineCreateRequest):
+    pipeline = scheduler.create_pipeline(
+        name         = req.name,
+        task_ids     = req.task_ids,
+        project_name = req.project_name,
+    )
+    return PipelineResponse.from_pipeline(pipeline)
+
+
+@app.get("/api/pipelines/{pipeline_id}", response_model=PipelineResponse)
+async def get_pipeline(pipeline_id: str):
+    pipeline = scheduler.get_pipeline(pipeline_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"工作流 '{pipeline_id}' 不存在")
+    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
+    return PipelineResponse.from_pipeline(pipeline, tasks)
+
+
+@app.post("/api/pipelines/{pipeline_id}/tasks", response_model=PipelineResponse)
+async def add_task_to_pipeline(pipeline_id: str, req: PipelineAddTaskRequest):
+    try:
+        pipeline = scheduler.add_task_to_pipeline(pipeline_id, req.task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
+    return PipelineResponse.from_pipeline(pipeline, tasks)
+
+
+@app.delete("/api/pipelines/{pipeline_id}", status_code=204)
+async def delete_pipeline(pipeline_id: str):
+    try:
+        scheduler.delete_pipeline(pipeline_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════
+#  工作流模板
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/workflow-templates", response_model=list[WorkflowTemplateResponse])
+async def list_workflow_templates():
+    return [WorkflowTemplateResponse.from_template(t) for t in scheduler.list_templates()]
+
+
+@app.post("/api/workflow-templates", response_model=WorkflowTemplateResponse, status_code=201)
+async def create_workflow_template(req: TemplateCreateRequest):
+    tpl = scheduler.create_template(req.name, req.description, req.nodes)
+    return WorkflowTemplateResponse.from_template(tpl)
+
+
+@app.get("/api/workflow-templates/{template_id}", response_model=WorkflowTemplateResponse)
+async def get_workflow_template(template_id: str):
+    tpl = scheduler.get_template(template_id)
+    if tpl is None:
+        raise HTTPException(status_code=404, detail=f"模板 '{template_id}' 不存在")
+    return WorkflowTemplateResponse.from_template(tpl)
+
+
+@app.put("/api/workflow-templates/{template_id}", response_model=WorkflowTemplateResponse)
+async def update_workflow_template(template_id: str, req: TemplateCreateRequest):
+    try:
+        tpl = scheduler.update_template(template_id, req.name, req.description, req.nodes)
+        return WorkflowTemplateResponse.from_template(tpl)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/workflow-templates/{template_id}", status_code=204)
+async def delete_workflow_template(template_id: str):
+    try:
+        scheduler.delete_template(template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/workflow-templates/{template_id}/run", response_model=PipelineResponse, status_code=201)
+async def run_workflow_template(template_id: str, req: TemplateRunRequest):
+    try:
+        pipeline = await scheduler.run_template(
+            template_id     = template_id,
+            input_str       = req.input,
+            project_map     = req.project_map,
+            default_project = req.default_project,
+        )
+        all_tasks = {t.id: t for t in scheduler.list_tasks()}
+        tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
+        return PipelineResponse.from_pipeline(pipeline, tasks)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── 启动入口 ──────────────────────────────────────────────

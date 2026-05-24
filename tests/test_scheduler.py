@@ -20,6 +20,7 @@ from coderfleet.server.models import (
     Project,
     Task,
     TaskStatus,
+    TemplateNode,
 )
 from coderfleet.server.scheduler import Scheduler
 
@@ -116,6 +117,29 @@ def test_build_cli_command_uses_headless_claude_permission_modes() -> None:
 
     assert "claude -p --permission-mode acceptEdits" in command
     assert "claude -p --dangerously-skip-permissions" in auto_command
+
+
+def test_build_cli_command_uses_headless_opencode_run() -> None:
+    command = Scheduler.build_cli_command(
+        AccountType.opencode,
+        "fix tests",
+        auto=False,
+        task_id="task-5",
+    )
+    auto_command = Scheduler.build_cli_command(
+        AccountType.opencode,
+        "fix tests",
+        auto=True,
+        task_id="task-5",
+        native_session_id="ses_123",
+        images=["/workspace/a.png"],
+    )
+
+    _assert_detached_command(command, "task-5")
+    assert "opencode run --format json" in command
+    assert "fix tests" in command
+    assert "--dangerously-skip-permissions" not in command
+    assert "opencode run --format json --dangerously-skip-permissions --session ses_123 --file /workspace/a.png" in auto_command
 
 
 def test_build_usage_status_command_for_codex() -> None:
@@ -240,6 +264,13 @@ def test_extract_native_session_id_from_claude_json() -> None:
     ) == "session-abc"
 
 
+def test_extract_native_session_id_from_opencode_json() -> None:
+    assert Scheduler.extract_native_session_id(
+        AccountType.opencode,
+        '{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}',
+    ) == "ses_abc"
+
+
 def test_update_conversation_native_session_id(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
     conv = Conversation(
@@ -257,6 +288,88 @@ def test_update_conversation_native_session_id(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.native_session_id == "session-abc"
     assert loaded.last_task_id == "task-1"
+
+
+def test_run_template_resolves_default_fixed_and_runtime_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    repo_default = tmp_path / "default"
+    repo_fixed = tmp_path / "fixed"
+    repo_role = tmp_path / "role"
+    for repo in [repo_default, repo_fixed, repo_role]:
+        repo.mkdir()
+
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [
+            Account(name="acc-default", type=AccountType.codex),
+            Account(name="acc-fixed", type=AccountType.claude),
+            Account(name="acc-role", type=AccountType.codex),
+        ],
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_projects",
+        lambda: [
+            Project(name="default-proj", account="acc-default", path=str(repo_default)),
+            Project(name="fixed-proj", account="acc-fixed", path=str(repo_fixed)),
+            Project(name="role-proj", account="acc-role", path=str(repo_role)),
+        ],
+    )
+    monkeypatch.setattr(scheduler_mod.docker_mgr, "is_container_running", lambda _name: True)
+
+    tpl = sched.create_template(
+        "release",
+        "",
+        [
+            TemplateNode(node_id="plan", name="Plan", prompt_tpl="plan {{input}}", target_mode="default"),
+            TemplateNode(node_id="build", name="Build", prompt_tpl="build", target_mode="fixed_project", project_name="fixed-proj", depends_on=["plan"]),
+            TemplateNode(node_id="review", name="Review", prompt_tpl="review", target_mode="runtime_role", project_role="reviewer", depends_on=["build"]),
+        ],
+    )
+
+    pipeline = asyncio.run(
+        sched.run_template(
+            tpl.id,
+            "login",
+            project_map={"reviewer": "role-proj"},
+            default_project="default-proj",
+        )
+    )
+
+    assert len(pipeline.task_ids) == 3
+    assert [run.node_id for run in pipeline.node_runs] == ["plan", "build", "review"]
+    assert [run.resolved_project for run in pipeline.node_runs] == ["default-proj", "fixed-proj", "role-proj"]
+    tasks = {task.id: task for task in sched.list_tasks()}
+    build_task = tasks[pipeline.node_runs[1].task_id]
+    review_task = tasks[pipeline.node_runs[2].task_id]
+    assert build_task.depends_on == [pipeline.node_runs[0].task_id]
+    assert review_task.depends_on == [pipeline.node_runs[1].task_id]
+
+
+def test_run_template_validates_runtime_target_before_creating_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(sched, "get_accounts", lambda: [Account(name="acc", type=AccountType.codex)])
+    monkeypatch.setattr(sched, "get_projects", lambda: [Project(name="repo", account="acc", path=str(repo))])
+
+    tpl = sched.create_template(
+        "needs role",
+        "",
+        [TemplateNode(node_id="review", name="Review", prompt_tpl="review", target_mode="runtime_role", project_role="reviewer")],
+    )
+
+    with pytest.raises(ValueError, match="未指定执行项目"):
+        asyncio.run(sched.run_template(tpl.id, "input", project_map={}, default_project=""))
+
+    assert sched.list_pipelines() == []
 
 
 def test_conversation_with_running_task_rejects_followup(tmp_path: Path) -> None:
@@ -381,6 +494,25 @@ def test_accounts_parse_env_auth_and_env_file(tmp_path: Path) -> None:
             type=AccountType.claude,
             auth=AccountAuth.env,
             env_file="./accounts/api-claude/env",
+        )
+    ]
+
+
+def test_accounts_parse_opencode_env_auth(tmp_path: Path) -> None:
+    (tmp_path / "accounts.conf").write_text(
+        "NAME=api-opencode TYPE=opencode AUTH=env\n",
+        encoding="utf-8",
+    )
+    sched = Scheduler(tmp_path)
+
+    accounts = sched.get_accounts()
+
+    assert accounts == [
+        Account(
+            name="api-opencode",
+            type=AccountType.opencode,
+            auth=AccountAuth.env,
+            env_file="./accounts/api-opencode/env",
         )
     ]
 

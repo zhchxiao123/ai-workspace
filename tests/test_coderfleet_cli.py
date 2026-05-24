@@ -67,6 +67,31 @@ def test_apply_injects_env_file_for_claude_env_account(tmp_path: Path) -> None:
     assert "- ./accounts/api-claude/env" in compose
 
 
+def test_apply_mounts_opencode_auth_dir(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-opencode TYPE=opencode AUTH=env ENV_FILE=./accounts/api-opencode/env\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-opencode PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "opencode-project-repo:" in compose
+    assert "container_name: opencode-repo" in compose
+    assert "./accounts/api-opencode:/home/byclaw/.opencode" in compose
+    assert "XDG_DATA_HOME: /home/byclaw/.opencode/data" in compose
+    assert "XDG_CONFIG_HOME: /home/byclaw/.opencode/config" in compose
+    assert "XDG_STATE_HOME: /home/byclaw/.opencode/state" in compose
+    assert "XDG_CACHE_HOME: /home/byclaw/.opencode/cache" in compose
+    assert "- ./accounts/api-opencode/env" in compose
+
+
 def test_apply_disables_proxy_for_account_proxy_off(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
     (workspace / "accounts.conf").write_text(
@@ -171,3 +196,25 @@ def test_account_add_env_defaults_env_file(tmp_path: Path) -> None:
     accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
     assert "ENV_FILE=./accounts/api-claude/env" in accounts_conf
     assert "请在 ./accounts/api-claude/env 中配置" in result.stdout
+
+
+def test_account_add_accepts_opencode_env_account(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "account",
+        "add",
+        "api-opencode",
+        "TYPE=opencode",
+        "--auth",
+        "env",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "TYPE=opencode" in accounts_conf
+    assert "ENV_FILE=./accounts/api-opencode/env" in accounts_conf

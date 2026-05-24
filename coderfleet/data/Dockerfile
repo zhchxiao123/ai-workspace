@@ -1,6 +1,6 @@
 # ============================================================
 #  CoderFleet — 统一工作容器镜像
-#  包含：Python 3.12 / Node.js 20 / Codex CLI / Claude Code
+#  包含：Python 3.12 / Node.js 20 / Codex CLI / Claude Code / OpenCode
 #  平台：linux/amd64（Apple Silicon 通过 Docker 模拟运行）
 # ============================================================
 
@@ -55,6 +55,9 @@ RUN npm install -g @openai/codex
 # ── Claude Code CLI ───────────────────────────────────────
 RUN npm install -g @anthropic-ai/claude-code
 
+# ── OpenCode CLI ──────────────────────────────────────────
+RUN npm install -g opencode-ai@latest
+
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -75,6 +78,7 @@ WORKDIR /workspace
 # 这两个目录由 CoderFleet 按账号挂载，容器内路径固定
 # Codex 认证：/home/byclaw/.codex   由 CODEX_HOME 控制
 # Claude 认证：/home/byclaw/.claude  由 CLAUDE_CONFIG_DIR 控制
+# OpenCode 数据：/home/byclaw/.opencode（运行时按账号挂载并设置 XDG_*_HOME）
 ENV CODEX_HOME=/home/byclaw/.codex
 ENV CLAUDE_CONFIG_DIR=/home/byclaw/.claude
 

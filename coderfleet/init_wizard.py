@@ -209,6 +209,7 @@ def _print_next_steps(ws: Path) -> None:
     click.secho(f"       coderfleet build", fg="cyan")
     click.echo(f"  2. 添加账号：")
     click.secho(f"       coderfleet account add <名称> TYPE=claude", fg="cyan")
+    click.secho(f"       coderfleet account add <名称> TYPE=opencode", fg="cyan")
     click.echo(f"  3. 添加项目：")
     click.secho(f"       coderfleet project add <名称> <账号名> ~/projects/myproject", fg="cyan")
     click.echo(f"  4. 应用配置并启动容器：")

@@ -1,6 +1,7 @@
 
 // ── 初始化 ────────────────────────────────────────────────
 initSidebarState();
+initChatSidebarState();
 initTopbarTabs();
 checkHealth();
 refreshGlobalCaches();
@@ -22,6 +23,7 @@ setInterval(() => {
   if (currentPage === 'chat' && !chatFollowMode) loadConversations(false);
   if (currentPage === 'tasks') loadTasks();
   if (currentPage === 'accounts') loadAccounts();
+  if (currentPage === 'workflows' && wfActiveTab === 'runs') loadWorkflows();
 }, 5000);
 
 // 低频刷新：全局账号 + 任务链缓存（30s，后台保持同步）

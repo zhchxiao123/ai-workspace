@@ -1,0 +1,80 @@
+site_name: CoderFleet
+site_description: 更适合中国开发者体质的多账号 AI 辅助开发方案
+site_url: https://zhchxiao123.github.io/ai-workspace/
+repo_name: zhchxiao123/ai-workspace
+repo_url: https://github.com/zhchxiao123/ai-workspace
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: zh
+  logo: assets/logo-mark.png
+  favicon: assets/logo-mark.png
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色模式
+
+nav:
+  - 首页: index.md
+  - 快速开始: quickstart.md
+  - 安装: install.md
+  - 核心概念: concepts.md
+  - 使用指南:
+      - 账号管理: accounts.md
+      - 项目管理: projects.md
+      - Web 控制台: server.md
+      - 异步任务: tasks.md
+      - 网络与代理: network.md
+  - 参考:
+      - 命令速查: commands.md
+      - 配置文件: configuration.md
+      - 自定义镜像: custom-image.md
+      - 常见问题: faq.md
+  - 迁移:
+      - 从 aicm 迁移: migration.md
+
+markdown_extensions:
+  - meta
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+
+extra_css:
+  - stylesheets/extra.css

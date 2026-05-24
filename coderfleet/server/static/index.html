@@ -5,8 +5,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CoderFleet</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" type="image/png" href="/static/icons/logo-mark.png">
+  <meta name="theme-color" content="#0d9488">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CoderFleet">
+  <link rel="apple-touch-icon" href="/static/icons/logo-mark.png">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
-  <link rel="stylesheet" href="/static/css/main.css?v=20260521">
+  <link rel="stylesheet" href="/static/vendor/drawflow.min.css">
+  <link rel="stylesheet" href="/static/css/main.css?v=20260524-logo">
 </head>
 
 <body>
@@ -16,7 +25,9 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="logo">
-        <div class="brand-mark" aria-hidden="true">AI</div>
+        <div class="brand-mark" aria-hidden="true">
+          <img src="/static/icons/logo-mark.png" width="30" height="30" alt="">
+        </div>
         <div class="brand-text">
           CoderFleet
           <span>AI coding fleet manager</span>
@@ -42,6 +53,13 @@
             <path d="M9 7h6M9 12h6M9 17h3" />
           </svg>
           <span class="sidebar-label">任务监控</span>
+        </div>
+        <div class="nav-item" data-page="workflows" onclick="showPage('workflows')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/>
+            <path d="M7 12h5a2 2 0 0 1 2 2v3M14 7V5"/>
+          </svg>
+          <span class="sidebar-label">工作流</span>
         </div>
         <div class="nav-item" data-page="projects" onclick="showPage('projects')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -97,6 +115,9 @@
                 <!-- 会话历史由 JS 动态渲染 -->
               </div>
             </div>
+            <button class="chat-sidebar-toggle" id="chat-sidebar-toggle" onclick="toggleChatSidebar()" aria-label="隐藏对话侧边栏" aria-expanded="true" title="隐藏对话侧边栏">
+              <span id="chat-sidebar-toggle-icon">&lt;</span>
+            </button>
             <div class="chat-main" id="chat-workspace">
               <!-- 右侧对话详情区由 JS 动态渲染 -->
             </div>
@@ -280,6 +301,72 @@
           </div>
         </div>
 
+        <!-- 工作流页 -->
+        <div class="page" id="page-workflows">
+          <!-- Tab 切换栏 -->
+          <div class="wf-tabs">
+            <button class="wf-tab active" id="wf-tab-templates" onclick="switchWfTab('templates')">模板库</button>
+            <button class="wf-tab"        id="wf-tab-runs"      onclick="switchWfTab('runs')">运行记录</button>
+          </div>
+
+          <!-- 运行记录（原 Pipeline DAG 视图） -->
+          <div class="wf-panel" id="wf-panel-runs" style="display:none">
+            <div class="workflows-layout">
+              <div class="workflows-sidebar">
+                <div class="workflows-sidebar-header">
+                  <span style="font-weight:600;font-size:14px">运行历史</span>
+                </div>
+                <div id="pipeline-list" style="flex:1;overflow-y:auto"></div>
+              </div>
+              <div class="workflows-canvas-wrap">
+                <div class="workflows-canvas-toolbar" id="dag-toolbar" style="display:none">
+                  <span class="workflows-canvas-title" id="dag-pipeline-name"></span>
+                  <div style="margin-left:auto;display:flex;gap:8px">
+                    <button class="btn" style="font-size:12px;padding:5px 12px" onclick="confirmDeletePipeline()">删除</button>
+                  </div>
+                </div>
+                <div class="workflows-canvas-area" id="dag-area"></div>
+              </div>
+              <div class="workflows-detail" id="workflow-detail"></div>
+            </div>
+          </div>
+
+          <!-- 模板库 -->
+          <div class="wf-panel" id="wf-panel-templates">
+            <div class="workflows-layout">
+              <!-- 模板列表 -->
+              <div class="workflows-sidebar">
+                <div class="workflows-sidebar-header">
+                  <span style="font-weight:600;font-size:14px">模板</span>
+                  <button class="btn primary" style="font-size:12px;padding:4px 10px" onclick="newTemplate()">+ 新建</button>
+                </div>
+                <div id="template-list" style="flex:1;overflow-y:auto"></div>
+              </div>
+              <!-- Drawflow 画布编辑器 -->
+              <div class="workflows-canvas-wrap" id="template-editor-wrap">
+                <div class="workflows-canvas-toolbar" id="template-editor-toolbar" style="display:none">
+                  <input class="tpl-name-input" id="tpl-name" placeholder="模板名称" oninput="markTemplateDirty()">
+                  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+                    <button class="btn" style="font-size:12px;padding:5px 12px" onclick="addTemplateNode()">+ 节点</button>
+                    <button class="btn primary" style="font-size:12px;padding:5px 12px" id="tpl-save-btn" onclick="saveTemplate()">保存</button>
+                    <button class="btn" style="font-size:12px;padding:5px 12px" onclick="showRunTemplateModal(activeTemplateId)">▶ 运行</button>
+                    <button class="btn" style="font-size:12px;padding:5px 12px" onclick="confirmDeleteTemplate()">删除</button>
+                  </div>
+                </div>
+                <!-- Drawflow 挂载点 -->
+                <div id="drawflow-mount">
+                  <div class="dag-empty" id="drawflow-empty" style="height:100%">
+                    <div style="font-size:32px;opacity:.2;margin-bottom:12px">⬡</div>
+                    <div style="color:var(--text-3);font-size:13px">从左侧选择模板，或新建一个</div>
+                  </div>
+                </div>
+              </div>
+              <!-- 节点属性编辑面板 -->
+              <div class="workflows-detail" id="tpl-node-detail"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- 账号页 -->
         <div class="page" id="page-accounts">
           <div class="section-head">
@@ -321,6 +408,7 @@
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
           <button class="btn primary" id="resume-btn" onclick="resumeCurrentTask()" style="display:none">续接任务</button>
+          <button class="btn" id="spawn-btn" onclick="spawnSubtaskFromLog()" style="display:none">派生子任务</button>
           <button class="btn danger" id="kill-btn" onclick="killCurrentTask()" style="display:none">终止</button>
           <button class="btn" id="follow-btn" onclick="toggleFollow()" aria-label="切换日志跟踪">
             <span aria-hidden="true" id="follow-icon">▶</span><span>跟踪</span>
@@ -358,12 +446,112 @@
     </div>
   </div>
 
+  <!-- 新建工作流弹窗 -->
+  <div class="modal-backdrop" id="new-pipeline-modal" style="display:none" onclick="closeNewPipelineModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()">
+      <div class="section-head">
+        <div><div class="modal-title">新建工作流</div></div>
+        <button class="btn" onclick="closeNewPipelineModal()">关闭</button>
+      </div>
+      <div class="form-group">
+        <label>工作流名称 *</label>
+        <input id="new-pipeline-name" type="text" placeholder="例如：实现登录+代码审查">
+      </div>
+      <div class="flex gap-8">
+        <button class="btn primary" id="new-pipeline-submit-btn" onclick="submitNewPipeline()">创建</button>
+        <button class="btn" onclick="closeNewPipelineModal()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 统一添加任务弹窗（用于工作流新建任务 / 从日志派生子任务） -->
+  <div class="modal-backdrop" id="add-task-modal" style="display:none" onclick="closeAddTaskModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()">
+      <div class="section-head">
+        <div>
+          <div class="modal-title" id="add-task-modal-title">添加任务</div>
+          <div class="section-subtitle" id="add-task-modal-subtitle"></div>
+        </div>
+        <button class="btn" onclick="closeAddTaskModal()">关闭</button>
+      </div>
+      <input type="hidden" id="add-task-pipeline-id">
+      <input type="hidden" id="add-task-parent-id">
+      <!-- 仅当从日志模态框进入、且任务未在工作流中时显示 -->
+      <div id="add-task-pipeline-group" style="display:none">
+        <div class="form-group">
+          <label>加入工作流</label>
+          <select id="add-task-pipeline-sel" onchange="onAddTaskPipelineChange()">
+            <option value="__new__">-- 新建工作流 --</option>
+          </select>
+        </div>
+        <div class="form-group" id="add-task-new-pipeline-name-group">
+          <label>工作流名称</label>
+          <input id="add-task-new-pipeline-name" type="text" placeholder="例如：实现登录+代码审查">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>执行账号（项目）*</label>
+        <select id="add-task-project"><option value="">选择项目</option></select>
+      </div>
+      <div class="form-group">
+        <label>任务描述 *</label>
+        <textarea id="add-task-prompt" placeholder="描述要 AI 完成的任务..." rows="3"></textarea>
+      </div>
+      <div class="form-group" id="add-task-deps-group" style="display:none">
+        <label>前置依赖（等下列任务完成后再执行，可多选）</label>
+        <div id="add-task-deps-list" style="display:flex;flex-direction:column;gap:5px;margin-top:6px"></div>
+      </div>
+      <div class="form-group">
+        <div class="toggle-row">
+          <input type="checkbox" id="add-task-auto" checked>
+          <label for="add-task-auto" style="margin:0;cursor:pointer">全自动模式</label>
+        </div>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn primary" id="add-task-submit-btn" onclick="submitAddTask()">添加任务</button>
+        <button class="btn" onclick="closeAddTaskModal()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 运行模板弹窗 -->
+  <div class="modal-backdrop" id="run-template-modal" style="display:none" onclick="closeRunTemplateModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()">
+      <div class="section-head">
+        <div>
+          <div class="modal-title">运行工作流模板</div>
+          <div class="section-subtitle" id="run-tpl-name"></div>
+        </div>
+        <button class="btn" onclick="closeRunTemplateModal()">关闭</button>
+      </div>
+      <input type="hidden" id="run-tpl-id">
+      <div class="form-group">
+        <label>输入内容 *</label>
+        <textarea id="run-tpl-input" rows="3" placeholder="例如：实现用户登录功能"></textarea>
+        <div class="section-subtitle" style="margin-top:4px">所有节点的 prompt 中 {{input}} 会被替换为此内容</div>
+      </div>
+      <div class="form-group" id="run-tpl-default-project-group">
+        <label>默认项目 *</label>
+        <select id="run-tpl-default-project"><option value="">选择项目</option></select>
+        <div class="section-subtitle" style="margin-top:4px">执行目标为“使用运行时默认项目”的节点将使用此项目</div>
+      </div>
+      <div id="run-tpl-role-map-group">
+        <!-- 动态生成：每个 project_role 对应一个 select -->
+      </div>
+      <div class="flex gap-8">
+        <button class="btn primary" id="run-tpl-submit-btn" onclick="submitRunTemplate()">▶ 开始运行</button>
+        <button class="btn" onclick="closeRunTemplateModal()">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/drawflow.min.js"></script>
   <script src="/static/vendor/xterm/xterm.js"></script>
   <script src="/static/vendor/xterm/addon-fit.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/utils.js?v=20260521"></script>
-  <script src="/static/js/renderer.js?v=20260521"></script>
-  <script src="/static/js/state.js?v=20260521"></script>
+  <script src="/static/js/renderer.js?v=20260523"></script>
+  <script src="/static/js/state.js?v=20260523"></script>
   <script src="/static/js/chat.js?v=20260521"></script>
   <script src="/static/js/terminal.js?v=20260521"></script>
   <script src="/static/js/nav.js?v=20260521"></script>
@@ -372,7 +560,16 @@
   <script src="/static/js/accounts.js?v=20260521"></script>
   <script src="/static/js/submit.js?v=20260521"></script>
   <script src="/static/js/log.js?v=20260521"></script>
+  <script src="/static/js/workflows.js?v=20260523b"></script>
   <script src="/static/js/app.js?v=20260521"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    if (window.innerWidth <= 768) {
+      location.replace('/m');
+    }
+  </script>
 </body>
 
 </html>

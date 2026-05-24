@@ -24,8 +24,9 @@ class ConversationStatus(str, Enum):
 
 
 class AccountType(str, Enum):
-    codex  = "codex"
-    claude = "claude"
+    codex    = "codex"
+    claude   = "claude"
+    opencode = "opencode"
 
 
 class AccountAuth(str, Enum):
@@ -135,6 +136,10 @@ class Task(BaseModel):
     auto:     bool = False
     images:   list[str] = Field(default_factory=list)
     execute_at: Optional[str] = None
+    # DAG / workflow fields
+    parent_task_id: str = ""
+    depends_on:     list[str] = Field(default_factory=list)
+    pipeline_id:    str = ""
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -187,6 +192,10 @@ class TaskCreateRequest(BaseModel):
     conversation_name: Optional[str] = None
     images:  list[str] = []              # 容器内图片路径列表（--image 参数）
     execute_at: Optional[str] = None     # 定时执行时间
+    # DAG / workflow fields
+    parent_task_id: Optional[str] = None
+    depends_on:     list[str] = []
+    pipeline_id:    Optional[str] = None
 
 
 class TaskResponse(BaseModel):
@@ -206,6 +215,9 @@ class TaskResponse(BaseModel):
     auto:     bool = False
     images:   list[str] = []
     execute_at: Optional[str] = None
+    parent_task_id: str = ""
+    depends_on:     list[str] = []
+    pipeline_id:    str = ""
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -226,6 +238,9 @@ class TaskResponse(BaseModel):
             auto         = getattr(t, "auto", False),
             images       = getattr(t, "images", []),
             execute_at   = getattr(t, "execute_at", None),
+            parent_task_id = getattr(t, "parent_task_id", ""),
+            depends_on     = getattr(t, "depends_on", []),
+            pipeline_id    = getattr(t, "pipeline_id", ""),
         )
 
 
@@ -283,3 +298,180 @@ class AccountResponse(BaseModel):
     running_task_prompt: str = ""
     task_done_count:     int = 0
     task_failed_count:   int = 0
+
+
+# ── 工作流 / Pipeline ──────────────────────────────────────
+
+class PipelineNodeRun(BaseModel):
+    node_id:          str
+    node_name:        str = ""
+    task_id:          str = ""
+    target_mode:      str = "default"
+    project_name:     str = ""
+    project_role:     str = ""
+    resolved_project: str = ""
+
+
+class Pipeline(BaseModel):
+    id:            str
+    name:          str
+    project_name:  str = ""
+    task_ids:      list[str] = Field(default_factory=list)
+    node_runs:     list[PipelineNodeRun] = Field(default_factory=list)
+    template_id:   str = ""   # 如果是从模板触发的，记录模板 ID
+    trigger_input: str = ""   # 触发时的原始输入
+    created:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, pipelines_dir: Path) -> None:
+        pipelines_dir.mkdir(parents=True, exist_ok=True)
+        path = pipelines_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "Pipeline":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(**data)
+
+    @classmethod
+    def load_all(cls, pipelines_dir: Path) -> list["Pipeline"]:
+        if not pipelines_dir.exists():
+            return []
+        pipelines = []
+        for p in sorted(pipelines_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                pipelines.append(cls.load(p))
+            except Exception:
+                pass
+        return pipelines
+
+    def touch(self, pipelines_dir: Path) -> None:
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(pipelines_dir)
+
+
+class PipelineResponse(BaseModel):
+    id:            str
+    name:          str
+    project_name:  str = ""
+    task_ids:      list[str] = []
+    node_runs:     list[PipelineNodeRun] = []
+    template_id:   str = ""
+    trigger_input: str = ""
+    created:       str
+    updated:       str
+    tasks:         list[TaskResponse] = []
+
+    @classmethod
+    def from_pipeline(cls, p: Pipeline, tasks: list[Task] = []) -> "PipelineResponse":
+        return cls(
+            id            = p.id,
+            name          = p.name,
+            project_name  = p.project_name,
+            task_ids      = p.task_ids,
+            node_runs     = getattr(p, "node_runs", []),
+            template_id   = p.template_id,
+            trigger_input = p.trigger_input,
+            created       = p.created,
+            updated       = p.updated,
+            tasks         = [TaskResponse.from_task(t) for t in tasks],
+        )
+
+
+class LogicalProjectEntry(BaseModel):
+    name:    str
+    account: str
+    type:    str
+
+
+class LogicalProject(BaseModel):
+    path:         str
+    display_name: str
+    projects:     list[LogicalProjectEntry]
+
+
+# ── 工作流模板 ─────────────────────────────────────────────
+
+class TemplateNode(BaseModel):
+    """模板中的一个节点定义（可重复使用的任务蓝图）"""
+    node_id:      str
+    name:         str
+    prompt_tpl:   str              # 支持 {{input}} 变量替换
+    target_mode:  str = "default"  # default / fixed_project / runtime_role
+    project_name: str = ""         # target_mode=fixed_project 时使用
+    project_role: str = ""         # 角色名（如 "claude"/"codex"）或具体项目名
+    depends_on:   list[str] = Field(default_factory=list)  # 依赖的 node_id 列表
+    pos_x:        float = 0.0      # 画布坐标（Drawflow）
+    pos_y:        float = 0.0
+
+
+class WorkflowTemplate(BaseModel):
+    id:          str
+    name:        str
+    description: str = ""
+    nodes:       list[TemplateNode] = Field(default_factory=list)
+    created:     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, templates_dir: Path) -> None:
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        path = templates_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "WorkflowTemplate":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_all(cls, templates_dir: Path) -> list["WorkflowTemplate"]:
+        if not templates_dir.exists():
+            return []
+        result = []
+        for p in sorted(templates_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                result.append(cls.load(p))
+            except Exception:
+                pass
+        return result
+
+    def touch(self, templates_dir: Path) -> None:
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(templates_dir)
+
+
+class WorkflowTemplateResponse(BaseModel):
+    id:          str
+    name:        str
+    description: str
+    nodes:       list[TemplateNode]
+    created:     str
+    updated:     str
+
+    @classmethod
+    def from_template(cls, t: WorkflowTemplate) -> "WorkflowTemplateResponse":
+        return cls(
+            id          = t.id,
+            name        = t.name,
+            description = t.description,
+            nodes       = t.nodes,
+            created     = t.created,
+            updated     = t.updated,
+        )
+
+
+class TemplateCreateRequest(BaseModel):
+    name:        str
+    description: str = ""
+    nodes:       list[TemplateNode] = []
+
+
+class TemplateRunRequest(BaseModel):
+    input:           str
+    project_map:     dict[str, str] = {}  # project_role / node_id → 实际项目名
+    default_project: str = ""

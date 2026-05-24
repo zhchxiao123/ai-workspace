@@ -28,9 +28,15 @@ from coderfleet.server.models import (
     AccountType,
     Conversation,
     ConversationStatus,
+    LogicalProject,
+    LogicalProjectEntry,
+    Pipeline,
+    PipelineNodeRun,
     Project,
     Task,
     TaskStatus,
+    TemplateNode,
+    WorkflowTemplate,
 )
 
 
@@ -41,9 +47,27 @@ class Scheduler:
         self.projects_conf  = workspace_dir / "projects.conf"
         self.tasks_dir      = workspace_dir / "tasks"
         self.conversations_dir = workspace_dir / "conversations"
+        self.pipelines_dir  = workspace_dir / "pipelines"
+        self.templates_dir  = workspace_dir / "workflow_templates"
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
+        self._push_manager = None  # set by main.py after both are initialized
+
+    async def _notify(self, task: Task) -> None:
+        if self._push_manager is None:
+            return
+        status_map = {
+            TaskStatus.done:   ("✅ 任务完成",   task.prompt),
+            TaskStatus.failed: ("❌ 任务失败",   task.prompt),
+            TaskStatus.killed: ("⚠️ 任务已终止", task.prompt),
+        }
+        entry = status_map.get(task.status)
+        if entry is None:
+            return
+        title, prompt = entry
+        body = (prompt[:70] + "…") if len(prompt) > 70 else prompt
+        await self._push_manager.send_all(title, body)
 
     @staticmethod
     def task_process_marker(task_id: str) -> str:
@@ -82,6 +106,14 @@ class Scheduler:
                 f"printf '%s\\n' {escaped_prompt} | "
                 f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
                 f"claude -p {permission}{output_format}{resume}"
+            )
+        elif acc_type == AccountType.opencode:
+            permission = " --dangerously-skip-permissions" if auto else ""
+            session = f" --session {shlex.quote(native_session_id)}" if native_session_id else ""
+            file_flags = "".join(f" --file {shlex.quote(img)}" for img in (images or []))
+            inner_cmd = (
+                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
+                f"opencode run --format json{permission}{session}{file_flags} {escaped_prompt}"
             )
         else:
             sandbox = "danger-full-access" if auto else "workspace-write"
@@ -138,6 +170,23 @@ class Scheduler:
             if acc_type == AccountType.codex:
                 if data.get("type") == "thread.started" and data.get("thread_id"):
                     return str(data["thread_id"])
+            elif acc_type == AccountType.opencode:
+                for key in ("sessionID", "session_id", "sessionId"):
+                    value = data.get(key)
+                    if value:
+                        return str(value)
+                session = data.get("session")
+                if isinstance(session, dict):
+                    for key in ("id", "sessionID", "session_id", "sessionId"):
+                        value = session.get(key)
+                        if value:
+                            return str(value)
+                event_type = str(data.get("type", ""))
+                if "session" in event_type.lower():
+                    for key in ("id", "sessionID", "session_id", "sessionId"):
+                        value = data.get(key)
+                        if value:
+                            return str(value)
             elif data.get("session_id"):
                 return str(data["session_id"])
         return ""
@@ -167,7 +216,7 @@ class Scheduler:
             except ValueError:
                 continue
             env_file = parts.get("ENV_FILE", "")
-            if auth == AccountAuth.env and acc_type != AccountType.claude:
+            if auth == AccountAuth.env and acc_type not in (AccountType.claude, AccountType.opencode):
                 continue
             if auth == AccountAuth.env and not env_file:
                 env_file = f"./accounts/{parts['NAME']}/env"
@@ -473,7 +522,9 @@ class Scheduler:
                     self._write_failed_log(t, f"定时时间解析失败：{e}")
 
         # 2. 扫描并运行 pending 任务
-        pending_tasks = [t for t in Task.load_all(self.tasks_dir) if t.status == TaskStatus.pending]
+        all_pending = Task.load_all(self.tasks_dir)
+        task_map = {t.id: t for t in all_pending}
+        pending_tasks = [t for t in all_pending if t.status == TaskStatus.pending]
         if not pending_tasks:
             return
 
@@ -482,6 +533,18 @@ class Scheduler:
         busy_accounts = self.get_busy_accounts()
 
         for task in pending_tasks:
+            # ── depends_on 检查 ──────────────────────────────
+            if task.depends_on:
+                deps = [task_map.get(dep_id) for dep_id in task.depends_on]
+                # 任意前置任务失败/终止 → 级联失败
+                if any(d is None or d.status in (TaskStatus.failed, TaskStatus.killed) for d in deps):
+                    task.update_status(TaskStatus.failed, self.tasks_dir)
+                    self._write_failed_log(task, "前置任务失败或不存在，级联失败")
+                    continue
+                # 前置任务尚未全部完成 → 继续等待
+                if not all(d.status == TaskStatus.done for d in deps):
+                    continue
+
             if task.account not in busy_accounts:
                 busy_accounts.add(task.account)
                 # 异步拉起执行该 pending 任务
@@ -563,6 +626,9 @@ class Scheduler:
         project_name:   Optional[str]         = None,
         images:         list[str]             = [],
         execute_at:     Optional[str]         = None,
+        parent_task_id: Optional[str]         = None,
+        depends_on:     list[str]             = [],
+        pipeline_id:    Optional[str]         = None,
     ) -> Task:
         """
         提交任务，异步在后台执行，立即返回 Task 对象。
@@ -672,6 +738,11 @@ class Scheduler:
         # 创建任务记录
         task_id  = self.new_task_id()
 
+        # ── DAG 字段 ──
+        dag_parent   = parent_task_id or ""
+        dag_depends  = list(depends_on)
+        dag_pipeline = pipeline_id or ""
+
         # ── 处理定时任务 ──
         if execute_at:
             try:
@@ -690,8 +761,13 @@ class Scheduler:
                         auto         = auto,
                         images       = images,
                         execute_at   = execute_at,
+                        parent_task_id = dag_parent,
+                        depends_on     = dag_depends,
+                        pipeline_id    = dag_pipeline,
                     )
                     task.save(self.tasks_dir)
+                    if dag_pipeline:
+                        self._register_task_in_pipeline(task_id, dag_pipeline)
 
                     # 写入空日志文件防 SSE 404
                     log_path = self.get_log_path(task_id)
@@ -716,8 +792,13 @@ class Scheduler:
                 native_session_id = conversation.native_session_id if conversation else "",
                 auto         = auto,
                 images       = images,
+                parent_task_id = dag_parent,
+                depends_on     = dag_depends,
+                pipeline_id    = dag_pipeline,
             )
             task.save(self.tasks_dir)
+            if dag_pipeline:
+                self._register_task_in_pipeline(task_id, dag_pipeline)
 
             # 写入空日志文件防 SSE 404
             log_path = self.get_log_path(task_id)
@@ -742,8 +823,13 @@ class Scheduler:
             native_session_id = conversation.native_session_id if conversation else "",
             auto         = auto,
             images       = images,
+            parent_task_id = dag_parent,
+            depends_on     = dag_depends,
+            pipeline_id    = dag_pipeline,
         )
         task.save(self.tasks_dir)
+        if dag_pipeline:
+            self._register_task_in_pipeline(task_id, dag_pipeline)
 
         # 写日志头
         self._write_log_header(log_path, task, acc, container_workdir, container_name)
@@ -888,6 +974,7 @@ class Scheduler:
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, f"failed (exit={rc})")
 
+        asyncio.create_task(self._notify(task))
         return rc
 
     async def _run(
@@ -939,11 +1026,13 @@ class Scheduler:
             self.kill_task_process(task)
             task.update_status(TaskStatus.killed, self.tasks_dir)
             self._append_log_footer(log_path, "killed")
+            asyncio.create_task(self._notify(task))
             return
         except Exception as e:
             task.update_status(TaskStatus.failed, self.tasks_dir)
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, f"failed: {e}")
+            asyncio.create_task(self._notify(task))
             return
         finally:
             self._running.pop(task.id, None)
@@ -981,10 +1070,12 @@ class Scheduler:
             self.kill_task_process(task)
             task.update_status(TaskStatus.killed, self.tasks_dir)
             self._append_log_footer(log_path, "killed")
+            asyncio.create_task(self._notify(task))
             return
         except Exception as e:
             task.update_status(TaskStatus.failed, self.tasks_dir)
             self._append_log_footer(log_path, f"failed during reattach: {e}")
+            asyncio.create_task(self._notify(task))
             return
         finally:
             self._running.pop(task.id, None)
@@ -1201,6 +1292,16 @@ class Scheduler:
         task.save(self.tasks_dir)
         return task
 
+    def _register_task_in_pipeline(self, task_id: str, pipeline_id: str) -> None:
+        """将任务 ID 注册到 pipeline 的 task_ids 列表（幂等）。"""
+        try:
+            pipeline = self.get_pipeline(pipeline_id)
+            if pipeline and task_id not in pipeline.task_ids:
+                pipeline.task_ids.append(task_id)
+                pipeline.touch(self.pipelines_dir)
+        except Exception:
+            pass
+
     # ── 清理旧记录 ────────────────────────────────────────
 
     def clean_tasks(self, keep: int = 30) -> int:
@@ -1217,3 +1318,248 @@ class Scheduler:
             log_path.unlink(missing_ok=True)
             cleaned += 1
         return cleaned
+
+    # ── Pipeline CRUD ─────────────────────────────────────
+
+    @staticmethod
+    def new_pipeline_id() -> str:
+        ts   = datetime.now().strftime("%Y%m%d%H%M%S")
+        rand = random.randint(0, 9999)
+        return f"pipe-{ts}-{rand:04d}"
+
+    def list_pipelines(self) -> list[Pipeline]:
+        return Pipeline.load_all(self.pipelines_dir)
+
+    def get_pipeline(self, pipeline_id: str) -> Optional[Pipeline]:
+        path = self.pipelines_dir / f"{pipeline_id}.json"
+        if not path.exists():
+            return None
+        return Pipeline.load(path)
+
+    def create_pipeline(self, name: str, task_ids: list[str] = [], project_name: str = "") -> Pipeline:
+        pipeline = Pipeline(
+            id           = self.new_pipeline_id(),
+            name         = name,
+            project_name = project_name,
+            task_ids     = list(task_ids),
+        )
+        pipeline.save(self.pipelines_dir)
+        # 反向更新已有任务的 pipeline_id
+        for tid in task_ids:
+            task = self.get_task(tid)
+            if task and not task.pipeline_id:
+                task.pipeline_id = pipeline.id
+                task.save(self.tasks_dir)
+        return pipeline
+
+    def add_task_to_pipeline(self, pipeline_id: str, task_id: str) -> Pipeline:
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline is None:
+            raise ValueError(f"工作流 '{pipeline_id}' 不存在")
+        if task_id not in pipeline.task_ids:
+            pipeline.task_ids.append(task_id)
+        pipeline.touch(self.pipelines_dir)
+        # 更新任务记录
+        task = self.get_task(task_id)
+        if task and not task.pipeline_id:
+            task.pipeline_id = pipeline_id
+            task.save(self.tasks_dir)
+        return pipeline
+
+    def delete_pipeline(self, pipeline_id: str) -> None:
+        path = self.pipelines_dir / f"{pipeline_id}.json"
+        if not path.exists():
+            raise ValueError(f"工作流 '{pipeline_id}' 不存在")
+        path.unlink()
+
+    # ── 工作流模板 CRUD ───────────────────────────────────
+
+    @staticmethod
+    def new_template_id() -> str:
+        import random
+        return "tpl-" + datetime.now().strftime("%Y%m%d%H%M%S") + f"-{random.randint(1000,9999)}"
+
+    def list_templates(self) -> list[WorkflowTemplate]:
+        return WorkflowTemplate.load_all(self.templates_dir)
+
+    def get_template(self, template_id: str) -> Optional[WorkflowTemplate]:
+        path = self.templates_dir / f"{template_id}.json"
+        return WorkflowTemplate.load(path) if path.exists() else None
+
+    def create_template(self, name: str, description: str, nodes: list[TemplateNode]) -> WorkflowTemplate:
+        tpl = WorkflowTemplate(id=self.new_template_id(), name=name, description=description, nodes=nodes)
+        tpl.save(self.templates_dir)
+        return tpl
+
+    def update_template(self, template_id: str, name: str, description: str, nodes: list[TemplateNode]) -> WorkflowTemplate:
+        tpl = self.get_template(template_id)
+        if tpl is None:
+            raise ValueError(f"模板 '{template_id}' 不存在")
+        tpl.name = name
+        tpl.description = description
+        tpl.nodes = nodes
+        tpl.touch(self.templates_dir)
+        return tpl
+
+    def delete_template(self, template_id: str) -> None:
+        path = self.templates_dir / f"{template_id}.json"
+        if not path.exists():
+            raise ValueError(f"模板 '{template_id}' 不存在")
+        path.unlink()
+
+    # ── 模板执行（触发一次运行） ──────────────────────────
+
+    @staticmethod
+    def _topo_sort_nodes(nodes: list[TemplateNode]) -> list[TemplateNode]:
+        node_map  = {n.node_id: n for n in nodes}
+        visited:  set[str] = set()
+        result:   list[TemplateNode] = []
+
+        def visit(nid: str) -> None:
+            if nid in visited:
+                return
+            visited.add(nid)
+            node = node_map.get(nid)
+            if node:
+                for dep in node.depends_on:
+                    visit(dep)
+                result.append(node)
+
+        for node in nodes:
+            visit(node.node_id)
+        return result
+
+    async def run_template(
+        self,
+        template_id:     str,
+        input_str:       str,
+        project_map:     dict[str, str],  # role/node_id → project_name
+        default_project: str = "",
+    ) -> Pipeline:
+        tpl = self.get_template(template_id)
+        if tpl is None:
+            raise ValueError(f"模板 '{template_id}' 不存在")
+        if not tpl.nodes:
+            raise ValueError("模板没有任何节点，无法执行")
+
+        sorted_nodes = self._topo_sort_nodes(tpl.nodes)
+        resolved_projects: dict[str, str] = {}
+        for node in sorted_nodes:
+            target_mode = getattr(node, "target_mode", "default") or "default"
+            if target_mode == "fixed_project":
+                project_name = node.project_name
+            elif target_mode == "runtime_role":
+                project_name = project_map.get(node.project_role) or project_map.get(node.node_id) or ""
+            else:
+                project_name = project_map.get(node.node_id) or default_project
+
+            if not project_name:
+                label = node.name or node.node_id
+                raise ValueError(f"节点「{label}」未指定执行项目")
+            if self.find_project_by_name(project_name) is None:
+                label = node.name or node.node_id
+                raise ValueError(f"节点「{label}」配置的项目 '{project_name}' 不存在")
+            resolved_projects[node.node_id] = project_name
+
+        # 创建此次运行的 Pipeline
+        run_name = f"{tpl.name} · {input_str[:30]}" if input_str else tpl.name
+        pipeline = Pipeline(
+            id            = self.new_pipeline_id(),
+            name          = run_name,
+            template_id   = tpl.id,
+            trigger_input = input_str,
+        )
+        pipeline.save(self.pipelines_dir)
+
+        # 按拓扑序依次创建 Task
+        node_task_map: dict[str, str] = {}  # node_id → task_id
+
+        for node in sorted_nodes:
+            prompt = node.prompt_tpl.replace("{{input}}", input_str)
+            project_name = resolved_projects[node.node_id]
+
+            depends_on = [node_task_map[nid] for nid in node.depends_on if nid in node_task_map]
+
+            task = await self.submit(
+                prompt       = prompt,
+                project_name = project_name,
+                auto         = True,
+                depends_on   = depends_on,
+                pipeline_id  = pipeline.id,
+            )
+            node_task_map[node.node_id] = task.id
+            if task.id not in pipeline.task_ids:
+                pipeline.task_ids.append(task.id)
+            pipeline.node_runs.append(PipelineNodeRun(
+                node_id          = node.node_id,
+                node_name        = node.name,
+                task_id          = task.id,
+                target_mode      = getattr(node, "target_mode", "default") or "default",
+                project_name     = getattr(node, "project_name", ""),
+                project_role     = getattr(node, "project_role", ""),
+                resolved_project = project_name,
+            ))
+            pipeline.touch(self.pipelines_dir)
+
+        return pipeline
+
+    # ── 逻辑项目（按 path 分组） ──────────────────────────
+
+    def get_logical_projects(self) -> list[LogicalProject]:
+        projects = self.get_projects()
+        accounts = self.get_accounts()
+        acc_map  = {a.name: a for a in accounts}
+
+        groups: dict[str, list[Project]] = {}
+        for p in projects:
+            canonical = str(Path(p.path).expanduser().resolve())
+            groups.setdefault(canonical, []).append(p)
+
+        result = []
+        for canonical_path, projs in groups.items():
+            entries = [
+                LogicalProjectEntry(
+                    name    = p.name,
+                    account = p.account,
+                    type    = acc_map[p.account].type.value if p.account in acc_map else "unknown",
+                )
+                for p in projs
+            ]
+            result.append(LogicalProject(
+                path         = canonical_path,
+                display_name = projs[0].name,
+                projects     = entries,
+            ))
+        return result
+
+    # ── 派生子任务 ────────────────────────────────────────
+
+    async def spawn_subtask(
+        self,
+        parent_task_id: str,
+        prompt:         str,
+        project_name:   str,
+        auto:           bool         = True,
+        wait_for_parent: bool        = True,
+        pipeline_id:    Optional[str] = None,
+        images:         list[str]    = [],
+    ) -> Task:
+        parent = self.get_task(parent_task_id)
+        if parent is None:
+            raise ValueError(f"父任务 '{parent_task_id}' 不存在")
+
+        depends_on = [parent_task_id] if wait_for_parent else []
+
+        # 如果未指定 pipeline，继承父任务的 pipeline
+        effective_pipeline_id = pipeline_id or parent.pipeline_id or None
+
+        task = await self.submit(
+            prompt         = prompt,
+            project_name   = project_name,
+            auto           = auto,
+            images         = images,
+            parent_task_id = parent_task_id,
+            depends_on     = depends_on,
+            pipeline_id    = effective_pipeline_id,
+        )
+        return task

@@ -38,7 +38,7 @@ def account_group() -> None:
 
 @account_group.command("add")
 @click.argument("name")
-@click.argument("typearg", metavar="TYPE=codex|claude")
+@click.argument("typearg", metavar="TYPE=codex|claude|opencode")
 @click.option("--auth", default="login", type=click.Choice(["login", "env"]),
               show_default=True, help="Authentication method")
 @click.option("--env-file", "env_file", default=None,
@@ -54,19 +54,19 @@ def cmd_account_add(
     env_file: Optional[str],
     proxy: str,
 ) -> None:
-    """Add a new account. TYPE=codex|claude (or just codex|claude)."""
+    """Add a new account. TYPE=codex|claude|opencode (or just codex|claude|opencode)."""
     ws: Path = ctx.obj["workspace"]
 
     if not _NAME_RE.match(name):
         raise click.ClickException("NAME 只能包含字母、数字、连字符")
 
     acc_type = typearg[5:] if typearg.startswith("TYPE=") else typearg
-    if acc_type not in ("codex", "claude"):
-        raise click.ClickException("TYPE 不合法，只支持 TYPE=codex 或 TYPE=claude")
+    if acc_type not in ("codex", "claude", "opencode"):
+        raise click.ClickException("TYPE 不合法，只支持 TYPE=codex、TYPE=claude 或 TYPE=opencode")
 
     if auth == "env":
-        if acc_type != "claude":
-            raise click.ClickException("AUTH=env 目前只支持 TYPE=claude")
+        if acc_type not in ("claude", "opencode"):
+            raise click.ClickException("AUTH=env 目前只支持 TYPE=claude 或 TYPE=opencode")
         if not env_file:
             env_file = f"./accounts/{name}/env"
 

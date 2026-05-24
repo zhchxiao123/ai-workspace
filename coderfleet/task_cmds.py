@@ -76,7 +76,7 @@ def task_group() -> None:
 @click.option("--project", "prefer_project", default=None, help="项目名称或宿主机路径")
 @click.option("--account", default=None, help="指定账号名")
 @click.option("--type", "prefer_type", default=None,
-              type=click.Choice(["codex", "claude"]), help="指定账号类型")
+              type=click.Choice(["codex", "claude", "opencode"]), help="指定账号类型")
 @click.option("--auto", is_flag=True, help="全自动模式（跳过权限确认）")
 @click.option("--conversation", "conversation_id", default=None, help="续接已有任务链 ID")
 @click.option("--new-chain", "conversation_name", default=None, help="新建任务链并命名")

@@ -49,6 +49,16 @@ case "$ACCOUNT_TYPE" in
             echo "Claude 环境变量认证：已启用"
         fi
         ;;
+    opencode)
+        mkdir -p "${XDG_DATA_HOME:-/home/byclaw/.opencode/data}"
+        mkdir -p "${XDG_CONFIG_HOME:-/home/byclaw/.opencode/config}"
+        mkdir -p "${XDG_STATE_HOME:-/home/byclaw/.opencode/state}"
+        mkdir -p "${XDG_CACHE_HOME:-/home/byclaw/.opencode/cache}"
+        echo "OpenCode 数据目录：${XDG_DATA_HOME:-/home/byclaw/.opencode/data}"
+        if [ "${CODERFLEET_ACCOUNT_AUTH:-login}" = "env" ]; then
+            echo "OpenCode 环境变量认证：已启用"
+        fi
+        ;;
 esac
 
 # ── 执行传入的命令（默认 sleep infinity）─────────────────

@@ -2,7 +2,7 @@
 login_cmd.py — coderfleet login 命令
 
 交互式账号登录，通过 docker exec（已运行容器）或 docker run（临时容器）
-执行 claude login / codex login --device-auth。
+执行 claude login / codex login --device-auth / opencode auth login。
 
 关键技术：os.execvp() 替换当前进程，确保 TTY 完整继承。
 当 login all 时改用 subprocess.run() 以便在循环中逐一执行。
@@ -33,7 +33,19 @@ def _cli_and_args(acc_type: str) -> tuple[str, list[str]]:
     """Return (cli_binary, login_subcommand_args) for the given account type."""
     if acc_type == "claude":
         return "claude", ["login"]
+    if acc_type == "opencode":
+        return "opencode", ["auth", "login"]
     return "codex", ["login", "--device-auth"]
+
+
+def _auth_mount_dst(acc_type: str) -> str:
+    if acc_type == "codex":
+        return "/home/byclaw/.codex"
+    if acc_type == "claude":
+        return "/home/byclaw/.claude"
+    if acc_type == "opencode":
+        return "/home/byclaw/.opencode"
+    return "/home/byclaw/.codex"
 
 
 def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int:
@@ -57,7 +69,7 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
             fg="cyan",
         )
         click.secho(
-            "Claude Code 会优先使用 ANTHROPIC_API_KEY，可能按 API 计费；"
+            "CLI 会优先使用环境变量中的 API Key，可能按 API 计费；"
             "请用 /status 确认认证方式",
             fg="yellow",
         )
@@ -93,7 +105,7 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
     proxy_host = cfg.get("PROXY_HOST", "host.docker.internal")
     proxy_port = cfg.get("PROXY_HTTP_PORT", "7890")
     proxy_url = f"http://{proxy_host}:{proxy_port}"
-    auth_dst = "/home/byclaw/.codex" if acc_type == "codex" else "/home/byclaw/.claude"
+    auth_dst = _auth_mount_dst(acc_type)
     auth_src = str(ws / "accounts" / target)
     login_ctr = f"coderfleet-login-{acc_type}-{target}"
 
@@ -129,6 +141,15 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
         "-w", "/workspace",
         image, cli,
     ] + login_args
+
+    if acc_type == "opencode":
+        insert_at = cmd.index("-v")
+        cmd[insert_at:insert_at] = [
+            "-e", "XDG_DATA_HOME=/home/byclaw/.opencode/data",
+            "-e", "XDG_CONFIG_HOME=/home/byclaw/.opencode/config",
+            "-e", "XDG_STATE_HOME=/home/byclaw/.opencode/state",
+            "-e", "XDG_CACHE_HOME=/home/byclaw/.opencode/cache",
+        ]
 
     if replace_process:
         os.execvp(cmd[0], cmd)

@@ -1,0 +1,202 @@
+:root {
+  --cf-accent: #0d9488;
+  --cf-warm: #f97316;
+  --cf-ink: #102a27;
+  --cf-panel: #0f172a;
+}
+
+.md-typeset .cf-home {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.md-typeset .cf-hero {
+  display: grid;
+  grid-template-columns: 420px 660px;
+  gap: 2.5rem;
+  justify-content: center;
+  align-items: center;
+  margin: 0 0 2.6rem;
+  padding: .6rem 0 2.2rem;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset .cf-hero h1 {
+  max-width: 12.2em;
+  margin: 0 0 .8rem;
+  color: var(--md-default-fg-color);
+  font-size: 2.05rem;
+  line-height: 1.22;
+  letter-spacing: 0;
+  font-weight: 760;
+}
+
+.md-typeset .cf-kicker {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin: 0 0 .85rem;
+  padding: .22rem .5rem;
+  border: 1px solid rgba(13, 148, 136, .22);
+  border-radius: .25rem;
+  color: var(--cf-accent);
+  background: rgba(13, 148, 136, .08);
+  font-size: .68rem;
+  font-weight: 700;
+}
+
+.md-typeset .cf-subtitle {
+  max-width: 31rem;
+  margin: 0 0 1.1rem;
+  color: var(--md-default-fg-color--light);
+  font-size: .9rem;
+  line-height: 1.75;
+  font-weight: 400;
+}
+
+.md-typeset .cf-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .42rem;
+  margin: 1rem 0 1.1rem;
+}
+
+.md-typeset .cf-tags span {
+  padding: .24rem .5rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .25rem;
+  color: var(--md-default-fg-color--light);
+  background: var(--md-default-bg-color);
+  font-size: .68rem;
+}
+
+.md-typeset .cf-install {
+  max-width: 34rem;
+  margin: 0 0 1rem;
+}
+
+.md-typeset .cf-install pre {
+  margin: 0;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .35rem;
+  background: #0f172a;
+}
+
+.md-typeset .cf-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: .5rem;
+  margin: 1rem 0 1rem;
+}
+
+.md-typeset .cf-actions .md-button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 6.15rem;
+  min-width: 0;
+  margin: 0;
+  padding: .5rem .4rem;
+  font-size: .72rem;
+  white-space: nowrap;
+}
+
+.md-typeset .cf-shot {
+  overflow: hidden;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .45rem;
+  background: var(--md-default-bg-color);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, .14);
+}
+
+.md-typeset .cf-shot img {
+  display: block;
+  width: 100%;
+  margin: 0;
+}
+
+.md-typeset .cf-shot-main {
+  transform: translateY(-1rem);
+}
+
+.md-typeset .cf-shot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0 2.5rem;
+}
+
+.md-typeset .cf-shot-grid figure {
+  margin: 0;
+}
+
+.md-typeset .cf-shot-grid figure img {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .35rem;
+  box-shadow: 0 16px 45px rgba(15, 23, 42, .08);
+}
+
+.md-typeset .cf-shot-grid figcaption {
+  margin-top: .45rem;
+  color: var(--md-default-fg-color--light);
+  font-size: .72rem;
+}
+
+.md-typeset .feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .8rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.md-typeset .feature-card {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: .35rem;
+  padding: .95rem;
+  background: var(--md-default-bg-color);
+}
+
+.md-typeset .feature-card h3 {
+  margin-top: 0;
+  margin-bottom: .35rem;
+  font-size: .92rem;
+}
+
+.md-typeset .feature-card p {
+  margin-bottom: 0;
+  color: var(--md-default-fg-color--light);
+  font-size: .74rem;
+}
+
+@media screen and (max-width: 1180px) {
+  .md-typeset .cf-hero {
+    grid-template-columns: minmax(320px, .78fr) minmax(460px, 1.22fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem);
+  }
+}
+
+@media screen and (max-width: 960px) {
+  .md-typeset .cf-hero,
+  .md-typeset .feature-grid,
+  .md-typeset .cf-shot-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .md-typeset .cf-hero {
+    min-height: auto;
+    padding-top: 1.25rem;
+  }
+
+  .md-typeset .cf-shot-main {
+    transform: none;
+  }
+}
+
+@media screen and (max-width: 560px) {
+  .md-typeset .cf-actions {
+    flex-wrap: wrap;
+  }
+}

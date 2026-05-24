@@ -7,7 +7,7 @@ function showPage(name) {
   document.getElementById('page-' + name).classList.add('active');
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
 
-  const titles = { chat: '任务开发', tasks: '任务监控', projects: '项目管理', accounts: '账号状态' };
+  const titles = { chat: '任务开发', tasks: '任务监控', workflows: '工作流', projects: '项目管理', accounts: '账号状态' };
   document.getElementById('page-title').textContent = titles[name] || name;
 
   // 控制 Tab 系统和 + 按钮的显示/隐藏
@@ -21,12 +21,14 @@ function showPage(name) {
     renderTopbarTabs();
   }
 
-  refreshCurrent();
+  if (name === 'workflows') loadWorkflows();
+  else refreshCurrent();
 }
 
 function refreshCurrent() {
   if (currentPage === 'chat') loadConversations();
   else if (currentPage === 'tasks') loadTasks();
+  else if (currentPage === 'workflows') loadWorkflows();
   else if (currentPage === 'projects') loadProjectsDashboard();
   else if (currentPage === 'accounts') loadAccounts();
 }

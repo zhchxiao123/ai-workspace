@@ -6,14 +6,14 @@
 
 ### 💡 为什么需要 CoderFleet？
 
-在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex）经常面临尴尬的使用瓶颈：
+在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex、OpenCode）经常面临尴尬的使用瓶颈：
 * **单账号（Plus 会员）的额度不够用**，频繁遭遇大模型服务商的 Rate Limit 或当日使用上限；
 * **高倍数套餐（如 5x/10x/20x 的账号会员）又极其昂贵**，在周期内往往使用量根本用不完，性价比极低；
 * 最优解通常是**自己申请 2 个或多个普通/Plus 账号轮流使用**，但在单台机器上频繁切换账号、管理认证数据、以及维护隔离的网络环境极其繁杂。
 
 **CoderFleet 正是为此而生！**
 
-它允许你在单台宿主机上同时运行多个 **Codex CLI** 和 **Claude Code** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
+它允许你在单台宿主机上同时运行多个 **Codex CLI**、**Claude Code** 和 **OpenCode** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
 
 ---
 
@@ -122,6 +122,7 @@ coderfleet build
 - Rust 1.93.0
 - Codex CLI（`@openai/codex`）
 - Claude Code（`@anthropic-ai/claude-code`）
+- OpenCode（`opencode-ai`）
 
 ### 3. 添加账号与项目
 
@@ -133,6 +134,10 @@ coderfleet project add app-a alice ~/projects/app-a
 # Claude Code 账号
 coderfleet account add bob TYPE=claude
 coderfleet project add app-b bob ~/projects/app-b
+
+# OpenCode 账号
+coderfleet account add carol TYPE=opencode
+coderfleet project add app-c carol ~/projects/app-c
 ```
 
 ### 4. 生成配置并启动容器
@@ -157,6 +162,7 @@ CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复�
 # 打开多个终端
 coderfleet enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice）
 coderfleet enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
+coderfleet enter app-c   # 进入 app-c 项目容器（使用 OpenCode 账号 carol）
 ```
 
 进入后使用对应 CLI：
@@ -167,6 +173,9 @@ codex "帮我实现用户认证模块"
 
 # Claude Code 容器内
 claude "帮我重构这个函数"
+
+# OpenCode 容器内
+opencode run "帮我修复测试"
 ```
 
 ### 7. 启动调度服务与 Web 控制台
@@ -224,7 +233,7 @@ coderfleet task logs <任务ID> -f
 
 | 命令 | 说明 |
 |------|------|
-| `coderfleet account add <名称> TYPE=codex\|claude [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号（自动停止关联容器） |
 | `coderfleet account list` | 列出所有账号及运行状态 |
 | `coderfleet login <账号名\|all>` | 登录账号并持久化认证文件 |
@@ -287,10 +296,12 @@ RELAY_IMAGE=gogost/gost:3
 ### accounts.conf
 
 ```conf
-# 格式：NAME=<名称>  TYPE=codex|claude  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
+# 格式：NAME=<名称>  TYPE=codex|claude|opencode  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
 NAME=alice       TYPE=codex
 NAME=bob         TYPE=claude
+NAME=carol       TYPE=opencode
 NAME=claude-api  TYPE=claude  AUTH=env  ENV_FILE=./accounts/claude-api/env
+NAME=opencode-api TYPE=opencode AUTH=env ENV_FILE=./accounts/opencode-api/env
 NAME=local       TYPE=claude  PROXY=off
 ```
 
@@ -299,16 +310,17 @@ NAME=local       TYPE=claude  PROXY=off
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `NAME` | 是 | 账号名，只允许字母/数字/连字符 |
-| `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code |
-| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code 可用 `env` 通过 API Key 认证 |
+| `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code，`opencode` 使用 OpenCode |
+| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code / OpenCode 可用 `env` 通过 API Key 认证 |
 | `ENV_FILE` | 否 | Docker Compose env_file 路径；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
 | `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量，连接普通网络 |
 
-`AUTH=env` 用于 Claude Code API key 场景：
+`AUTH=env` 用于 Claude Code / OpenCode API key 场景：
 
 ```bash
 coderfleet account add claude-api TYPE=claude --auth env
-# 然后编辑 ~/.coderfleet/accounts/claude-api/env
+coderfleet account add opencode-api TYPE=opencode --auth env
+# 然后编辑对应的 ~/.coderfleet/accounts/<账号名>/env
 ```
 
 示例 env 文件：
@@ -318,7 +330,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ANTHROPIC_BASE_URL=https://api.anthropic.com
 ```
 
-> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`，`login all` 会自动跳过 `AUTH=env` 账号。
+> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`；OpenCode 会读取环境变量和项目 `.env` 中的 provider API key；`login all` 会自动跳过 `AUTH=env` 账号。
 
 ### projects.conf
 
@@ -385,13 +397,15 @@ coderfleet check-proxy
 
 ## 认证机制
 
-两种 CLI 的认证目录挂载方式：
+三种 CLI 的认证目录挂载方式：
 
 | CLI | 认证目录（容器内） | 本地存储 |
 |-----|--------------------|----------|
 | Codex | `/home/byclaw/.codex` | `accounts/<名称>/` |
 | Claude Code | `/home/byclaw/.claude` | `accounts/<名称>/` |
 | Claude Code API key | 同上 | `ENV_FILE` 指定文件 |
+| OpenCode | `/home/byclaw/.opencode`（内部设置 XDG data/config/state/cache） | `accounts/<名称>/` |
+| OpenCode API key | 环境变量 | `ENV_FILE` 指定文件 |
 
 每个账号的认证数据独立存储，容器删除重建后无需重新登录。
 

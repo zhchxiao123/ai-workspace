@@ -117,7 +117,7 @@ class ChatLogRenderer {
     for (const raw of lines) {
       const line = raw.trimEnd();
       if (state === 'before') {
-        if (line.startsWith('=== CoderFleet Task Log ===')) { state = 'header'; headerLines = [line]; }
+        if (line.startsWith('=== CoderFleet Task Log ===') || line.startsWith('=== AICM Task Log ===')) { state = 'header'; headerLines = [line]; }
         continue;
       }
       if (state === 'header') {
@@ -142,7 +142,7 @@ class ChatLogRenderer {
   push(line) {
     if (!line.trim()) return;
 
-    if (line.startsWith('=== CoderFleet Task Log ===')) {
+    if (line.startsWith('=== CoderFleet Task Log ===') || line.startsWith('=== AICM Task Log ===')) {
       if (this.inner && this.inner.querySelector('.chat-meta-block')) {
         return;
       }
@@ -172,7 +172,7 @@ class ChatLogRenderer {
     }
 
     // 跳过已渲染的头尾标记（初次全量加载后 SSE 会重复推）
-    if (line.startsWith('=== CoderFleet') || line.startsWith('======')) return;
+    if (line.startsWith('=== CoderFleet') || line.startsWith('=== AICM') || line.startsWith('======')) return;
     if (line.startsWith('id:') || line.startsWith('account:') ||
       line.startsWith('project:') || line.startsWith('started:') ||
       line.startsWith('prompt:') || line.startsWith('container')) return;
@@ -210,7 +210,13 @@ class ChatLogRenderer {
       case 'reasoning': return this._thinking(d.text || d.thinking || '');
       case 'item.started': return this._codexItemStarted(d.item);
       case 'item.completed': return this._codexItemCompleted(d.item);
-      // 其余静默忽略
+      // OpenCode
+      case 'step_start': return this._opencodeStepStart(d);
+      case 'tool_use': return this._opencodeToolUse(d);
+      case 'text': return this._opencodeText(d);
+      case 'step_finish': return this._opencodeStepFinish(d);
+      default:
+        return this._rawLine(JSON.stringify(d));
     }
   }
 
@@ -400,6 +406,116 @@ class ChatLogRenderer {
     `;
         this._appendNode(el);
       }
+    }
+  }
+
+  // ── OpenCode ──────────────────────────────────────────────
+  _opencodeStepStart(d) {
+    const session = d.sessionID ? '#' + String(d.sessionID).slice(0, 8) : '';
+    this._pill('OpenCode 开始', session);
+  }
+
+  _opencodeText(d) {
+    const part = d.part || {};
+    const text = part.text || d.text || '';
+    if (!text.trim()) return;
+
+    const thoughtMatch = text.match(/^THOUGHT:\s*([\s\S]*?)\n\nRESPONSE:\s*([\s\S]*)$/);
+    if (thoughtMatch) {
+      this._thinking(thoughtMatch[1].trim());
+      const response = this._cleanOpenCodeResponse(thoughtMatch[2]);
+      if (response) this._bubble(response, 'OpenCode');
+      return;
+    }
+
+    const response = this._cleanOpenCodeResponse(text);
+    if (response) this._bubble(response, 'OpenCode');
+  }
+
+  _opencodeToolUse(d) {
+    const part = d.part || {};
+    const state = part.state || {};
+    const id = part.callID || part.id || ('oc-' + Math.random().toString(36).slice(2, 8));
+    const name = this._opencodeToolName(part.tool || state.tool || 'tool');
+    const input = this._normalizeOpenCodeToolInput(name, state.input || {});
+    const metadata = state.metadata || {};
+    const output = state.output ?? metadata.output ?? '';
+    const exitCode = metadata.exit;
+    const isComplete = state.status === 'completed' || state.status === 'error' || state.status === 'failed';
+    const isError = state.status === 'error' || state.status === 'failed' || (exitCode != null && exitCode !== 0);
+
+    if (!this.toolMap[id]) {
+      this._toolUse({ id, name, input });
+    }
+    if (isComplete) {
+      this._fillTool(id, output, isError);
+    }
+  }
+
+  _opencodeToolName(name) {
+    const n = String(name || '').toLowerCase();
+    if (n === 'bash' || n === 'shell') return 'Bash';
+    if (n === 'write') return 'Write';
+    if (n === 'read') return 'Read';
+    if (n === 'edit') return 'Edit';
+    if (n === 'grep') return 'Grep';
+    if (n === 'glob') return 'Glob';
+    if (n === 'webfetch' || n === 'web_fetch') return 'WebFetch';
+    if (n === 'websearch' || n === 'web_search') return 'WebSearch';
+    return name ? String(name) : 'tool';
+  }
+
+  _normalizeOpenCodeToolInput(name, input) {
+    if (!input) return {};
+    const normalized = { ...input };
+
+    if (normalized.file_path == null) {
+      normalized.file_path = input.filePath || input.filepath || input.path || '';
+    }
+    if (normalized.old_string == null && input.oldString != null) {
+      normalized.old_string = input.oldString;
+    }
+    if (normalized.new_string == null && input.newString != null) {
+      normalized.new_string = input.newString;
+    }
+    if (normalized.url == null && input.href != null) {
+      normalized.url = input.href;
+    }
+    if (normalized.query == null && input.search != null) {
+      normalized.query = input.search;
+    }
+
+    return normalized;
+  }
+
+  _cleanOpenCodeResponse(text) {
+    return String(text || '')
+      .replace(/<step>[\s\S]*?<\/step>/g, '')
+      .trim();
+  }
+
+  _opencodeStepFinish(d) {
+    const part = d.part || {};
+    const tokens = part.tokens || {};
+    const cache = tokens.cache || {};
+    const items = [];
+    if (tokens.input != null) items.push(`输入 <span>${tokens.input.toLocaleString()}</span> tok`);
+    if (tokens.output != null) items.push(`输出 <span>${tokens.output.toLocaleString()}</span> tok`);
+    if (tokens.reasoning != null && tokens.reasoning > 0) items.push(`推理 <span>${tokens.reasoning.toLocaleString()}</span> tok`);
+    if (cache.read != null && cache.read > 0) items.push(`缓存读取 <span>${cache.read.toLocaleString()}</span> tok`);
+    if (cache.write != null && cache.write > 0) items.push(`缓存写入 <span>${cache.write.toLocaleString()}</span> tok`);
+    if (tokens.total != null) items.push(`总计 <span>${tokens.total.toLocaleString()}</span> tok`);
+    if (part.cost != null) items.push(`费用 <span>$${Number(part.cost).toFixed(4)}</span>`);
+
+    if (items.length) {
+      const el = document.createElement('div');
+      el.className = 'chat-usage timeline-node is-muted';
+      el.innerHTML = items.map(i => `<div class="usage-item">${i}</div>`).join('');
+      this._appendNode(el);
+    }
+
+    if (!this._footerRendered) {
+      this._renderFooter(part.reason === 'error' ? 'failed' : 'done');
     }
   }
 

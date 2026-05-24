@@ -53,3 +53,5 @@ core
 .*-uploads
 
 server.log
+
+update.sh

@@ -9,6 +9,7 @@ let sseSource = null;
 let followMode = false;
 let renderer = null;
 let conversationsCache = {};
+let chatConversationsList = [];
 let projectsCache = [];
 let projectContext = null;
 let projectDashboardData = { tasks: [], accounts: [] };
@@ -22,6 +23,10 @@ let chatRenderer = null;
 let chatNewSessionProject = '';
 let currentChatProjectName = '';
 let pendingImages = [];
+let chatUploadingImages = 0;
+const CHAT_PROJECT_VISIBLE_LIMIT = 5;
+let chatExpandedProjectNames = new Set();
+let chatCollapsedProjectNames = new Set();
 let tasksCache = [];
 let terminalContext = {
   projectName: '',
@@ -37,6 +42,19 @@ let taskRowsCache = [];
 let taskPage = 1;
 const TASK_PAGE_SIZE = 12;
 let globalAccountsCache = [];
+
+// ── 工作流 ────────────────────────────────────────────────
+let activePipelineId = null;
+let workflowSelectedTaskId = null;
+let pipelinesCache = [];
+let workflowTasksCache = [];
+let wfActiveTab = 'templates';
+
+// ── 工作流模板 ────────────────────────────────────────────
+let activeTemplateId = null;
+let templatesCache = [];
+let templateDirty = false;
+let _nodeCounter = 0;
 
 function setText(id, value) {
   const el = document.getElementById(id);
@@ -74,3 +92,26 @@ function toggleSidebar() {
   applySidebarCollapsed(collapsed);
 }
 
+function applyChatSidebarCollapsed(collapsed) {
+  const layout = document.querySelector('#page-chat .chat-layout');
+  const btn = document.getElementById('chat-sidebar-toggle');
+  const icon = document.getElementById('chat-sidebar-toggle-icon');
+  if (!layout || !btn || !icon) return;
+
+  layout.classList.toggle('chat-sidebar-collapsed', collapsed);
+  btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  btn.setAttribute('aria-label', collapsed ? '显示对话侧边栏' : '隐藏对话侧边栏');
+  btn.setAttribute('title', collapsed ? '显示对话侧边栏' : '隐藏对话侧边栏');
+  icon.textContent = collapsed ? '>' : '<';
+}
+
+function initChatSidebarState() {
+  applyChatSidebarCollapsed(localStorage.getItem('coderfleet.chatSidebarCollapsed') === 'true');
+}
+
+function toggleChatSidebar() {
+  const layout = document.querySelector('#page-chat .chat-layout');
+  const collapsed = !(layout?.classList.contains('chat-sidebar-collapsed'));
+  localStorage.setItem('coderfleet.chatSidebarCollapsed', collapsed ? 'true' : 'false');
+  applyChatSidebarCollapsed(collapsed);
+}

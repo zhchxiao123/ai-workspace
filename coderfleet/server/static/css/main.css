@@ -108,7 +108,7 @@
     }
 
     .layout.sidebar-collapsed .sidebar {
-      width: 72px;
+      width: 56px;
     }
 
     .main {
@@ -146,18 +146,23 @@
     }
 
     .brand-mark {
-      width: 36px;
-      height: 36px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
+      width: 30px;
+      height: 30px;
+      border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+      border-radius: 7px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
-      font-weight: 800;
-      color: var(--text);
-      background: var(--surface-2);
+      background: #071326;
+      overflow: hidden;
       flex-shrink: 0;
+    }
+
+    .brand-mark img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
     }
 
     .brand-text {
@@ -206,8 +211,8 @@
 
     .layout.sidebar-collapsed .logo {
       justify-content: center;
-      padding-left: 10px;
-      padding-right: 10px;
+      padding-left: 8px;
+      padding-right: 8px;
     }
 
     .layout.sidebar-collapsed .brand-mark {
@@ -216,6 +221,11 @@
 
     .layout.sidebar-collapsed .sidebar-toggle svg {
       transform: rotate(180deg);
+    }
+
+    .layout.sidebar-collapsed .sidebar-toggle {
+      width: 34px;
+      height: 34px;
     }
 
     .nav-item {
@@ -236,7 +246,10 @@
 
     .layout.sidebar-collapsed .nav-item {
       justify-content: center;
-      padding: 9px;
+      min-height: 40px;
+      margin-left: 8px;
+      margin-right: 8px;
+      padding: 8px;
     }
 
     .sidebar-label {
@@ -569,6 +582,11 @@
     .badge.claude {
       background: var(--amber-bg);
       color: var(--amber);
+    }
+
+    .badge.opencode {
+      background: var(--green-bg);
+      color: var(--green);
     }
 
     .badge.busy {
@@ -1001,6 +1019,23 @@
     .form-group select:focus,
     .form-group textarea:focus {
       border-color: var(--accent);
+    }
+
+    .form-hint {
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      color: var(--text-2);
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 10px;
+    }
+
+    .form-hint.danger {
+      border-color: rgba(239, 68, 68, .35);
+      background: var(--red-bg);
+      color: var(--red);
     }
 
     .btn:focus-visible,
@@ -2202,6 +2237,31 @@
       word-break: break-all;
     }
 
+    .user-image-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .user-image-attachment {
+      width: 88px;
+      height: 88px;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.12);
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .user-image-attachment img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
     /* 当显示 AI 对话页时，让主 content 区域也无 padding 并隐藏溢出，使聊天界面无缝贴合自适应 */
     .main:has(#page-chat.active) .content {
       padding: 0;
@@ -2217,6 +2277,7 @@
       display: flex;
       height: 100%;
       overflow: hidden;
+      position: relative;
     }
 
     .chat-sidebar {
@@ -2227,6 +2288,43 @@
       display: flex;
       flex-direction: column;
       padding: 14px;
+    }
+
+    .chat-sidebar-toggle {
+      width: 24px;
+      min-width: 24px;
+      height: 54px;
+      margin: auto 0;
+      border: 1px solid var(--border);
+      border-left: none;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      background: var(--surface);
+      color: var(--text-3);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 750;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      z-index: 2;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+
+    .chat-sidebar-toggle:hover {
+      background: var(--surface-2);
+      color: var(--text);
+      border-color: var(--border-md);
+    }
+
+    .chat-layout.chat-sidebar-collapsed .chat-sidebar {
+      display: none;
+    }
+
+    .chat-layout.chat-sidebar-collapsed .chat-sidebar-toggle {
+      border-left: 1px solid var(--border);
     }
 
     .new-chat-btn {
@@ -2260,15 +2358,31 @@
       color: var(--text-2);
       user-select: none;
       position: relative;
+      cursor: pointer;
+      border-radius: var(--radius);
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .chat-project-header:hover {
+      background: var(--surface-2);
+      color: var(--text);
     }
 
     .proj-header-title {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .proj-collapse-icon {
+      width: 10px;
+      color: var(--text-3);
+      font-size: 12px;
+      line-height: 1;
+      flex-shrink: 0;
     }
 
     .chat-project-header svg.proj-folder-icon {
@@ -2311,11 +2425,32 @@
       padding-left: 12px;
     }
 
+    .chat-project-group.collapsed .chat-project-items {
+      display: none;
+    }
+
     .chat-project-empty {
       padding: 4px 8px 4px 20px;
       font-size: 12px;
       color: var(--text-3);
       user-select: none;
+    }
+
+    .chat-project-expand-btn {
+      margin: 4px 0 2px 34px;
+      padding: 4px 0;
+      border: none;
+      background: transparent;
+      color: var(--text-3);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .chat-project-expand-btn:hover {
+      color: var(--text);
     }
 
     .chat-session-item {
@@ -2520,8 +2655,16 @@
     .chat-image-preview-row {
       display: flex;
       flex-wrap: wrap;
+      align-items: center;
       gap: 8px;
       padding: 8px 0 4px;
+    }
+
+    .chat-upload-status {
+      font-size: 12px;
+      color: var(--text-2);
+      padding: 0 4px;
+      align-self: center;
     }
 
     .chat-image-thumb {
@@ -2903,4 +3046,698 @@
     @keyframes spin {
       from { transform: rotate(0deg); }
       to { transform: rotate(360deg); }
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       工作流 / DAG 页面
+    ══════════════════════════════════════════════════════════════ */
+
+    .main:has(#page-workflows.active) .content {
+      padding: 0;
+      overflow: hidden;
+    }
+
+    #page-workflows.active {
+      height: 100%;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .workflows-layout {
+      display: flex;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* ── 左侧流水线列表 ── */
+    .workflows-sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface) 96%, transparent);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .workflows-sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 14px 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .pipeline-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .pipeline-list-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-1);
+      transition: background 0.12s;
+      user-select: none;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .pipeline-list-item:hover {
+      background: var(--bg);
+    }
+
+    .pipeline-list-item.active {
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      color: var(--accent);
+    }
+
+    .pipeline-status-bar {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      border-radius: 2px 0 0 2px;
+    }
+
+    .pipeline-status-bar.running  { background: var(--blue);   }
+    .pipeline-status-bar.done     { background: var(--green);  }
+    .pipeline-status-bar.failed   { background: var(--red);    }
+    .pipeline-status-bar.killed   { background: var(--orange); }
+    .pipeline-status-bar.pending  { background: var(--text-3); }
+    .pipeline-status-bar.mixed    { background: linear-gradient(180deg, var(--blue) 0%, var(--green) 100%); }
+
+    .pipeline-list-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pipeline-list-count {
+      font-size: 11px;
+      color: var(--text-3);
+      flex-shrink: 0;
+    }
+
+    /* ── 中间 DAG 画布 ── */
+    .workflows-canvas-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .workflows-canvas-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+      min-height: 46px;
+    }
+
+    .workflows-canvas-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-1);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workflows-canvas-area {
+      flex: 1;
+      position: relative;
+      overflow: auto;
+    }
+
+    .dag-canvas {
+      position: relative;
+      min-width: 100%;
+      min-height: 100%;
+    }
+
+    .dag-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    /* DAG 边（用 CSS 类而非 presentation attr，确保 CSS 变量生效） */
+    .dag-edge {
+      fill: none;
+      stroke: var(--border-md);
+      stroke-width: 2;
+      stroke-dasharray: 6 3;
+    }
+
+    /* ── DAG 节点卡片 ── */
+    .dag-node {
+      position: absolute;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      overflow: visible;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .dag-node:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+
+    .dag-node.dag-selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+
+    .dag-node-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg) 50%, transparent);
+      border-radius: var(--radius) var(--radius) 0 0;
+      overflow: hidden;
+    }
+
+    .dag-node-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .dag-node.dag-status-running  .dag-node-status-dot { background: var(--blue);   animation: pulse 1.4s infinite; }
+    .dag-node.dag-status-done     .dag-node-status-dot { background: var(--green);  }
+    .dag-node.dag-status-failed   .dag-node-status-dot { background: var(--red);    }
+    .dag-node.dag-status-killed   .dag-node-status-dot { background: var(--orange); }
+    .dag-node.dag-status-pending  .dag-node-status-dot { background: var(--text-3); }
+    .dag-node.dag-status-scheduled .dag-node-status-dot { background: var(--text-3); }
+
+    .dag-node.dag-status-running  { border-color: color-mix(in srgb, var(--blue)   40%, var(--border)); }
+    .dag-node.dag-status-done     { border-color: color-mix(in srgb, var(--green)  40%, var(--border)); }
+    .dag-node.dag-status-failed   { border-color: color-mix(in srgb, var(--red)    40%, var(--border)); }
+    .dag-node.dag-status-killed   { border-color: color-mix(in srgb, var(--orange) 40%, var(--border)); }
+
+    .dag-node-account {
+      color: var(--text-3);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dag-node-type-badge {
+      margin-left: auto;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .dag-node-prompt {
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.45;
+      flex: 1;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .dag-node-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 10px 6px 10px;
+      font-size: 11px;
+      color: var(--text-3);
+      border-top: 1px solid var(--border);
+    }
+
+    /* empty / placeholder state */
+    .dag-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 320px;
+      height: 100%;
+      gap: 8px;
+      color: var(--text-3);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    /* dep 复选框行 */
+    .dep-checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--bg) 70%, transparent);
+    }
+
+    .dep-checkbox-row input[type=checkbox] {
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .dep-checkbox-row label {
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── 右侧详情面板 ── */
+    .workflows-detail {
+      width: 0;
+      flex-shrink: 0;
+      border-left: 1px solid transparent;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: width 0.2s ease, border-color 0.2s;
+    }
+
+    .workflows-detail.open {
+      width: 400px;
+      border-left-color: var(--border);
+    }
+
+    .workflow-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-2);
+      flex-shrink: 0;
+    }
+
+    .workflow-detail-header .close-btn {
+      margin-left: auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-3);
+      padding: 2px 6px;
+      border-radius: var(--radius);
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .workflow-detail-header .close-btn:hover {
+      color: var(--text-1);
+      background: var(--bg);
+    }
+
+    .workflow-detail-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      color: var(--text-3);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .workflow-detail-log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 14px;
+      font-size: 12px;
+      line-height: 1.6;
+      font-family: var(--mono);
+    }
+
+    /* ── 模态框：新流水线 / 添加根任务 / 派生子任务 ── */
+    #new-pipeline-modal,
+    #add-root-task-modal,
+    #spawn-subtask-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 1100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #new-pipeline-modal.open,
+    #add-root-task-modal.open,
+    #spawn-subtask-modal.open {
+      display: flex;
+    }
+
+    .workflow-modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius) * 1.5);
+      padding: 24px 28px;
+      width: 480px;
+      max-width: 92vw;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.25);
+    }
+
+    .workflow-modal-box h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-1);
+      margin: 0;
+    }
+
+    .workflow-modal-box .form-row {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .workflow-modal-box label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-3);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .workflow-modal-box textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .workflow-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       工作流 Tab 栏
+    ══════════════════════════════════════════════════════════ */
+    .wf-tabs {
+      display: flex;
+      gap: 2px;
+      padding: 10px 16px 0;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+
+    .wf-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 7px 16px 9px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-3);
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      margin-bottom: -1px;
+    }
+
+    .wf-tab:hover {
+      color: var(--text-2);
+    }
+
+    .wf-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .wf-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wf-panel > .workflows-layout {
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       模板编辑器工具栏
+    ══════════════════════════════════════════════════════════ */
+    .tpl-name-input {
+      background: none;
+      border: none;
+      border-bottom: 1.5px solid var(--border-md);
+      border-radius: 0;
+      padding: 3px 6px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      width: 220px;
+      min-width: 120px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .tpl-name-input:focus {
+      border-bottom-color: var(--accent);
+    }
+
+    /* ══════════════════════════════════════════════════════════
+       Drawflow 画布挂载点
+    ══════════════════════════════════════════════════════════ */
+    #drawflow-mount {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Drawflow 创建的容器 */
+    .parent-drawflow {
+      width: 100% !important;
+      height: 100% !important;
+      /* 点阵背景 */
+      background-color: var(--bg) !important;
+      background-image: radial-gradient(circle, var(--border-md) 1px, transparent 1px) !important;
+      background-size: 24px 24px !important;
+    }
+
+    /* ── 覆盖 Drawflow 节点默认样式 ── */
+    .drawflow .drawflow-node {
+      background: var(--surface) !important;
+      border: 1.5px solid var(--border-md) !important;
+      border-radius: var(--radius-lg) !important;
+      box-shadow: 0 2px 10px rgba(0,0,0,.07) !important;
+      padding: 0 !important;
+      min-height: unset !important;
+      width: 230px !important;
+      color: var(--text) !important;
+      cursor: move !important;
+      align-items: stretch !important;
+    }
+
+    .drawflow .drawflow-node.selected {
+      background: var(--surface) !important;
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 0 3px rgba(13,148,136,.18), 0 2px 12px rgba(0,0,0,.1) !important;
+    }
+
+    .drawflow .drawflow-node:hover {
+      border-color: var(--accent) !important;
+    }
+
+    .drawflow .drawflow_content_node {
+      width: 100% !important;
+      padding: 0 !important;
+    }
+
+    /* ── 端口（连接圆点）── */
+    .drawflow .drawflow-node .input,
+    .drawflow .drawflow-node .output {
+      width: 13px !important;
+      height: 13px !important;
+      background: var(--surface) !important;
+      border: 2px solid var(--border-md) !important;
+      border-radius: 50% !important;
+      cursor: crosshair !important;
+      transition: background .15s, border-color .15s !important;
+    }
+
+    .drawflow .drawflow-node .input:hover,
+    .drawflow .drawflow-node .output:hover {
+      background: var(--accent) !important;
+      border-color: var(--accent) !important;
+    }
+
+    .drawflow .drawflow-node .input  { left: -8px !important; }
+    .drawflow .drawflow-node .output { right: -8px !important; }
+
+    /* ── 连线 ── */
+    .drawflow .connection .main-path {
+      stroke: var(--border-md) !important;
+      stroke-width: 2.5px !important;
+      fill: none !important;
+    }
+
+    .drawflow .connection .main-path:hover {
+      stroke: var(--accent) !important;
+      cursor: pointer !important;
+    }
+
+    .drawflow .connection .main-path.selected {
+      stroke: var(--accent) !important;
+    }
+
+    /* 重新路由中间点 */
+    .drawflow .connection .point {
+      fill: var(--surface) !important;
+      stroke: var(--border-md) !important;
+      stroke-width: 2 !important;
+    }
+
+    .drawflow .connection .point:hover,
+    .drawflow .connection .point.selected {
+      fill: var(--accent) !important;
+      stroke: var(--accent) !important;
+    }
+
+    /* 删除按钮 */
+    .drawflow-delete {
+      background: var(--red) !important;
+      border-color: var(--surface) !important;
+      width: 22px !important;
+      height: 22px !important;
+      line-height: 22px !important;
+      font-size: 14px !important;
+      border-radius: 50% !important;
+    }
+
+    /* ── 节点内容 HTML ── */
+    .df-tpl-node {
+      display: flex;
+      flex-direction: column;
+      border-radius: calc(var(--radius-lg) - 2px);
+      overflow: hidden;
+    }
+
+    .df-node-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px 7px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      min-height: 34px;
+    }
+
+    .df-node-role {
+      font-size: 10px;
+      font-weight: 500;
+      padding: 1px 7px;
+      border-radius: 10px;
+      background: var(--accent-bg);
+      color: var(--accent);
+      margin-left: auto;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .df-node-prompt {
+      padding: 6px 12px 8px;
+      font-size: 11px;
+      color: var(--text-2);
+      line-height: 1.5;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      min-height: 36px;
+    }
+
+    .df-node-placeholder {
+      color: var(--text-3);
+      font-style: italic;
+      font-weight: 400;
+    }
+
+    /* ── 节点属性侧面板 ── */
+    #tpl-node-detail {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .tpl-detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .tpl-detail-hint {
+      font-size: 11px;
+      color: var(--text-3);
+      line-height: 1.5;
+      padding: 8px 10px;
+      background: var(--bg);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
     }

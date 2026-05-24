@@ -113,7 +113,7 @@ def _server_status(ws: Path) -> None:
 def main(ctx: click.Context) -> None:
     """CoderFleet
 
-    Manages multiple Claude Code / Codex accounts in isolated Docker containers.
+    Manages multiple Claude Code / Codex / OpenCode accounts in isolated Docker containers.
 
     Workspace location: CODERFLEET_WORKSPACE env var, or ~/.coderfleet/ by default.
     """

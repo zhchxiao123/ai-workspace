@@ -10,6 +10,7 @@ async function loadConversations(renderWorkspace = true) {
     ]);
     projectsCache = projects;
     tasksCache = tasks;
+    chatConversationsList = convs;
 
     conversationsCache = {};
     convs.forEach(c => { conversationsCache[c.id] = c.name; });
@@ -84,11 +85,14 @@ function renderConversations(convs, projects, tasks) {
     });
 
     items.sort((a, b) => new Date(b.time) - new Date(a.time));
+    const encodedProjectName = encodeURIComponent(proj.name).replace(/'/g, '%27');
+    const isCollapsed = chatCollapsedProjectNames.has(proj.name);
 
     html += `
-  <div class="chat-project-group">
-    <div class="chat-project-header">
+  <div class="chat-project-group ${isCollapsed ? 'collapsed' : ''}">
+    <div class="chat-project-header" onclick="toggleChatProjectGroup('${encodedProjectName}')" title="${isCollapsed ? '展开项目' : '收起项目'}">
       <div class="proj-header-title" title="${esc(proj.name)}">
+        <span class="proj-collapse-icon">${isCollapsed ? '+' : '-'}</span>
         ${folderSvg}
         <span>${esc(proj.name)}</span>
       </div>
@@ -102,10 +106,16 @@ function renderConversations(convs, projects, tasks) {
     <div class="chat-project-items">
 `;
 
-    if (items.length === 0) {
+    const isExpanded = chatExpandedProjectNames.has(proj.name);
+    const visibleItems = isExpanded ? items : items.slice(0, CHAT_PROJECT_VISIBLE_LIMIT);
+    const hiddenCount = Math.max(0, items.length - visibleItems.length);
+
+    if (isCollapsed) {
+      html += '';
+    } else if (items.length === 0) {
       html += `<div class="chat-project-empty">暂无对话</div>`;
     } else {
-      html += items.map(item => {
+      html += visibleItems.map(item => {
         const isActive = item.id === activeConversationId;
         const displayTime = fmtTimeFriendly(item.time);
         const archiveBtn = item.type === 'conversation'
@@ -133,6 +143,13 @@ function renderConversations(convs, projects, tasks) {
         <span class="session-actions">${archiveBtn}${deleteBtn}</span>
       </div>`;
       }).join('');
+
+      if (items.length > CHAT_PROJECT_VISIBLE_LIMIT) {
+        html += `
+      <button class="chat-project-expand-btn" onclick="event.stopPropagation(); toggleChatProjectItems('${encodedProjectName}')">
+        ${isExpanded ? '收起' : `展开显示 ${hiddenCount} 个`}
+      </button>`;
+      }
     }
 
     html += `
@@ -142,6 +159,34 @@ function renderConversations(convs, projects, tasks) {
   });
 
   list.innerHTML = html;
+}
+
+function rerenderChatProjectList() {
+  renderConversations(
+    chatConversationsList,
+    projectsCache,
+    tasksCache,
+  );
+}
+
+function toggleChatProjectGroup(encodedProjectName) {
+  const projectName = decodeURIComponent(encodedProjectName);
+  if (chatCollapsedProjectNames.has(projectName)) {
+    chatCollapsedProjectNames.delete(projectName);
+  } else {
+    chatCollapsedProjectNames.add(projectName);
+  }
+  rerenderChatProjectList();
+}
+
+function toggleChatProjectItems(encodedProjectName) {
+  const projectName = decodeURIComponent(encodedProjectName);
+  if (chatExpandedProjectNames.has(projectName)) {
+    chatExpandedProjectNames.delete(projectName);
+  } else {
+    chatExpandedProjectNames.add(projectName);
+  }
+  rerenderChatProjectList();
 }
 
 // 选择会话
@@ -208,6 +253,7 @@ function bindChatTextareaEvents(textarea) {
       sendChatMessage();
     }
   });
+  textarea.addEventListener('paste', handleChatPaste);
 }
 
 function scrollChatViewportToBottom() {
@@ -339,6 +385,7 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
         <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
       </div>
       <div class="user-bubble-content">${esc(task.prompt)}</div>
+      ${renderTaskImageAttachments(task)}
     </div>`;
       chatContent.appendChild(userWrap);
 
@@ -382,8 +429,16 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
 async function sendChatMessage() {
   const textarea = document.getElementById('chat-input');
   if (!textarea) return;
-  const promptText = textarea.value.trim();
-  if (!promptText) return;
+  let promptText = textarea.value.trim();
+  if (!promptText && pendingImages.length === 0) return;
+  if (!promptText && pendingImages.length > 0) {
+    promptText = '请查看附件图片。';
+  }
+
+  if (chatUploadingImages > 0) {
+    alert('图片还在上传中，请稍后再发送');
+    return;
+  }
 
   const sendBtn = document.getElementById('chat-send-btn');
   const autoMode = document.getElementById('chat-auto-mode')?.checked || false;
@@ -657,10 +712,11 @@ function buildChatInputHTML(placeholder, hint) {
   <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
   <div class="chat-input-row">
     <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
-    <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片">${imgIcon}</button>
+    <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片，或直接粘贴截图">${imgIcon}</button>
     <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>
     <button class="btn primary" id="chat-send-btn" onclick="sendChatMessage()" style="min-height: 40px;">发送</button>
   </div>
+  <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>
   <div class="chat-input-actions">
     <div class="chat-input-options">
       <label class="toggle-row" style="cursor: pointer;">
@@ -692,16 +748,38 @@ async function handleImageSelect(input) {
   const files = Array.from(input.files);
   input.value = '';
   if (!files.length) return;
+  await uploadChatImages(files);
+}
+
+async function handleChatPaste(event) {
+  const items = Array.from(event.clipboardData?.items || []);
+  const files = items
+    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+    .map(item => item.getAsFile())
+    .filter(Boolean);
+
+  if (!files.length) return;
+  event.preventDefault();
+  await uploadChatImages(files, true);
+}
+
+async function uploadChatImages(files, fromPaste = false) {
+  const imageFiles = files.filter(file => file.type.startsWith('image/'));
+  if (!imageFiles.length) return;
 
   if (!currentChatProjectName) {
     alert('请先从左侧选择项目后再上传图片');
     return;
   }
 
-  for (const file of files) {
+  chatUploadingImages += imageFiles.length;
+  updateChatUploadState();
+
+  for (const file of imageFiles) {
     try {
+      const uploadFile = normalizeImageFileForUpload(file, fromPaste);
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', uploadFile);
       const r = await fetch(
         `${API}/api/uploads?project_name=${encodeURIComponent(currentChatProjectName)}`,
         { method: 'POST', body: fd }
@@ -713,11 +791,43 @@ async function handleImageSelect(input) {
         preview_url: data.preview_url,
         name: data.filename,
       });
+      renderImagePreviews();
     } catch (e) {
       alert(`上传图片失败: ${e.message}`);
+    } finally {
+      chatUploadingImages -= 1;
+      updateChatUploadState();
     }
   }
-  renderImagePreviews();
+}
+
+function normalizeImageFileForUpload(file, fromPaste = false) {
+  const name = file.name || '';
+  if (/\.[a-z0-9]+$/i.test(name)) return file;
+
+  const extByType = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/bmp': 'bmp',
+  };
+  const ext = extByType[file.type] || 'png';
+  const prefix = fromPaste ? 'pasted-image' : 'upload-image';
+  return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || `image/${ext}` });
+}
+
+function updateChatUploadState() {
+  const sendBtn = document.getElementById('chat-send-btn');
+  const status = document.getElementById('chat-upload-status');
+  if (sendBtn) {
+    sendBtn.disabled = chatUploadingImages > 0;
+    sendBtn.textContent = chatUploadingImages > 0 ? '上传中...' : '发送';
+  }
+  if (status) {
+    status.style.display = chatUploadingImages > 0 ? '' : 'none';
+    status.textContent = chatUploadingImages > 0 ? `正在上传 ${chatUploadingImages} 张图片...` : '';
+  }
 }
 
 function renderImagePreviews() {
@@ -741,3 +851,17 @@ function removePendingImage(index) {
   renderImagePreviews();
 }
 
+function renderTaskImageAttachments(task) {
+  const images = task.images || [];
+  if (!images.length) return '';
+  const projectName = task.project_name || currentChatProjectName;
+  if (!projectName) return '';
+
+  const thumbs = images.map(path => {
+    const filename = path.split('/').pop();
+    const src = `${API}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`;
+    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${esc(filename)}"><img src="${src}" alt="${esc(filename)}"></a>`;
+  }).join('');
+
+  return `<div class="user-image-attachments">${thumbs}</div>`;
+}

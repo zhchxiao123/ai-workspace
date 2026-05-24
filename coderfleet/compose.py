@@ -14,6 +14,13 @@ import yaml
 from coderfleet.config import load_config, parse_conf
 
 
+AUTH_DIRS = {
+    "codex": "/home/byclaw/.codex",
+    "claude": "/home/byclaw/.claude",
+    "opencode": "/home/byclaw/.opencode",
+}
+
+
 def _make_dumper() -> type[yaml.Dumper]:
     """Return a YAML Dumper that quotes YAML-1.1 boolean-ambiguous strings."""
     _BOOL_LIKE = frozenset(["off", "on", "yes", "no", "true", "false", "null", "~"])
@@ -94,7 +101,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         svc_name = f"{acc_type}-project-{pname}"
         ctr_name = f"{acc_type}-{pname}"
         auth_src = f"./accounts/{paccount}"
-        auth_dst = "/home/byclaw/.codex" if acc_type == "codex" else "/home/byclaw/.claude"
+        auth_dst = AUTH_DIRS.get(acc_type, "/home/byclaw/.codex")
 
         (ws / "accounts" / paccount).mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +113,14 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             "CODERFLEET_ACCOUNT_AUTH": acc_auth,
             "CODERFLEET_ACCOUNT_PROXY": acc_proxy,
         }
+
+        if acc_type == "opencode":
+            environment.update({
+                "XDG_DATA_HOME": "/home/byclaw/.opencode/data",
+                "XDG_CONFIG_HOME": "/home/byclaw/.opencode/config",
+                "XDG_STATE_HOME": "/home/byclaw/.opencode/state",
+                "XDG_CACHE_HOME": "/home/byclaw/.opencode/cache",
+            })
 
         if acc_proxy != "off":
             environment.update({

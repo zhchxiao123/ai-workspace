@@ -3,7 +3,7 @@
 #
 #  字段说明：
 #    NAME=<名称>             必填，只允许字母/数字/连字符
-#    TYPE=codex|claude       必填，使用哪个 AI CLI
+#    TYPE=codex|claude|opencode  必填，使用哪个 AI CLI
 #    AUTH=login|env          可选，默认 login
 #    ENV_FILE=<路径>         AUTH=env 时可选；省略则默认 ./accounts/<名称>/env
 #    PROXY=relay|off         可选，默认 relay；off 表示该账号下项目不注入代理
@@ -18,9 +18,15 @@
 # Claude Code 账号示例
 # NAME=claude-alice  TYPE=claude
 
+# OpenCode 账号示例
+# NAME=opencode-alice  TYPE=opencode
+
 # Claude Code 环境变量认证示例（API key 会优先于订阅登录态）
 # NAME=claude-api    TYPE=claude AUTH=env
 # NAME=claude-api    TYPE=claude AUTH=env ENV_FILE=./accounts/claude-api/env
+
+# OpenCode 环境变量认证示例（可在 env 文件中配置各 provider API key）
+# NAME=opencode-api  TYPE=opencode AUTH=env
 
 # 不走代理的账号示例（该账号关联的项目都会直连）
 # NAME=claude-local  TYPE=claude PROXY=off
