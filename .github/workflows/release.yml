@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Next dev version bump after this release'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compute versions
+        id: ver
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          python - <<'PY'
+          import re, os, tomllib
+          from pathlib import Path
+
+          raw = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          m = re.match(r'^(\d+)\.(\d+)\.(\d+)(?:\.dev\d+)?$', raw)
+          if not m:
+              raise SystemExit(f"Cannot parse version: {raw!r}")
+          major, minor, patch = map(int, m.groups())
+          release = f"{major}.{minor}.{patch}"
+
+          bump = os.environ["BUMP"]
+          if bump == "major":
+              nxt = f"{major+1}.0.0.dev0"
+          elif bump == "minor":
+              nxt = f"{major}.{minor+1}.0.dev0"
+          else:
+              nxt = f"{major}.{minor}.{patch+1}.dev0"
+
+          Path(os.environ["GITHUB_OUTPUT"]).open("a").write(
+              f"release={release}\ntag=v{release}\nnext={nxt}\n"
+          )
+          PY
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Set release version
+        run: |
+          sed -i 's/^version = .*/version = "${{ steps.ver.outputs.release }}"/' pyproject.toml
+          git add pyproject.toml
+          git diff --cached --quiet || git commit -m "release: v${{ steps.ver.outputs.release }}"
+          git push origin main
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.ver.outputs.tag }} \
+            --title "v${{ steps.ver.outputs.release }}" \
+            --generate-notes \
+            --latest
+
+      - name: Bump to next dev version
+        run: |
+          sed -i 's/^version = .*/version = "${{ steps.ver.outputs.next }}"/' pyproject.toml
+          git add pyproject.toml
+          git commit -m "chore: bump to ${{ steps.ver.outputs.next }}"
+          git push origin main
