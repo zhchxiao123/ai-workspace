@@ -554,6 +554,98 @@
       display: flex;
       gap: 6px;
     }
+
+    /* ── 技能管理 ─────────────────────────────────────────── */
+    .skill-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .skill-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color .18s, background .18s;
+    }
+
+    .skill-card:hover {
+      border-color: var(--accent);
+      background: var(--surface-2);
+    }
+
+    .skill-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .skill-slug {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .skill-invoke-badges {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .skill-desc {
+      font-size: 13px;
+      color: var(--text-2);
+      flex: 1;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .skill-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    /* ── 市场卡片 ─────────────────────────────────────────── */
+    .market-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 10px;
+    }
+
+    .market-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color .15s, background .15s;
+      min-height: 120px;
+    }
+
+    .market-card:hover {
+      border-color: var(--accent);
+      background: var(--surface-2);
+    }
+
+    .market-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+
     .duration-cell {
       font-size: 12px;
       color: var(--text-3);
@@ -587,6 +679,11 @@
     .badge.opencode {
       background: var(--green-bg);
       color: var(--green);
+    }
+
+    .badge.hermes {
+      background: #2d1f4e;
+      color: #b48ef5;
     }
 
     .badge.busy {
@@ -892,10 +989,23 @@
     }
 
     .task-prompt {
-      max-width: 280px;
+      min-width: 0;
+      flex: 1;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .task-desc-cell {
+      max-width: 420px;
+    }
+
+    .task-desc-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: min(420px, 42vw);
+      min-width: 0;
     }
 
     .task-project {
@@ -1233,13 +1343,20 @@
     }
 
     .chain-badge {
+      display: inline-block;
+      max-width: 140px;
       background: var(--surface-2);
       color: var(--text-2);
       padding: 2px 7px;
       border-radius: 999px;
       font-size: 11px;
-      margin-right: 6px;
       border: 1px solid var(--border);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 0 1 auto;
+      min-width: 0;
+      vertical-align: middle;
     }
 
     .inline-alert {
@@ -1568,7 +1685,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 5px;
+      margin-bottom: 6px;
     }
 
     .bubble-label {
@@ -1591,14 +1708,15 @@
       display: flex;
       align-items: center;
       line-height: 1;
+      flex-shrink: 0;
     }
 
-    .chat-bubble-wrap:hover .bubble-copy-btn {
+    .bubble:hover .bubble-copy-btn {
       opacity: 1;
     }
 
     .bubble-copy-btn:hover {
-      background: var(--surface-2);
+      background: rgba(255, 255, 255, 0.08);
       color: var(--text);
     }
 
@@ -1609,6 +1727,10 @@
 
     .bubble-label.think-label {
       color: #94a3b8;
+    }
+
+    .bubble-content {
+      /* wraps markdown content inside .bubble, no extra styles needed */
     }
 
     .bubble {
@@ -2288,6 +2410,45 @@
       display: flex;
       flex-direction: column;
       padding: 14px;
+    }
+
+    .chat-sidebar-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      flex-shrink: 0;
+    }
+
+    .chat-sort-btn {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      padding: 4px 8px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-2);
+      cursor: pointer;
+      outline: none;
+      font-family: inherit;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .chat-sort-btn:hover {
+      background: var(--surface-3, var(--surface-2));
+      border-color: var(--border-md);
+      color: var(--text);
+    }
+
+    .chat-sort-btn:active {
+      background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+      border-color: var(--accent);
+      color: var(--accent);
     }
 
     .chat-sidebar-toggle {
@@ -3740,4 +3901,153 @@
       background: var(--bg);
       border-radius: var(--radius);
       border: 1px solid var(--border);
+    }
+
+    /* ── 认证登录遮罩 ──────────────────────────────────────── */
+    #auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(4, 14, 22, .78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .auth-card {
+      background: var(--surface);
+      border: 1px solid var(--border-md);
+      border-radius: 18px;
+      padding: 40px 36px 32px;
+      width: 420px;
+      max-width: 94vw;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      box-shadow: 0 28px 80px rgba(0, 0, 0, .45);
+    }
+
+    .auth-logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: var(--accent-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+
+    .auth-logo img { display: block; }
+
+    .auth-title {
+      font-size: 22px;
+      font-weight: 750;
+      color: var(--text);
+      margin-bottom: 6px;
+      letter-spacing: -.3px;
+    }
+
+    .auth-subtitle {
+      font-size: 13px;
+      color: var(--text-3);
+      margin-bottom: 28px;
+      text-align: center;
+    }
+
+    .auth-input-wrap {
+      position: relative;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    .auth-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px 44px 12px 16px;
+      font-size: 15px;
+      background: var(--bg);
+      border: 1.5px solid var(--border-md);
+      border-radius: 10px;
+      color: var(--text);
+      outline: none;
+      transition: border-color .15s;
+      font-family: var(--font-mono, monospace);
+      letter-spacing: .05em;
+    }
+
+    .auth-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+
+    .auth-eye-btn {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-3);
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .auth-eye-btn svg { width: 18px; height: 18px; }
+    .auth-eye-btn:hover { color: var(--text-2); }
+
+    .auth-error {
+      width: 100%;
+      font-size: 12.5px;
+      color: #f87171;
+      min-height: 18px;
+      margin-bottom: 4px;
+      display: none;
+    }
+
+    .auth-submit-btn {
+      width: 100%;
+      padding: 13px;
+      margin-top: 8px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: filter .15s, transform .1s;
+      letter-spacing: .01em;
+    }
+
+    .auth-submit-btn:hover { filter: brightness(1.1); }
+    .auth-submit-btn:active { transform: scale(.98); }
+
+    .auth-submit-btn.loading {
+      opacity: .7;
+      cursor: wait;
+    }
+
+    .auth-hint {
+      margin-top: 18px;
+      font-size: 12px;
+      color: var(--text-3);
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    .auth-hint code {
+      font-size: 11.5px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--accent);
     }

@@ -32,7 +32,9 @@ coderfleet apply
 NAME=alice TYPE=codex
 NAME=bob TYPE=claude
 NAME=carol TYPE=opencode
+NAME=dave TYPE=hermes
 NAME=claude-api TYPE=claude AUTH=env ENV_FILE=./accounts/claude-api/env
+NAME=hermes-api TYPE=hermes AUTH=env ENV_FILE=./accounts/hermes-api/env
 NAME=local TYPE=claude PROXY=off
 ```
 
@@ -41,10 +43,12 @@ NAME=local TYPE=claude PROXY=off
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `NAME` | 是 | 账号名 |
-| `TYPE` | 是 | `codex`、`claude` 或 `opencode` |
-| `AUTH` | 否 | `login` 或 `env` |
-| `ENV_FILE` | 否 | env 文件路径 |
+| `TYPE` | 是 | `codex`、`claude`、`opencode` 或 `hermes` |
+| `AUTH` | 否 | `login` 或 `env`。`env` 适用于 `claude`、`opencode` 和 `hermes` |
+| `ENV_FILE` | 否 | env 文件路径，默认可放在 `./accounts/<账号名>/env` |
 | `PROXY` | 否 | `relay` 或 `off` |
+
+Hermes Agent 会额外设置 `HERMES_HOME=/home/byclaw/.hermes`。如果使用 `AUTH=env`，需要在 env 文件中配置所选 provider 的 API key，并通过 `hermes config set model.provider <provider>` 完成 provider 初始化。
 
 ## projects.conf
 

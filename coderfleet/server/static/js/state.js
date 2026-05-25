@@ -26,7 +26,13 @@ let pendingImages = [];
 let chatUploadingImages = 0;
 const CHAT_PROJECT_VISIBLE_LIMIT = 5;
 let chatExpandedProjectNames = new Set();
-let chatCollapsedProjectNames = new Set();
+let chatCollapsedProjectNames = (function() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('coderfleet.chatCollapsedProjects') || '[]');
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch { return new Set(); }
+})();
+let chatProjectSortOrder = localStorage.getItem('coderfleet.chatProjectSort') || 'default';
 let tasksCache = [];
 let terminalContext = {
   projectName: '',

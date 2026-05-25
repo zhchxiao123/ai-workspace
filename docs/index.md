@@ -12,7 +12,7 @@ hide:
 
 # 面向 UI 端编程的多账号 AI 开发工作台
 
-<p class="cf-subtitle">在 Web 控制台里提交任务、跟踪日志、管理项目和账号，把 Codex CLI、Claude Code 和 OpenCode 账号组织成一套可视化开发调度系统。</p>
+<p class="cf-subtitle">在 Web 控制台里提交任务、跟踪日志、管理项目和账号，把 Codex CLI、Claude Code、OpenCode 和 Hermes Agent 账号组织成一套可视化开发调度系统。</p>
 
 <div class="cf-tags">
   <span>任务监控</span>
@@ -69,7 +69,7 @@ CoderFleet 的思路是把多个普通账号组织成一个可调度的开发舰
 
 ### 多账号并行
 
-同时管理 Codex、Claude Code、OpenCode 账号，减少手工切换认证目录和终端环境。
+同时管理 Codex、Claude Code、OpenCode、Hermes Agent 账号，减少手工切换认证目录和终端环境。
 
 </div>
 <div class="feature-card" markdown>
@@ -123,6 +123,7 @@ Docker Compose
     +-- codex-alice   -> /workspace
     +-- claude-bob    -> /workspace
     +-- opencode-carl -> /workspace
+    +-- hermes-dave   -> /workspace
     |
     v
 proxy relay -> host proxy -> internet

@@ -6,14 +6,14 @@
 
 ### 💡 为什么需要 CoderFleet？
 
-在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex、OpenCode）经常面临尴尬的使用瓶颈：
+在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex、OpenCode、Hermes Agent）经常面临尴尬的使用瓶颈：
 * **单账号（Plus 会员）的额度不够用**，频繁遭遇大模型服务商的 Rate Limit 或当日使用上限；
 * **高倍数套餐（如 5x/10x/20x 的账号会员）又极其昂贵**，在周期内往往使用量根本用不完，性价比极低；
 * 最优解通常是**自己申请 2 个或多个普通/Plus 账号轮流使用**，但在单台机器上频繁切换账号、管理认证数据、以及维护隔离的网络环境极其繁杂。
 
 **CoderFleet 正是为此而生！**
 
-它允许你在单台宿主机上同时运行多个 **Codex CLI**、**Claude Code** 和 **OpenCode** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
+它允许你在单台宿主机上同时运行多个 **Codex CLI**、**Claude Code**、**OpenCode** 和 **Hermes Agent** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
 
 ---
 
@@ -66,7 +66,7 @@ uv tool install coderfleet
 ### 方式二：克隆仓库（开发者 / 老用户）
 
 ```bash
-git clone https://github.com/your-org/coderfleet.git
+git clone https://github.com/zhchxiao123/coderfleet.git
 cd coderfleet
 
 # 用 uv 创建虚拟环境并安装（推荐）
@@ -99,9 +99,6 @@ coderfleet init
 ├── config.conf        # 全局配置（镜像、代理、网络）
 ├── accounts.conf      # 账号配置
 ├── projects.conf      # 项目配置
-├── Dockerfile         # 自建统一镜像
-├── entrypoint.sh      # 容器启动脚本
-├── scripts/           # 镜像构建时打包进容器的辅助脚本
 ├── docker-compose.yml # 自动生成，勿手动编辑
 └── accounts/          # 各账号认证数据（自动管理）
     ├── alice/
@@ -123,6 +120,7 @@ coderfleet build
 - Codex CLI（`@openai/codex`）
 - Claude Code（`@anthropic-ai/claude-code`）
 - OpenCode（`opencode-ai`）
+- Hermes Agent（安装在 `/opt/hermes-venv`）
 
 ### 3. 添加账号与项目
 
@@ -138,6 +136,10 @@ coderfleet project add app-b bob ~/projects/app-b
 # OpenCode 账号
 coderfleet account add carol TYPE=opencode
 coderfleet project add app-c carol ~/projects/app-c
+
+# Hermes Agent 账号
+coderfleet account add dave TYPE=hermes
+coderfleet project add app-d dave ~/projects/app-d
 ```
 
 ### 4. 生成配置并启动容器
@@ -163,6 +165,7 @@ CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复�
 coderfleet enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice）
 coderfleet enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
 coderfleet enter app-c   # 进入 app-c 项目容器（使用 OpenCode 账号 carol）
+coderfleet enter app-d   # 进入 app-d 项目容器（使用 Hermes Agent 账号 dave）
 ```
 
 进入后使用对应 CLI：
@@ -176,6 +179,9 @@ claude "帮我重构这个函数"
 
 # OpenCode 容器内
 opencode run "帮我修复测试"
+
+# Hermes Agent 容器内
+hermes chat -q "帮我分析这个项目"
 ```
 
 ### 7. 启动调度服务与 Web 控制台
@@ -233,7 +239,7 @@ coderfleet task logs <任务ID> -f
 
 | 命令 | 说明 |
 |------|------|
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号（自动停止关联容器） |
 | `coderfleet account list` | 列出所有账号及运行状态 |
 | `coderfleet login <账号名\|all>` | 登录账号并持久化认证文件 |
@@ -296,12 +302,14 @@ RELAY_IMAGE=gogost/gost:3
 ### accounts.conf
 
 ```conf
-# 格式：NAME=<名称>  TYPE=codex|claude|opencode  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
+# 格式：NAME=<名称>  TYPE=codex|claude|opencode|hermes  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
 NAME=alice       TYPE=codex
 NAME=bob         TYPE=claude
 NAME=carol       TYPE=opencode
+NAME=dave        TYPE=hermes
 NAME=claude-api  TYPE=claude  AUTH=env  ENV_FILE=./accounts/claude-api/env
 NAME=opencode-api TYPE=opencode AUTH=env ENV_FILE=./accounts/opencode-api/env
+NAME=hermes-api TYPE=hermes AUTH=env ENV_FILE=./accounts/hermes-api/env
 NAME=local       TYPE=claude  PROXY=off
 ```
 
@@ -310,16 +318,17 @@ NAME=local       TYPE=claude  PROXY=off
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `NAME` | 是 | 账号名，只允许字母/数字/连字符 |
-| `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code，`opencode` 使用 OpenCode |
-| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code / OpenCode 可用 `env` 通过 API Key 认证 |
+| `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code，`opencode` 使用 OpenCode，`hermes` 使用 Hermes Agent |
+| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code / OpenCode / Hermes Agent 可用 `env` 通过 API Key 认证 |
 | `ENV_FILE` | 否 | Docker Compose env_file 路径；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
 | `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量，连接普通网络 |
 
-`AUTH=env` 用于 Claude Code / OpenCode API key 场景：
+`AUTH=env` 用于 Claude Code / OpenCode / Hermes Agent API key 场景：
 
 ```bash
 coderfleet account add claude-api TYPE=claude --auth env
 coderfleet account add opencode-api TYPE=opencode --auth env
+coderfleet account add hermes-api TYPE=hermes --auth env
 # 然后编辑对应的 ~/.coderfleet/accounts/<账号名>/env
 ```
 
@@ -330,7 +339,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ANTHROPIC_BASE_URL=https://api.anthropic.com
 ```
 
-> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`；OpenCode 会读取环境变量和项目 `.env` 中的 provider API key；`login all` 会自动跳过 `AUTH=env` 账号。
+> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`；OpenCode 会读取环境变量和项目 `.env` 中的 provider API key；Hermes Agent 需要配置 provider API key 并执行 `hermes config set model.provider <provider>`；`login all` 会自动跳过 `AUTH=env` 账号。
 
 ### projects.conf
 
@@ -355,7 +364,8 @@ NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 ```
 [codex-alice]  ──┐
 [claude-bob]   ──┤── intnet（internal=true，无公网路由）
-[codex-carol]  ──┘         │
+[opencode-carol] ─┤
+[hermes-dave]  ──┘         │
                             ▼
                     [coderfleet-proxy-relay]（gost）
                             │  HTTP → 宿主机代理
@@ -397,7 +407,7 @@ coderfleet check-proxy
 
 ## 认证机制
 
-三种 CLI 的认证目录挂载方式：
+四种 CLI 的认证目录挂载方式：
 
 | CLI | 认证目录（容器内） | 本地存储 |
 |-----|--------------------|----------|
@@ -406,6 +416,8 @@ coderfleet check-proxy
 | Claude Code API key | 同上 | `ENV_FILE` 指定文件 |
 | OpenCode | `/home/byclaw/.opencode`（内部设置 XDG data/config/state/cache） | `accounts/<名称>/` |
 | OpenCode API key | 环境变量 | `ENV_FILE` 指定文件 |
+| Hermes Agent | `/home/byclaw/.hermes` | `accounts/<名称>/` |
+| Hermes Agent API key | 环境变量和 Hermes provider 配置 | `ENV_FILE` 指定文件 |
 
 每个账号的认证数据独立存储，容器删除重建后无需重新登录。
 
@@ -443,7 +455,7 @@ pyproject.toml             # pip/pipx 打包配置
 
 **Q: 构建镜像时速度很慢怎么办？**
 
-镜像需要下载 Node.js、Python 以及两个 CLI 包，确保宿主机代理正常且 Docker Desktop 已配置代理即可。
+镜像需要下载 Node.js、Python、AI CLI 包和 Hermes provider SDK，确保宿主机代理正常且 Docker Desktop 已配置代理即可。
 
 **Q: 登录时浏览器无法弹出？**
 
@@ -463,7 +475,7 @@ rm -rf ~/.coderfleet/accounts/<名称>
 
 **Q: 如何更新 CLI 版本？**
 
-修改工作区 `Dockerfile` 中对应的 `npm install -g` 命令，然后重新构建：
+修改包内镜像定义或自定义镜像流程中的 CLI 安装命令，然后重新构建：
 
 ```bash
 coderfleet build
@@ -478,7 +490,7 @@ coderfleet restart
 
 ## 自定义镜像
 
-如需在镜像中添加更多工具，编辑工作区的 `Dockerfile`（路径：`~/.coderfleet/Dockerfile`），然后重新构建：
+如需在镜像中添加更多工具，在自定义镜像流程中追加系统包或语言工具，然后重新构建：
 
 ```dockerfile
 # 示例：添加 Java

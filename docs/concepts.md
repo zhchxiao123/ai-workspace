@@ -15,8 +15,11 @@
 - `codex`
 - `claude`
 - `opencode`
+- `hermes`
 
 每个账号有独立认证目录，容器删除重建后通常不需要重新登录。
+
+账号类型决定容器内使用的 AI CLI、认证目录和任务执行命令。Hermes Agent 使用 `/home/byclaw/.hermes` 保存配置和会话数据。
 
 ## 项目
 

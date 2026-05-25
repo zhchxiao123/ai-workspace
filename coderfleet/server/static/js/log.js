@@ -40,7 +40,7 @@ async function openLogModal(taskId) {
     if (task.conversation_id || task.native_session_id) document.getElementById('resume-btn').style.display = '';
     if (task.status === 'done' || task.status === 'running') document.getElementById('spawn-btn').style.display = '';
 
-    renderer.render(logText);
+    renderer.render(logText, task.type);
     scrollChatToBottom();
 
     if (task.status === 'running') startFollow();
@@ -57,7 +57,7 @@ function startFollow() {
   setFollowButton(true);
 
   // tail=0: 只推送新内容，避免与初次全量加载重复
-  sseSource = new EventSource(`${API}/api/tasks/${currentTaskId}/logs/stream?tail=0`);
+  sseSource = new EventSource(sseUrl(`${API}/api/tasks/${currentTaskId}/logs/stream?tail=0`));
   sseSource.onmessage = e => {
     if (e.data === '[DONE]') {
       stopFollow();

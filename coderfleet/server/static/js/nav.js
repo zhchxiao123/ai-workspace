@@ -35,14 +35,19 @@ function refreshCurrent() {
 
 // ── 健康检查 ──────────────────────────────────────────────
 async function checkHealth() {
+  const dot = document.getElementById('health-dot');
+  const txt = document.getElementById('health-text');
+  if (!dot || !txt) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
   try {
-    const r = await fetch(`${API}/api/health`);
-    const dot = document.getElementById('health-dot');
-    const txt = document.getElementById('health-text');
+    const r = await fetch(`${API}/api/health`, { signal: ctrl.signal });
+    clearTimeout(timer);
     dot.className = r.ok ? 'health-dot ok' : 'health-dot err';
     txt.textContent = r.ok ? '服务正常' : '服务异常';
-  } catch {
-    document.getElementById('health-dot').className = 'health-dot err';
-    document.getElementById('health-text').textContent = '无法连接';
+  } catch (e) {
+    clearTimeout(timer);
+    dot.className = 'health-dot err';
+    txt.textContent = e?.name === 'AbortError' ? '响应超时' : '无法连接';
   }
 }

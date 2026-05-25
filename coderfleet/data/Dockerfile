@@ -58,6 +58,21 @@ RUN npm install -g @anthropic-ai/claude-code
 # ── OpenCode CLI ──────────────────────────────────────────
 RUN npm install -g opencode-ai@latest
 
+# ── Hermes Agent ──────────────────────────────────────────
+# ripgrep is required by hermes code-search tools
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install in an isolated venv to avoid conflicts with Debian-managed packages
+# (e.g. PyJWT installed by apt has no RECORD file and cannot be uninstalled by pip)
+RUN python3 -m venv /opt/hermes-venv \
+    && /opt/hermes-venv/bin/pip install --no-cache-dir \
+        hermes-agent \
+        anthropic \
+        openai \
+        google-genai \
+        mistralai \
+    && ln -s /opt/hermes-venv/bin/hermes /usr/local/bin/hermes
+
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -69,7 +84,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh 
     && rustc --version
 
 # ── 创建非特权用户 byclaw ─────────────────────────────────
-RUN groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw
+RUN groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw \
+    && chown -R byclaw:byclaw /opt/hermes-venv
 
 # ── 工作目录和环境变量 ────────────────────────────────────
 RUN mkdir -p /workspace && chown byclaw:byclaw /workspace

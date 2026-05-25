@@ -36,7 +36,7 @@ pipx install coderfleet
 适合参与开发或测试本地改动：
 
 ```bash
-git clone https://github.com/your-org/coderfleet.git
+git clone https://github.com/zhchxiao123/coderfleet.git
 cd coderfleet
 uv venv
 source .venv/bin/activate

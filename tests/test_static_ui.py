@@ -73,6 +73,10 @@ def test_task_queue_uses_time_sorted_pagination_without_global_chain_board() -> 
     assert "TASK_PAGE_SIZE" in source
     assert "function setTaskPage" in source
     assert "new Date(b.created || 0) - new Date(a.created || 0)" in source
+    assert 'class="task-desc-cell"' in source
+    assert 'class="task-desc-wrap"' in source
+    assert ".chain-badge" in source
+    assert "text-overflow: ellipsis" in source
     assert "任务链视图" not in source
 
 
@@ -150,7 +154,7 @@ def test_sidebar_can_collapse_with_persisted_state() -> None:
     assert "/static/icons/logo-mark.png" in html
     assert html.index('class="brand-mark"') < html.index('class="brand-text"')
     assert 'width="30" height="30"' in html
-    assert "main.css?v=20260524-logo" in html
+    assert "main.css?v=20260525-auth" in html
     assert ".brand-mark img" in source
     assert ".layout.sidebar-collapsed .sidebar {\n      width: 56px;" in source
     assert ".layout.sidebar-collapsed .sidebar-toggle" in source

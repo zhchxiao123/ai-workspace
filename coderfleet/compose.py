@@ -18,6 +18,7 @@ AUTH_DIRS = {
     "codex": "/home/byclaw/.codex",
     "claude": "/home/byclaw/.claude",
     "opencode": "/home/byclaw/.opencode",
+    "hermes": "/home/byclaw/.hermes",
 }
 
 
@@ -120,6 +121,11 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "XDG_CONFIG_HOME": "/home/byclaw/.opencode/config",
                 "XDG_STATE_HOME": "/home/byclaw/.opencode/state",
                 "XDG_CACHE_HOME": "/home/byclaw/.opencode/cache",
+            })
+
+        if acc_type == "hermes":
+            environment.update({
+                "HERMES_HOME": "/home/byclaw/.hermes",
             })
 
         if acc_proxy != "off":

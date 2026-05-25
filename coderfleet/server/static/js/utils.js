@@ -3,6 +3,112 @@ const API = '';
 const SIDEBAR_COLLAPSED_KEY = 'coderfleet.sidebarCollapsed';
 
 // ══════════════════════════════════════════════════════════════
+//  API Key 认证
+// ══════════════════════════════════════════════════════════════
+const _AUTH_KEY_STORAGE = 'coderfleet.apiKey';
+
+function getApiKey() { return localStorage.getItem(_AUTH_KEY_STORAGE) || ''; }
+function setApiKey(k) { localStorage.setItem(_AUTH_KEY_STORAGE, k); }
+function clearApiKey() { localStorage.removeItem(_AUTH_KEY_STORAGE); }
+
+// 覆盖全局 fetch，自动注入 Authorization 头
+const _origFetch = window.fetch.bind(window);
+window.fetch = async function (input, init) {
+  init = init || {};
+  const key = getApiKey();
+  if (key) {
+    const headers = new Headers(init.headers || {});
+    if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${key}`);
+    init = { ...init, headers };
+  }
+  const resp = await _origFetch(input, init);
+  if (resp.status === 401) showLoginOverlay();
+  return resp;
+};
+
+// WebSocket URL：自动附加 ?token=<key>
+function wsUrl(path) {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const key = getApiKey();
+  const q = key ? `?token=${encodeURIComponent(key)}` : '';
+  return `${proto}//${location.host}${path}${q}`;
+}
+
+// SSE / EventSource URL：追加 &token=<key>
+function sseUrl(url) {
+  const key = getApiKey();
+  if (!key) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(key)}`;
+}
+
+function showLoginOverlay() {
+  const el = document.getElementById('auth-overlay');
+  if (el) el.style.display = 'flex';
+  // 自动聚焦输入框
+  setTimeout(() => document.getElementById('auth-key-input')?.focus(), 80);
+}
+
+function hideLoginOverlay() {
+  const el = document.getElementById('auth-overlay');
+  if (el) el.style.display = 'none';
+}
+
+function toggleAuthKeyVisibility() {
+  const input = document.getElementById('auth-key-input');
+  const icon  = document.getElementById('auth-eye-icon');
+  if (!input) return;
+  const isText = input.type === 'text';
+  input.type = isText ? 'password' : 'text';
+  // 切换图标：眼睛 ↔ 划线眼睛
+  if (icon) {
+    icon.innerHTML = isText
+      ? '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
+      : '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>'
+        + '<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>'
+        + '<line x1="1" y1="1" x2="23" y2="23"/>';
+  }
+}
+
+async function submitApiKey() {
+  const input  = document.getElementById('auth-key-input');
+  const errEl  = document.getElementById('auth-error');
+  const btnEl  = document.getElementById('auth-submit-btn');
+  const key    = (input?.value || '').trim();
+  if (!key) {
+    if (errEl) { errEl.textContent = '请输入 API Key。'; errEl.style.display = 'block'; }
+    input?.focus();
+    return;
+  }
+
+  if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+  if (btnEl) { btnEl.textContent = '验证中…'; btnEl.classList.add('loading'); btnEl.disabled = true; }
+
+  try {
+    const resp = await _origFetch(`${API}/api/accounts`, {
+      headers: { 'Authorization': `Bearer ${key}` },
+    });
+
+    if (resp.ok) {
+      setApiKey(key);
+      location.reload();
+    } else {
+      if (errEl) { errEl.textContent = 'API Key 无效，请检查后重试。'; errEl.style.display = 'block'; }
+      input?.select();
+    }
+  } catch {
+    if (errEl) { errEl.textContent = '网络错误，无法连接服务器。'; errEl.style.display = 'block'; }
+  } finally {
+    if (btnEl) { btnEl.textContent = '确认登录'; btnEl.classList.remove('loading'); btnEl.disabled = false; }
+  }
+}
+
+function logoutApiKey() {
+  clearApiKey();
+  location.reload();
+}
+
+// ══════════════════════════════════════════════════════════════
 //  工具图标 & 格式化
 // ══════════════════════════════════════════════════════════════
 const TOOL_ICONS = {
@@ -125,18 +231,24 @@ function _applyBubbleCopyFeedback(btn) {
 }
 
 function copyTextToClipboard(text, btn) {
-  navigator.clipboard.writeText(text).then(() => {
-    _applyBubbleCopyFeedback(btn);
-  }).catch(() => {
+  const fallback = () => {
     const ta = document.createElement('textarea');
     ta.value = text;
-    ta.style.cssText = 'position:fixed;opacity:0';
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
     document.body.appendChild(ta);
+    ta.focus();
     ta.select();
     try { document.execCommand('copy'); } catch {}
     document.body.removeChild(ta);
     _applyBubbleCopyFeedback(btn);
-  });
+  };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(text).then(() => {
+      _applyBubbleCopyFeedback(btn);
+    }).catch(fallback);
+  } else {
+    fallback();
+  }
 }
 
 // 用于用户气泡（onclick 内联调用）

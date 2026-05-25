@@ -62,7 +62,26 @@ function renderConversations(convs, projects, tasks) {
   const folderSvg = `<svg class="proj-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
   let html = '';
 
-  projects.forEach(proj => {
+  const sortedProjects = [...projects];
+  if (chatProjectSortOrder === 'name') {
+    sortedProjects.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (chatProjectSortOrder === 'activity') {
+    const latestTime = proj => {
+      const projConvs = convs.filter(c => conversationBelongsToProject(c, proj));
+      const projTasks = tasks.filter(t => taskBelongsToProject(t, proj));
+      const times = [
+        ...projConvs.map(c => new Date(c.updated || c.created || 0)),
+        ...projTasks.map(t => new Date(t.created || 0)),
+      ];
+      return times.length ? Math.max(...times) : 0;
+    };
+    sortedProjects.sort((a, b) => latestTime(b) - latestTime(a));
+  } else if (chatProjectSortOrder === 'running') {
+    const runningCount = proj => tasks.filter(t => taskBelongsToProject(t, proj) && t.status === 'running').length;
+    sortedProjects.sort((a, b) => runningCount(b) - runningCount(a));
+  }
+
+  sortedProjects.forEach(proj => {
     const projConvs = convs.filter(c => conversationBelongsToProject(c, proj));
     const projTasks = tasks.filter(t => !t.conversation_id && taskBelongsToProject(t, proj));
 
@@ -169,6 +188,12 @@ function rerenderChatProjectList() {
   );
 }
 
+function saveChatCollapsedState() {
+  try {
+    localStorage.setItem('coderfleet.chatCollapsedProjects', JSON.stringify([...chatCollapsedProjectNames]));
+  } catch { }
+}
+
 function toggleChatProjectGroup(encodedProjectName) {
   const projectName = decodeURIComponent(encodedProjectName);
   if (chatCollapsedProjectNames.has(projectName)) {
@@ -176,7 +201,36 @@ function toggleChatProjectGroup(encodedProjectName) {
   } else {
     chatCollapsedProjectNames.add(projectName);
   }
+  saveChatCollapsedState();
   rerenderChatProjectList();
+}
+
+const CHAT_SORT_CYCLE = ['default', 'activity', 'name', 'running'];
+const CHAT_SORT_LABELS = { default: '默认', activity: '活跃', name: '名称', running: '运行中' };
+
+function _updateSortBtnLabel(order) {
+  const btn = document.getElementById('chat-sort-btn');
+  const label = document.getElementById('chat-sort-label');
+  const text = CHAT_SORT_LABELS[order] || '默认';
+  if (label) label.textContent = text;
+  if (btn) btn.title = `切换排序方式（当前：${text}）`;
+}
+
+function initChatSortBtn() {
+  _updateSortBtnLabel(chatProjectSortOrder);
+}
+
+function setChatProjectSort(order) {
+  chatProjectSortOrder = order;
+  localStorage.setItem('coderfleet.chatProjectSort', order);
+  _updateSortBtnLabel(order);
+  rerenderChatProjectList();
+}
+
+function cycleChatProjectSort() {
+  const idx = CHAT_SORT_CYCLE.indexOf(chatProjectSortOrder);
+  const next = CHAT_SORT_CYCLE[(idx + 1) % CHAT_SORT_CYCLE.length];
+  setChatProjectSort(next);
 }
 
 function toggleChatProjectItems(encodedProjectName) {
@@ -402,7 +456,7 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
       } else if (task.status === 'scheduled') {
         localRenderer.renderScheduled(task.execute_at);
       } else {
-        localRenderer.render(logText);
+        localRenderer.render(logText, task.type);
       }
 
       // 4. 如果是最后一个任务，把该 localRenderer 赋给全局 chatRenderer 方便 SSE 追加
@@ -593,7 +647,7 @@ async function sendChatMessage() {
 function startChatFollow(taskId) {
   stopChatFollow();
   chatFollowMode = true;
-  sseChatSource = new EventSource(`${API}/api/tasks/${taskId}/logs/stream?tail=0`);
+  sseChatSource = new EventSource(sseUrl(`${API}/api/tasks/${taskId}/logs/stream?tail=0`));
   sseChatSource.onmessage = e => {
     if (e.data === '[DONE]') {
       stopChatFollow();
@@ -841,7 +895,7 @@ function renderImagePreviews() {
   container.style.display = 'flex';
   container.innerHTML = pendingImages.map((img, i) => `
     <div class="chat-image-thumb" title="${esc(img.name)}">
-      <img src="${API}${img.preview_url}" alt="${esc(img.name)}">
+      <img src="${sseUrl(`${API}${img.preview_url}`)}" alt="${esc(img.name)}">
       <button class="chat-image-thumb-remove" onclick="removePendingImage(${i})" title="移除">×</button>
     </div>`).join('');
 }
@@ -859,7 +913,7 @@ function renderTaskImageAttachments(task) {
 
   const thumbs = images.map(path => {
     const filename = path.split('/').pop();
-    const src = `${API}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`;
+    const src = sseUrl(`${API}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`);
     return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${esc(filename)}"><img src="${src}" alt="${esc(filename)}"></a>`;
   }).join('');
 

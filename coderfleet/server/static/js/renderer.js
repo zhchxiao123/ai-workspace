@@ -17,6 +17,14 @@ class ChatLogRenderer {
     this.toolCount = 0;
     this.idPrefix = Math.random().toString(36).slice(2, 8);
     this.lastBubbleEl = null;   // 保存最后一条 AI 回复节点的引用
+
+    // Hermes plain-text parser state
+    this.accountType = '';
+    this._hermesState = 'init';   // init | in_response
+    this._hermesResponseBuf = [];
+    this._hermesDuration = '';
+    this._hermesMessages = '';
+    this._hermesSessionId = '';
   }
 
   _ensureProcessWrapper() {
@@ -98,7 +106,8 @@ class ChatLogRenderer {
   }
 
   // ── 全量渲染 ─────────────────────────────────────────────
-  render(text) {
+  render(text, accountType = '') {
+    this.accountType = accountType || this.accountType;
     this.container.innerHTML = '<div class="chat-log timeline"></div>';
     this.inner = this.container.querySelector('.chat-log');
     this.toolMap = {};
@@ -108,6 +117,11 @@ class ChatLogRenderer {
     this.processBody = null;
     this.toolCount = 0;
     this.lastBubbleEl = null;
+    this._hermesState = 'init';
+    this._hermesResponseBuf = [];
+    this._hermesDuration = '';
+    this._hermesMessages = '';
+    this._hermesSessionId = '';
 
     const lines = text.split('\n');
     let state = 'before';   // before | header | body | footer
@@ -185,6 +199,7 @@ class ChatLogRenderer {
 
   // ── 私有：单行处理 ────────────────────────────────────────
   _processLine(line) {
+    if (this.accountType === 'hermes') { this._hermesLine(line); return; }
     if (!line.startsWith('{')) { this._rawLine(line); return; }
     let d;
     try { d = JSON.parse(line); } catch { this._rawLine(line); return; }
@@ -530,11 +545,13 @@ class ChatLogRenderer {
     el.innerHTML = `
   <div class="chat-avatar ai" aria-hidden="true">AI</div>
   <div class="bubble-body">
-    <div class="bubble-label-row">
-      <div class="bubble-label">${esc(label)}</div>
-      <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+    <div class="bubble">
+      <div class="bubble-label-row">
+        <div class="bubble-label">${esc(label)}</div>
+        <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+      </div>
+      <div class="bubble-content">${renderMd(text)}</div>
     </div>
-    <div class="bubble">${renderMd(text)}</div>
   </div>`;
 
     el.querySelector('.bubble-copy-btn').addEventListener('click', () => {
@@ -688,6 +705,79 @@ class ChatLogRenderer {
     el.classList.add('timeline-node', 'is-muted');
     el.innerHTML = `<span class="chat-sys-pill">${esc(label)}${detail ? ` <span class="pill-detail">· ${esc(detail)}</span>` : ''}</span>`;
     this._appendNode(el);
+  }
+
+  // ── Hermes 纯文本解析器 ───────────────────────────────────
+  // line 到达此处时已被 trimEnd() + trim()，空行已被调用方过滤
+  _hermesLine(line) {
+    // 判断是否为纯分隔线（仅含 ─ U+2500）
+    const isBorder = line.length > 4 && /^─+$/.test(line);
+
+    if (this._hermesState === 'in_response') {
+      if (isBorder) {
+        // 遇到关闭边框，输出 AI 气泡
+        const response = this._hermesResponseBuf.join('\n').trim();
+        if (response) this._bubble(response, 'Hermes');
+        this._hermesResponseBuf = [];
+        this._hermesState = 'init';
+      } else if (line.includes('⚕ Hermes')) {
+        // 连续第二条回复头（多轮）：先刷出当前
+        const prev = this._hermesResponseBuf.join('\n').trim();
+        if (prev) this._bubble(prev, 'Hermes');
+        this._hermesResponseBuf = [];
+      } else {
+        this._hermesResponseBuf.push(line);
+      }
+      return;
+    }
+
+    // init 状态
+    if (isBorder) return;
+    if (line.startsWith('Query:')) return;          // header 里已有 prompt 字段，不重复
+    if (line === 'Initializing agent...') {
+      this._pill('Hermes', '初始化中');
+      return;
+    }
+    if (line.includes('⚕ Hermes')) {
+      this._hermesState = 'in_response';
+      this._hermesResponseBuf = [];
+      return;
+    }
+    if (line.startsWith('Resume this session with:')) return;
+    if (line.startsWith('hermes --resume')) return;
+    if (line.startsWith('Session:')) {
+      this._hermesSessionId = line.replace(/^Session:\s*/, '');
+      return;
+    }
+    if (line.startsWith('Duration:')) {
+      this._hermesDuration = line.replace(/^Duration:\s*/, '');
+      return;
+    }
+    if (line.startsWith('Messages:')) {
+      this._hermesMessages = line.replace(/^Messages:\s*/, '');
+      this._hermesFlushUsage();
+      return;
+    }
+    // 其余未知行静默忽略（避免红色 raw 样式污染）
+  }
+
+  _hermesFlushUsage() {
+    const items = [];
+    if (this._hermesDuration) items.push(`耗时 <span>${esc(this._hermesDuration)}</span>`);
+    if (this._hermesMessages) items.push(`消息 <span>${esc(this._hermesMessages)}</span>`);
+    if (this._hermesSessionId) {
+      const sid = this._hermesSessionId;
+      items.push(`Session <span title="${esc(sid)}">${esc(sid.slice(0, 20))}</span>`);
+    }
+    if (!items.length) return;
+    const el = document.createElement('div');
+    el.className = 'chat-usage timeline-node is-muted';
+    el.innerHTML = items.map(i => `<div class="usage-item">${i}</div>`).join('');
+    this._appendNode(el);
+    // 重置，避免多轮重复输出
+    this._hermesDuration = '';
+    this._hermesMessages = '';
+    this._hermesSessionId = '';
   }
 
   // ── 原始/错误行 ───────────────────────────────────────────

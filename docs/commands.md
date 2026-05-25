@@ -17,10 +17,16 @@
 
 | 命令 | 说明 |
 | --- | --- |
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号配置 |
 | `coderfleet account list` | 查看账号列表 |
 | `coderfleet login <账号名\|all>` | 登录账号 |
+
+`--auth env` 适用于 `claude`、`opencode` 和 `hermes`：
+
+```bash
+coderfleet account add hermes-api TYPE=hermes --auth env
+```
 
 ## 项目
 

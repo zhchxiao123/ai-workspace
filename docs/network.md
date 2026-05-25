@@ -6,6 +6,7 @@ CoderFleet 的默认网络模型是：账号容器不直接访问公网，而是
 [codex-alice]  ---+
 [claude-bob]   ---+--> internal docker network
 [opencode-c]   ---+          |
+[hermes-dave]  ---+
                               v
                        coderfleet-proxy-relay
                               |

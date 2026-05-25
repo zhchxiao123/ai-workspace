@@ -344,7 +344,7 @@ async function _openWorkflowDetail(taskId) {
     const logEl = document.getElementById('workflow-log-content');
     if (logEl) {
       const r = new ChatLogRenderer(logEl, false, true);
-      r.render(logText);
+      r.render(logText, task.type);
     }
   } catch (e) {
     detail.innerHTML = `<div style="padding:16px;color:var(--red)">加载失败：${esc(e.message)}</div>`;

@@ -28,12 +28,12 @@ function renderAccounts(accounts) {
       ? containers.map(c => `<div class="container-name" title="${esc(c)}">${esc(c)}</div>`).join('')
       : `<div class="container-name">暂无容器</div>`;
     const runningTaskBlock = (a.busy && a.running_task_id)
-      ? `<div class="account-running-task" onclick="openLogModal('${esc(a.running_task_id)}')">
+      ? `<div class="account-running-task" onclick="openLogModal('${esc(a.running_task_id)}');event.stopPropagation()">
           <div class="account-running-label">▶ 正在执行</div>
           <div class="account-running-prompt">${esc(a.running_task_prompt)}</div>
         </div>`
       : '';
-    return `<div class="account-card">
+    return `<div class="account-card" onclick="openAccount('${esc(a.name)}')" style="cursor:pointer">
   <div class="account-card-head">
     <div class="account-identity">
       <div class="account-badges">
@@ -63,7 +63,8 @@ function renderAccounts(accounts) {
   <div class="container-list">${containerRows}</div>
   ${runningTaskBlock}
   <div class="account-footer">
-    <button class="btn" style="font-size:12px" onclick="filterTasksByAccount('${esc(a.name)}')">查看任务</button>
+    <button class="btn" style="font-size:12px" onclick="filterTasksByAccount('${esc(a.name)}');event.stopPropagation()">查看任务</button>
+    <button class="btn" style="font-size:12px" onclick="openAccount('${esc(a.name)}');event.stopPropagation()">管理账号</button>
   </div>
 </div>`;
   }).join('');
@@ -83,3 +84,290 @@ function populateAccountFilters(accounts) {
   sel.value = prev;
 }
 
+// ── 账号详情 ──────────────────────────────────────────────
+let accountContext = null;
+
+function openAccount(name) {
+  accountContext = (globalAccountsCache || []).find(a => a.name === name) || { name };
+  document.getElementById('account-list-view').style.display = 'none';
+  document.getElementById('account-detail-view').style.display = '';
+  document.getElementById('account-detail-title').textContent =
+    `${name}${accountContext.type ? ' · ' + accountContext.type : ''}`;
+  document.getElementById('page-title').textContent = `账号 · ${name}`;
+  switchAcctTab('skills');
+}
+
+function backToAccounts() {
+  accountContext = null;
+  document.getElementById('account-detail-view').style.display = 'none';
+  document.getElementById('account-list-view').style.display = '';
+  document.getElementById('page-title').textContent = '账号资源';
+}
+
+function switchAcctTab(tab) {
+  document.querySelectorAll('.wf-tab[id^="acct-tab-"]').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('[id^="acct-panel-"]').forEach(el => el.style.display = 'none');
+  const btn = document.getElementById(`acct-tab-${tab}`);
+  const panel = document.getElementById(`acct-panel-${tab}`);
+  if (btn) btn.classList.add('active');
+  if (panel) panel.style.display = '';
+  if (tab === 'skills' && accountContext) loadAccountSkills(accountContext.name);
+}
+
+// ── 技能列表 ──────────────────────────────────────────────
+async function loadAccountSkills(accountName) {
+  const grid = document.getElementById('skill-grid');
+  grid.innerHTML = '<div class="empty">加载中...</div>';
+  try {
+    const skills = await fetch(`${API}/api/accounts/${encodeURIComponent(accountName)}/skills`).then(r => r.json());
+    renderSkills(skills);
+  } catch (e) {
+    grid.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderSkills(skills) {
+  const grid = document.getElementById('skill-grid');
+  if (!skills.length) {
+    grid.innerHTML = '<div class="empty">还没有安装任何技能，点击「+ 新建技能」开始</div>';
+    return;
+  }
+  grid.innerHTML = skills.map(s => {
+    const invokeBadges = [
+      s.user_invocable ? `<span class="badge idle">用户</span>` : '',
+      !s.disable_model_invocation ? `<span class="badge claude">Claude</span>` : '',
+    ].filter(Boolean).join('');
+    return `<div class="skill-card">
+  <div class="skill-head">
+    <div class="skill-slug">/${esc(s.slug)}</div>
+    <div class="skill-invoke-badges">${invokeBadges || '<span class="badge offline">无触发方式</span>'}</div>
+  </div>
+  <div class="skill-desc">${esc(s.description || '无描述')}</div>
+  <div class="skill-actions">
+    <button class="btn" style="font-size:12px" onclick="openSkillEditor('${esc(s.slug)}')">编辑</button>
+    <button class="btn danger" style="font-size:12px" onclick="deleteSkill('${esc(s.slug)}')">删除</button>
+  </div>
+</div>`;
+  }).join('');
+}
+
+// ── 技能编辑器 ────────────────────────────────────────────
+let _editingSkillSlug = null;
+
+async function openSkillEditor(slug) {
+  _editingSkillSlug = slug || null;
+  document.getElementById('skill-modal-title').textContent = slug ? `编辑技能 /${slug}` : '新建技能';
+  document.getElementById('skill-msg').style.display = 'none';
+
+  const slugInput = document.getElementById('skill-slug');
+  slugInput.disabled = !!slug;
+
+  if (slug) {
+    try {
+      const skill = await fetch(
+        `${API}/api/accounts/${encodeURIComponent(accountContext.name)}/skills/${encodeURIComponent(slug)}`
+      ).then(r => r.json());
+      slugInput.value = skill.slug;
+      document.getElementById('skill-description').value = skill.description || '';
+      document.getElementById('skill-user-invocable').checked = skill.user_invocable;
+      document.getElementById('skill-disable-model').checked = skill.disable_model_invocation;
+      document.getElementById('skill-content').value = skill.content || '';
+    } catch {
+      return;
+    }
+  } else {
+    slugInput.value = '';
+    document.getElementById('skill-description').value = '';
+    document.getElementById('skill-user-invocable').checked = true;
+    document.getElementById('skill-disable-model').checked = false;
+    document.getElementById('skill-content').value = '';
+  }
+
+  document.getElementById('skill-modal').style.display = '';
+}
+
+function closeSkillModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('skill-modal').style.display = 'none';
+}
+
+async function saveSkill() {
+  const slug = _editingSkillSlug || document.getElementById('skill-slug').value.trim();
+  if (!slug) {
+    showSkillMsg('请填写 Slug', 'error');
+    return;
+  }
+  const body = {
+    name:                     slug,
+    description:              document.getElementById('skill-description').value.trim(),
+    user_invocable:           document.getElementById('skill-user-invocable').checked,
+    disable_model_invocation: document.getElementById('skill-disable-model').checked,
+    allowed_tools:            [],
+    content:                  document.getElementById('skill-content').value,
+  };
+  const btn = document.getElementById('skill-save-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(
+      `${API}/api/accounts/${encodeURIComponent(accountContext.name)}/skills/${encodeURIComponent(slug)}`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showSkillMsg(err.detail || '保存失败', 'error');
+      return;
+    }
+    closeSkillModal();
+    loadAccountSkills(accountContext.name);
+  } catch (e) {
+    showSkillMsg(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteSkill(slug) {
+  if (!confirm(`确认删除技能 /${slug}？此操作不可撤销。`)) return;
+  await fetch(
+    `${API}/api/accounts/${encodeURIComponent(accountContext.name)}/skills/${encodeURIComponent(slug)}`,
+    { method: 'DELETE' }
+  );
+  loadAccountSkills(accountContext.name);
+}
+
+function showSkillMsg(text, type) {
+  const el = document.getElementById('skill-msg');
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert mt-16' : 'mt-16';
+  el.style.display = '';
+}
+
+// ── 技能市场 ──────────────────────────────────────────────
+let _marketSearchTimer = null;
+let _pendingInstallPlugin = null;
+let _marketResults = [];  // search results referenced by index from onclick
+
+function openMarketModal() {
+  document.getElementById('market-modal').style.display = '';
+  document.getElementById('market-search-input').value = '';
+  document.getElementById('market-grid').innerHTML = '<div class="empty" style="grid-column:1/-1">加载中...</div>';
+  doMarketSearch();
+}
+
+function closeMarketModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('market-modal').style.display = 'none';
+}
+
+function debounceMarketSearch() {
+  clearTimeout(_marketSearchTimer);
+  _marketSearchTimer = setTimeout(doMarketSearch, 350);
+}
+
+async function doMarketSearch() {
+  clearTimeout(_marketSearchTimer);
+  const q = document.getElementById('market-search-input').value.trim();
+  const grid = document.getElementById('market-grid');
+  const subtitle = document.getElementById('market-subtitle');
+  grid.innerHTML = '<div class="empty" style="grid-column:1/-1">搜索中...</div>';
+  try {
+    const params = new URLSearchParams({ limit: 40 });
+    if (q) params.set('q', q);
+    const results = await fetch(`${API}/api/marketplace/search?${params}`).then(r => r.json());
+    _marketResults = results;
+    renderMarketResults(results, q);
+    subtitle.textContent = q
+      ? `找到 ${results.length} 个结果`
+      : `来自 Anthropic 官方和社区的开源 Agent Skills（共 ${results.length} 条）`;
+  } catch (e) {
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderMarketResults(results, q) {
+  const grid = document.getElementById('market-grid');
+  if (!results.length) {
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1">未找到匹配的技能</div>`;
+    return;
+  }
+  grid.innerHTML = results.map((p, idx) => {
+    const verifiedBadge = p.verified
+      ? `<span class="badge idle" title="官方 Anthropic 技能">官方</span>`
+      : `<span class="badge proxy-relay">社区</span>`;
+    const categoryBadge = p.category
+      ? `<span class="badge offline">${esc(p.category)}</span>`
+      : '';
+    const authorText = p.author ? `<span style="color:var(--text-3);font-size:11px">${esc(p.author)}</span>` : '';
+    const desc = p.description
+      ? (p.description.length > 120 ? p.description.slice(0, 120) + '…' : p.description)
+      : '暂无描述';
+    return `<div class="market-card">
+  <div class="market-card-head">
+    <div class="skill-slug">/${esc(p.slug)}</div>
+    <div style="display:flex;gap:4px;flex-shrink:0">${verifiedBadge}${categoryBadge}</div>
+  </div>
+  ${authorText}
+  <div class="skill-desc" style="margin-top:6px">${esc(desc)}</div>
+  <div class="skill-actions" style="margin-top:auto;padding-top:8px">
+    <button class="btn primary" style="font-size:12px" onclick="openMarketInstall(${idx})">安装</button>
+    ${p.homepage ? `<a class="btn" style="font-size:12px;text-decoration:none" href="${esc(p.homepage)}" target="_blank" rel="noopener">查看</a>` : ''}
+  </div>
+</div>`;
+  }).join('');
+}
+
+function openMarketInstall(idx) {
+  _pendingInstallPlugin = _marketResults[idx];
+  if (!_pendingInstallPlugin) return;
+  const slug = _pendingInstallPlugin.slug || '';
+  document.getElementById('market-install-slug').value = slug;
+  document.getElementById('market-install-title').textContent = `安装 /${esc(slug)}`;
+  document.getElementById('market-install-desc').textContent = _pendingInstallPlugin.description || '';
+  document.getElementById('market-install-msg').style.display = 'none';
+  document.getElementById('market-install-modal').style.display = '';
+}
+
+function closeMarketInstallModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('market-install-modal').style.display = 'none';
+}
+
+async function confirmInstall() {
+  if (!_pendingInstallPlugin || !accountContext) return;
+  const slug = document.getElementById('market-install-slug').value.trim();
+  if (!slug) { showMarketInstallMsg('请填写 Slug', 'error'); return; }
+
+  const btn = document.getElementById('market-install-btn');
+  btn.disabled = true;
+  btn.textContent = '安装中...';
+  try {
+    const res = await fetch(
+      `${API}/api/accounts/${encodeURIComponent(accountContext.name)}/skills/install`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plugin: _pendingInstallPlugin, slug }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showMarketInstallMsg(err.detail || '安装失败', 'error');
+      return;
+    }
+    closeMarketInstallModal();
+    closeMarketModal();
+    loadAccountSkills(accountContext.name);
+  } catch (e) {
+    showMarketInstallMsg(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认安装';
+  }
+}
+
+function showMarketInstallMsg(text, type) {
+  const el = document.getElementById('market-install-msg');
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert mt-16' : 'mt-16';
+  el.style.display = '';
+}

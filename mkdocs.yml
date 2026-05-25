@@ -1,8 +1,8 @@
 site_name: CoderFleet
 site_description: 更适合中国开发者体质的多账号 AI 辅助开发方案
-site_url: https://zhchxiao123.github.io/ai-workspace/
-repo_name: zhchxiao123/ai-workspace
-repo_url: https://github.com/zhchxiao123/ai-workspace
+site_url: https://zhchxiao123.github.io/coderfleet/
+repo_name: zhchxiao123/coderfleet
+repo_url: https://github.com/zhchxiao123/coderfleet
 edit_uri: edit/main/docs/
 
 theme:

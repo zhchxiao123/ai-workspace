@@ -38,6 +38,7 @@ coderfleet enter app-a
 codex "帮我实现用户认证模块"
 claude "帮我重构这个函数"
 opencode run "帮我修复测试"
+hermes chat -q "帮我分析这个项目"
 ```
 
 ## 项目与任务

@@ -1,8 +1,12 @@
 
+// ── 认证检查 ──────────────────────────────────────────────
+if (!getApiKey()) showLoginOverlay();
+
 // ── 初始化 ────────────────────────────────────────────────
 initSidebarState();
 initChatSidebarState();
 initTopbarTabs();
+try { initChatSortBtn(); } catch {}
 checkHealth();
 refreshGlobalCaches();
 loadConversations();

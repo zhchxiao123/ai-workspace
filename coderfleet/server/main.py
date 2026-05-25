@@ -38,9 +38,12 @@ from coderfleet.server.models import (
     ConversationResponse,
     ConversationStatus,
     LogicalProject,
+    MarketplaceInstallRequest,
     Pipeline,
     PipelineResponse,
     ProjectResponse,
+    Skill,
+    SkillUpsertRequest,
     Task,
     TaskCreateRequest,
     TaskResponse,
@@ -49,6 +52,8 @@ from coderfleet.server.models import (
     TemplateRunRequest,
     WorkflowTemplateResponse,
 )
+from coderfleet.server.auth import AuthMiddleware, load_api_key
+from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
 from coderfleet.server.push_manager import PushManager
@@ -61,9 +66,10 @@ class ConversationCreateRequest(BaseModel):
 
 # ── 初始化 ────────────────────────────────────────────────
 
-WORKSPACE_DIR = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
-scheduler     = Scheduler(WORKSPACE_DIR)
-push_manager  = PushManager(WORKSPACE_DIR)
+WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
+scheduler        = Scheduler(WORKSPACE_DIR)
+push_manager     = PushManager(WORKSPACE_DIR)
+marketplace_mgr  = MarketplaceManager(WORKSPACE_DIR / "cache")
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -81,6 +87,9 @@ app.add_middleware(
     allow_methods     = ["*"],
     allow_headers     = ["*"],
 )
+
+_api_key = load_api_key(WORKSPACE_DIR)
+app.add_middleware(AuthMiddleware, api_key=_api_key)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -154,6 +163,77 @@ async def health():
 async def list_accounts():
     """列出所有账号，包含容器状态和忙碌状态"""
     return scheduler.list_accounts()
+
+
+def _account_skills_dir(account_name: str) -> Path:
+    return WORKSPACE_DIR / "accounts" / account_name / "skills"
+
+
+def _require_account(name: str) -> None:
+    known = {a.name for a in scheduler.list_accounts()}
+    if name not in known:
+        raise HTTPException(status_code=404, detail=f"账号 {name!r} 不存在")
+
+
+@app.get("/api/accounts/{name}/skills", response_model=list[Skill])
+async def list_account_skills(name: str):
+    _require_account(name)
+    return Skill.load_all(_account_skills_dir(name))
+
+
+@app.get("/api/accounts/{name}/skills/{slug}", response_model=Skill)
+async def get_account_skill(name: str, slug: str):
+    _require_account(name)
+    path = _account_skills_dir(name) / slug / "SKILL.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"技能 {slug!r} 不存在")
+    return Skill.from_file(slug, path)
+
+
+@app.put("/api/accounts/{name}/skills/{slug}", response_model=Skill, status_code=200)
+async def upsert_account_skill(name: str, slug: str, req: SkillUpsertRequest):
+    _require_account(name)
+    skill = Skill(
+        slug                     = slug,
+        name                     = req.name or slug,
+        description              = req.description,
+        user_invocable           = req.user_invocable,
+        disable_model_invocation = req.disable_model_invocation,
+        allowed_tools            = req.allowed_tools,
+        content                  = req.content,
+    )
+    skill.save(_account_skills_dir(name))
+    return skill
+
+
+@app.delete("/api/accounts/{name}/skills/{slug}", status_code=204)
+async def delete_account_skill(name: str, slug: str):
+    _require_account(name)
+    import shutil
+    skill_dir = _account_skills_dir(name) / slug
+    if not skill_dir.exists():
+        raise HTTPException(status_code=404, detail=f"技能 {slug!r} 不存在")
+    shutil.rmtree(skill_dir)
+
+
+# ── Marketplace ────────────────────────────────────────────
+
+@app.get("/api/marketplace/search")
+async def marketplace_search(q: str = "", category: str = "", limit: int = 40):
+    return await marketplace_mgr.search(q=q, category=category, limit=limit)
+
+
+@app.post("/api/accounts/{name}/skills/install", response_model=Skill, status_code=201)
+async def install_marketplace_skill(name: str, req: MarketplaceInstallRequest):
+    _require_account(name)
+    try:
+        content = await marketplace_mgr.download_skill_md(req.plugin)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    skill = Skill.from_content(req.slug, content)
+    skill.slug = req.slug  # always use the user-chosen slug
+    skill.save(_account_skills_dir(name))
+    return skill
 
 
 # ── 任务提交 ──────────────────────────────────────────────

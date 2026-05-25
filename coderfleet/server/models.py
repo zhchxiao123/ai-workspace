@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import yaml
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +29,7 @@ class AccountType(str, Enum):
     codex    = "codex"
     claude   = "claude"
     opencode = "opencode"
+    hermes   = "hermes"
 
 
 class AccountAuth(str, Enum):
@@ -475,3 +478,104 @@ class TemplateRunRequest(BaseModel):
     input:           str
     project_map:     dict[str, str] = {}  # project_role / node_id → 实际项目名
     default_project: str = ""
+
+
+# ── Agent Skills ───────────────────────────────────────────
+
+_FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
+
+
+class Skill(BaseModel):
+    slug:                     str
+    name:                     str = ""
+    description:              str = ""
+    user_invocable:           bool = True
+    disable_model_invocation: bool = False
+    allowed_tools:            list[str] = Field(default_factory=list)
+    content:                  str = ""   # markdown body after frontmatter
+
+    @classmethod
+    def from_content(cls, slug: str, text: str) -> "Skill":
+        m = _FM_RE.match(text)
+        if m:
+            fm = yaml.safe_load(m.group(1)) or {}
+            body = m.group(2).strip()
+        else:
+            fm, body = {}, text.strip()
+        tools = fm.get("allowed-tools", [])
+        if isinstance(tools, str):
+            tools = [t.strip() for t in tools.split(",") if t.strip()]
+        return cls(
+            slug                     = slug,
+            name                     = fm.get("name", slug),
+            description              = fm.get("description", ""),
+            user_invocable           = bool(fm.get("user-invocable", True)),
+            disable_model_invocation = bool(fm.get("disable-model-invocation", False)),
+            allowed_tools            = tools,
+            content                  = body,
+        )
+
+    @classmethod
+    def from_file(cls, slug: str, path: Path) -> "Skill":
+        text = path.read_text(encoding="utf-8")
+        m = _FM_RE.match(text)
+        if m:
+            fm = yaml.safe_load(m.group(1)) or {}
+            body = m.group(2).strip()
+        else:
+            fm, body = {}, text.strip()
+        tools = fm.get("allowed-tools", [])
+        if isinstance(tools, str):
+            tools = [t.strip() for t in tools.split(",") if t.strip()]
+        return cls(
+            slug                     = slug,
+            name                     = fm.get("name", slug),
+            description              = fm.get("description", ""),
+            user_invocable           = bool(fm.get("user-invocable", True)),
+            disable_model_invocation = bool(fm.get("disable-model-invocation", False)),
+            allowed_tools            = tools,
+            content                  = body,
+        )
+
+    def to_skill_md(self) -> str:
+        fm: dict = {"name": self.name or self.slug, "description": self.description}
+        if not self.user_invocable:
+            fm["user-invocable"] = False
+        if self.disable_model_invocation:
+            fm["disable-model-invocation"] = True
+        if self.allowed_tools:
+            fm["allowed-tools"] = self.allowed_tools
+        header = yaml.dump(fm, allow_unicode=True, default_flow_style=False).rstrip()
+        return f"---\n{header}\n---\n\n{self.content}\n"
+
+    def save(self, skills_dir: Path) -> None:
+        skill_dir = skills_dir / self.slug
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(self.to_skill_md(), encoding="utf-8")
+
+    @classmethod
+    def load_all(cls, skills_dir: Path) -> list["Skill"]:
+        if not skills_dir.exists():
+            return []
+        skills = []
+        for p in sorted(skills_dir.iterdir()):
+            if p.is_dir() and (p / "SKILL.md").exists():
+                try:
+                    skills.append(cls.from_file(p.name, p / "SKILL.md"))
+                except Exception:
+                    pass
+        return skills
+
+
+class SkillUpsertRequest(BaseModel):
+    name:                     str = ""
+    description:              str = ""
+    user_invocable:           bool = True
+    disable_model_invocation: bool = False
+    allowed_tools:            list[str] = Field(default_factory=list)
+    content:                  str = ""
+
+
+class MarketplaceInstallRequest(BaseModel):
+    plugin: dict   # full entry dict from MarketplaceManager.search()
+    slug:   str    # target slug for the installed skill

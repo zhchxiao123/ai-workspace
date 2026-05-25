@@ -34,8 +34,6 @@ coderfleet init
 config.conf
 accounts.conf
 projects.conf
-Dockerfile
-entrypoint.sh
 docker-compose.yml
 accounts/
 ```
@@ -46,7 +44,7 @@ accounts/
 coderfleet build
 ```
 
-镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code 和 OpenCode。
+镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code、OpenCode 和 Hermes Agent。
 
 ## 4. 添加账号与项目
 
@@ -55,11 +53,12 @@ coderfleet account add alice TYPE=codex
 coderfleet project add app-a alice ~/projects/app-a
 ```
 
-也可以添加 Claude Code 或 OpenCode 账号：
+也可以添加 Claude Code、OpenCode 或 Hermes Agent 账号：
 
 ```bash
 coderfleet account add bob TYPE=claude
 coderfleet account add carol TYPE=opencode
+coderfleet account add dave TYPE=hermes
 ```
 
 ## 5. 应用配置并登录
@@ -70,6 +69,8 @@ coderfleet login alice
 ```
 
 登录命令会输出授权 URL。把 URL 复制到宿主机浏览器打开，完成授权后把 code 粘贴回终端。
+
+不同账号类型会调用对应 CLI 的登录或初始化流程：Codex 使用 `codex login --device-auth`，Claude Code 使用 `claude login`，OpenCode 使用 `opencode auth login`，Hermes Agent 使用 `hermes setup`。
 
 ## 6. 启动 Web 控制台
 

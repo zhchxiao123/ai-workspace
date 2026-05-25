@@ -61,11 +61,10 @@ mkdir -p ~/.coderfleet
 cp ./config.conf ~/.coderfleet/
 cp ./accounts.conf ~/.coderfleet/
 cp ./projects.conf ~/.coderfleet/
-cp ./Dockerfile ~/.coderfleet/
-cp ./entrypoint.sh ~/.coderfleet/
-cp -r ./scripts ~/.coderfleet/scripts
 cp -r ./accounts ~/.coderfleet/accounts
 ```
+
+新版 `coderfleet build` 默认使用包内镜像定义，不再需要把旧工作区里的 `Dockerfile`、`entrypoint.sh` 和 `scripts/` 复制到标准工作区。迁移后建议重新执行 `coderfleet build` 和 `coderfleet apply`，让 Hermes Agent 等新版工具进入镜像和 compose 配置。
 
 任务记录和任务链记录可按需复制：
 

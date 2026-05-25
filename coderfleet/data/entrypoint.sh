@@ -59,6 +59,16 @@ case "$ACCOUNT_TYPE" in
             echo "OpenCode 环境变量认证：已启用"
         fi
         ;;
+    hermes)
+        HERMES_DIR="${HERMES_HOME:-/home/byclaw/.hermes}"
+        mkdir -p "$HERMES_DIR"
+        echo "Hermes 数据目录：$HERMES_DIR"
+        # Disable interactive approval prompts for headless task execution
+        /opt/hermes-venv/bin/hermes config set approvals.mode off 2>/dev/null || true
+        if [ "${CODERFLEET_ACCOUNT_AUTH:-login}" = "env" ]; then
+            echo "Hermes 环境变量认证：已启用"
+        fi
+        ;;
 esac
 
 # ── 执行传入的命令（默认 sleep infinity）─────────────────

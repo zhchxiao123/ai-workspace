@@ -115,6 +115,13 @@ class Scheduler:
                 f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
                 f"opencode run --format json{permission}{session}{file_flags} {escaped_prompt}"
             )
+        elif acc_type == AccountType.hermes:
+            yolo = " --yolo" if auto else ""
+            resume = f" --resume {shlex.quote(native_session_id)}" if native_session_id else ""
+            inner_cmd = (
+                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
+                f"/opt/hermes-venv/bin/hermes{resume} chat -q {escaped_prompt}{yolo}"
+            )
         else:
             sandbox = "danger-full-access" if auto else "workspace-write"
             image_flags = "".join(f" -i {shlex.quote(img)}" for img in (images or []))
@@ -159,6 +166,12 @@ class Scheduler:
 
     @staticmethod
     def extract_native_session_id(acc_type: AccountType, text: str) -> str:
+        # hermes outputs plain text; session ID appears as "Session:   <id>"
+        if acc_type == AccountType.hermes:
+            import re
+            m = re.search(r"^Session:\s+(\S+)", text, re.MULTILINE)
+            return m.group(1) if m else ""
+
         for line in text.splitlines():
             line = line.strip()
             if not line.startswith("{"):
@@ -1122,6 +1135,24 @@ class Scheduler:
                 f.write(f"finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{result}]\n")
         except Exception:
             pass
+
+    async def _get_hermes_session_id(self, container_name: str) -> str:
+        """Query the most recently updated hermes session ID from inside the container."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "exec", container_name, "bash", "-lc",
+                "/opt/hermes-venv/bin/hermes sessions export 2>/dev/null | tail -1",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            text = stdout.decode("utf-8", errors="replace").strip()
+            if text:
+                data = json.loads(text)
+                return str(data.get("id", ""))
+        except Exception:
+            pass
+        return ""
 
     def _get_task_container(self, task: Task) -> Optional[str]:
         """通过任务记录的 project 路径找到对应项目，推导容器名。"""

@@ -35,6 +35,8 @@ def _cli_and_args(acc_type: str) -> tuple[str, list[str]]:
         return "claude", ["login"]
     if acc_type == "opencode":
         return "opencode", ["auth", "login"]
+    if acc_type == "hermes":
+        return "hermes", ["setup"]
     return "codex", ["login", "--device-auth"]
 
 
@@ -45,6 +47,8 @@ def _auth_mount_dst(acc_type: str) -> str:
         return "/home/byclaw/.claude"
     if acc_type == "opencode":
         return "/home/byclaw/.opencode"
+    if acc_type == "hermes":
+        return "/home/byclaw/.hermes"
     return "/home/byclaw/.codex"
 
 
@@ -149,6 +153,12 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
             "-e", "XDG_CONFIG_HOME=/home/byclaw/.opencode/config",
             "-e", "XDG_STATE_HOME=/home/byclaw/.opencode/state",
             "-e", "XDG_CACHE_HOME=/home/byclaw/.opencode/cache",
+        ]
+
+    if acc_type == "hermes":
+        insert_at = cmd.index("-v")
+        cmd[insert_at:insert_at] = [
+            "-e", "HERMES_HOME=/home/byclaw/.hermes",
         ]
 
     if replace_process:

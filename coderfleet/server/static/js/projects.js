@@ -144,8 +144,7 @@ function submitForCurrentProject() {
 
 // ── 项目终端 ──────────────────────────────────────────────
 function terminalWsUrl(projectName) {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${location.host}${API}/api/projects/${encodeURIComponent(projectName)}/terminal`;
+  return wsUrl(`${API}/api/projects/${encodeURIComponent(projectName)}/terminal`);
 }
 
 function setTerminalStatus(state, message) {
