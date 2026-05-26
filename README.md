@@ -1,21 +1,29 @@
-# CoderFleet (coderfleet)
+# CoderFleet
 
-**更适合中国开发者（CN）体质的多账号 AI 辅助开发方案。**
+> 把多个 Codex CLI / Claude Code / OpenCode / Hermes Agent 账号变成一支可调度的 AI 开发舰队。
+
+CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作台。
+
+它可以在一台机器上同时运行多个 AI 编程账号，每个账号拥有独立容器、独立认证文件和独立代理出口，并通过 Web 控制台或 CLI 提交异步开发任务、实时查看日志、管理项目与账号。
+
+## 适合谁？
+
+- 同时使用多个 Codex / Claude Code / OpenCode 账号的开发者
+- 经常遇到单账号额度限制的 AI 编程重度用户
+- 希望多个 AI Agent 并行处理任务的独立开发者
+- 需要本地容器隔离、代理隔离和账号隔离的用户
+
+## 核心能力
+
+- 多账号管理：Codex / Claude Code / OpenCode / Hermes Agent
+- 每个账号独立容器隔离
+- 每个项目可绑定不同账号
+- Web 控制台提交任务和查看日志
+- CLI 异步任务队列
+- 宿主机代理中继，统一管理网络出口
+---
 
 <video src="https://github.com/user-attachments/assets/37bee884-09c7-40ca-bc7b-87ce26422c8c" controls width="100%"></video>
-
-### 💡 为什么需要 CoderFleet？
-
-在重度 AI 编程开发中，大模型 CLI（如 Claude Code、Codex、OpenCode、Hermes Agent）经常面临尴尬的使用瓶颈：
-* **单账号（Plus 会员）的额度不够用**，频繁遭遇大模型服务商的 Rate Limit 或当日使用上限；
-* **高倍数套餐（如 5x/10x/20x 的账号会员）又极其昂贵**，在周期内往往使用量根本用不完，性价比极低；
-* 最优解通常是**自己申请 2 个或多个普通/Plus 账号轮流使用**，但在单台机器上频繁切换账号、管理认证数据、以及维护隔离的网络环境极其繁杂。
-
-**CoderFleet 正是为此而生！**
-
-它允许你在单台宿主机上同时运行多个 **Codex CLI**、**Claude Code**、**OpenCode** 和 **Hermes Agent** 账号。每个账号采用独立容器隔离、独立会话认证，并设计了严密的**物理内网中继代理（gost）**网络，确保所有网络出站流量强制且唯一地走宿主机代理出口，完美解决国内开发者在调用 Claude / OpenAI 服务时遭遇的网络封锁和封号风险，实现"多账号额度无缝叠加、轮询提效"。
-
----
 
 ## 安装
 
