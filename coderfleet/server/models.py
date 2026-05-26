@@ -313,6 +313,7 @@ class PipelineNodeRun(BaseModel):
     project_name:     str = ""
     project_role:     str = ""
     resolved_project: str = ""
+    actual_prompt:    str = ""
 
 
 class Pipeline(BaseModel):

@@ -40,7 +40,7 @@ async function loadWorkflows() {
     if (activePipelineId) {
       const p = templatePipelines.find(p => p.id === activePipelineId);
       if (p) {
-        _renderActivePipeline(p, tasks);
+        _patchDagIfRendered(p, tasks);
       } else {
         activePipelineId = null;
         localStorage.removeItem('coderfleet.activePipelineId');
@@ -57,19 +57,44 @@ async function loadWorkflows() {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  过滤器
+// ══════════════════════════════════════════════════════════════
+function setRunsFilter(f) {
+  wfRunsFilter = f;
+  document.querySelectorAll('#wf-runs-filter .wf-filter-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${f}'`));
+  });
+  renderPipelineList(pipelinesCache, workflowTasksCache);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  Pipeline 列表侧边栏
 // ══════════════════════════════════════════════════════════════
 function renderPipelineList(pipelines, tasks) {
   const list = document.getElementById('pipeline-list');
   if (!list) return;
 
-  if (!pipelines.length) {
-    list.innerHTML = `<div class="empty" style="padding:20px 14px;font-size:13px">
-      暂无模板运行记录<br><span style="color:var(--text-3);font-size:12px">从模板库运行模板后会出现在这里</span></div>`;
+  // 根据过滤条件筛选
+  let filtered = pipelines;
+  if (wfRunsFilter !== 'all') {
+    filtered = pipelines.filter(p => {
+      const pTasks = tasks.filter(t => p.task_ids.includes(t.id));
+      if (wfRunsFilter === 'running') return pTasks.some(t => t.status === 'running');
+      if (wfRunsFilter === 'failed')  return pTasks.some(t => t.status === 'failed');
+      if (wfRunsFilter === 'done')    return pTasks.length > 0 && pTasks.every(t => t.status === 'done');
+      return true;
+    });
+  }
+
+  if (!filtered.length) {
+    const hint = wfRunsFilter === 'all'
+      ? '暂无模板运行记录<br><span style="color:var(--text-3);font-size:12px">从模板库运行模板后会出现在这里</span>'
+      : `没有符合「${({running:'运行中',failed:'失败',done:'完成'})[wfRunsFilter]}」条件的记录`;
+    list.innerHTML = `<div class="empty" style="padding:20px 14px;font-size:13px">${hint}</div>`;
     return;
   }
 
-  list.innerHTML = pipelines.map(p => {
+  list.innerHTML = filtered.map(p => {
     const pTasks = tasks.filter(t => p.task_ids.includes(t.id));
     const running = pTasks.some(t => t.status === 'running');
     const failed  = pTasks.some(t => t.status === 'failed');
@@ -97,6 +122,7 @@ async function openPipeline(id) {
   activePipelineId = id;
   localStorage.setItem('coderfleet.activePipelineId', id);
   workflowSelectedTaskId = null;
+  dagZoom = 1.0;
   closeWorkflowDetail();
 
   try {
@@ -257,6 +283,57 @@ function renderDag(pipeline, tasks) {
       <svg class="dag-svg" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${svgPaths}</svg>
       ${nodesHtml}
     </div>`;
+  // 恢复当前缩放级别
+  if (dagZoom !== 1.0) {
+    const canvas = area.querySelector('.dag-canvas');
+    if (canvas) canvas.style.zoom = dagZoom;
+  }
+  const label = document.getElementById('dag-zoom-label');
+  if (label) label.textContent = Math.round(dagZoom * 100) + '%';
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DAG 差量更新（避免全量重渲染破坏选中状态）
+// ══════════════════════════════════════════════════════════════
+function _patchDagNode(task, pipeline) {
+  const nodeEl = document.getElementById(`dag-node-${task.id}`);
+  if (!nodeEl) return false;
+  const isSelected = workflowSelectedTaskId === task.id;
+  const newClass = `dag-node dag-status-${task.status}${isSelected ? ' dag-selected' : ''}`;
+  if (nodeEl.className !== newClass) nodeEl.className = newClass;
+  // 更新 footer 时长/状态文本
+  const durEl = nodeEl.querySelector('.dag-node-footer span:last-child');
+  if (durEl) {
+    durEl.textContent = task.finished
+      ? fmtDuration(task.created, task.finished)
+      : task.status === 'running' ? '运行中' : statusLabel(task.status);
+  }
+  return true;
+}
+
+function _patchDagIfRendered(pipeline, tasks) {
+  const area = document.getElementById('dag-area');
+  const existingNodes = area ? area.querySelectorAll('.dag-node') : [];
+  const pTasks = tasks.filter(t => pipeline.task_ids.includes(t.id));
+  // 节点数量变化（如重试后新增节点）或尚未渲染时，走全量渲染
+  if (!area || existingNodes.length === 0 || existingNodes.length !== pTasks.length) {
+    _showToolbar(pipeline);
+    _renderActivePipeline(pipeline, tasks);
+    return;
+  }
+  // 仅更新状态和时长
+  pTasks.forEach(t => _patchDagNode(t, pipeline));
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DAG 缩放
+// ══════════════════════════════════════════════════════════════
+function zoomDag(delta) {
+  dagZoom = delta === 0 ? 1.0 : Math.min(2.0, Math.max(0.3, dagZoom + delta));
+  const canvas = document.querySelector('#dag-area .dag-canvas');
+  if (canvas) canvas.style.zoom = dagZoom;
+  const label = document.getElementById('dag-zoom-label');
+  if (label) label.textContent = Math.round(dagZoom * 100) + '%';
 }
 
 function _renderDagEmpty() {
@@ -323,6 +400,7 @@ async function _openWorkflowDetail(taskId) {
     const pipeline = pipelinesCache.find(p => p.id === activePipelineId);
     const nodeRun = pipeline?.node_runs?.find(n => n.task_id === taskId);
 
+    const canRetry = task.status === 'failed' || task.status === 'killed';
     detail.innerHTML = `
       <div class="workflow-detail-header">
         <div style="flex:1;min-width:0">
@@ -332,9 +410,14 @@ async function _openWorkflowDetail(taskId) {
             <span class="badge ${task.type}">${task.type}</span>
             <span style="color:var(--text-3)">${esc(task.account)}</span>
             <span style="color:var(--text-3)">${dur}</span>
+            ${canRetry ? `<button class="btn" style="font-size:11px;padding:2px 9px;margin-left:2px" onclick="retryWorkflowTask('${esc(task.id)}')">↩ 重试</button>` : ''}
           </div>
           ${nodeRun ? `<div class="workflow-detail-meta">
             执行项目: ${esc(nodeRun.resolved_project || task.project_name)} · 目标: ${esc(_templateNodeTargetLabel(nodeRun))}
+          </div>` : ''}
+          ${nodeRun?.actual_prompt ? `<div class="workflow-detail-meta" style="margin-top:4px">
+            <span style="color:var(--text-3)">实际 Prompt：</span>
+            <div style="font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-all;max-height:72px;overflow:auto;background:color-mix(in srgb,var(--bg) 80%,transparent);border-radius:4px;padding:4px 6px">${esc(nodeRun.actual_prompt)}</div>
           </div>` : ''}
         </div>
         <button class="close-btn" onclick="closeWorkflowDetail()">✕</button>
@@ -348,6 +431,20 @@ async function _openWorkflowDetail(taskId) {
     }
   } catch (e) {
     detail.innerHTML = `<div style="padding:16px;color:var(--red)">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function retryWorkflowTask(taskId) {
+  try {
+    const r = await fetch(`${API}/api/tasks/${taskId}/retry`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    closeWorkflowDetail();
+    // 重试后节点数量可能变化（pipeline 中旧 task 被替换），全量刷新
+    if (activePipelineId) await openPipeline(activePipelineId);
+    else await loadWorkflows();
+  } catch (e) {
+    alert('重试失败：' + e.message);
   }
 }
 
@@ -1198,6 +1295,20 @@ async function showRunTemplateModal(templateId) {
     btn.textContent = '请先补充角色名';
   }
 
+  // 预填上次运行配置
+  try {
+    const saved = JSON.parse(localStorage.getItem(`coderfleet.runConfig.${templateId}`) || 'null');
+    if (saved) {
+      if (saved.defaultProject && defSel) defSel.value = saved.defaultProject;
+      if (saved.projectMap) {
+        document.querySelectorAll('#run-tpl-role-map-group select[data-role]').forEach(sel => {
+          const v = saved.projectMap[sel.dataset.role];
+          if (v) sel.value = v;
+        });
+      }
+    }
+  } catch { /* ignore */ }
+
   modal.style.display = 'flex';
   setTimeout(() => document.getElementById('run-tpl-input').focus(), 50);
 }
@@ -1234,6 +1345,13 @@ async function submitRunTemplate() {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
+
+    // 保存本次运行配置，下次打开时预填
+    const savedCfg = { defaultProject, projectMap: {} };
+    document.querySelectorAll('#run-tpl-role-map-group select[data-role]').forEach(sel => {
+      if (sel.value) savedCfg.projectMap[sel.dataset.role] = sel.value;
+    });
+    localStorage.setItem(`coderfleet.runConfig.${templateId}`, JSON.stringify(savedCfg));
 
     document.getElementById('run-template-modal').style.display = 'none';
     // Switch to runs tab and open the newly created pipeline

@@ -55,6 +55,8 @@ let workflowSelectedTaskId = null;
 let pipelinesCache = [];
 let workflowTasksCache = [];
 let wfActiveTab = 'templates';
+let wfRunsFilter = 'all';   // 'all' | 'running' | 'failed' | 'done'
+let dagZoom = 1.0;
 
 // ── 工作流模板 ────────────────────────────────────────────
 let activeTemplateId = null;

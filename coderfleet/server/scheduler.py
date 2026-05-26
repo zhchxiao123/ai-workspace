@@ -1502,34 +1502,49 @@ class Scheduler:
         )
         pipeline.save(self.pipelines_dir)
 
-        # 按拓扑序依次创建 Task
+        # 按拓扑层级分组，同层节点并发提交
+        from collections import defaultdict
+        dep_levels: dict[str, int] = {}
+        for node in sorted_nodes:
+            level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
+            dep_levels[node.node_id] = level
+
+        level_groups: dict[int, list] = defaultdict(list)
+        for node in sorted_nodes:
+            level_groups[dep_levels[node.node_id]].append(node)
+
         node_task_map: dict[str, str] = {}  # node_id → task_id
 
-        for node in sorted_nodes:
-            prompt = node.prompt_tpl.replace("{{input}}", input_str)
-            project_name = resolved_projects[node.node_id]
+        for level in sorted(level_groups):
+            async def _submit_node(node: TemplateNode) -> tuple:
+                actual_prompt = node.prompt_tpl.replace("{{input}}", input_str)
+                pname = resolved_projects[node.node_id]
+                deps = [node_task_map[nid] for nid in (node.depends_on or []) if nid in node_task_map]
+                t = await self.submit(
+                    prompt       = actual_prompt,
+                    project_name = pname,
+                    auto         = True,
+                    depends_on   = deps,
+                    pipeline_id  = pipeline.id,
+                )
+                return node, t, actual_prompt, pname
 
-            depends_on = [node_task_map[nid] for nid in node.depends_on if nid in node_task_map]
+            results = await asyncio.gather(*[_submit_node(n) for n in level_groups[level]])
 
-            task = await self.submit(
-                prompt       = prompt,
-                project_name = project_name,
-                auto         = True,
-                depends_on   = depends_on,
-                pipeline_id  = pipeline.id,
-            )
-            node_task_map[node.node_id] = task.id
-            if task.id not in pipeline.task_ids:
-                pipeline.task_ids.append(task.id)
-            pipeline.node_runs.append(PipelineNodeRun(
-                node_id          = node.node_id,
-                node_name        = node.name,
-                task_id          = task.id,
-                target_mode      = getattr(node, "target_mode", "default") or "default",
-                project_name     = getattr(node, "project_name", ""),
-                project_role     = getattr(node, "project_role", ""),
-                resolved_project = project_name,
-            ))
+            for node, task, actual_prompt, pname in results:
+                node_task_map[node.node_id] = task.id
+                if task.id not in pipeline.task_ids:
+                    pipeline.task_ids.append(task.id)
+                pipeline.node_runs.append(PipelineNodeRun(
+                    node_id          = node.node_id,
+                    node_name        = node.name,
+                    task_id          = task.id,
+                    target_mode      = getattr(node, "target_mode", "default") or "default",
+                    project_name     = getattr(node, "project_name", ""),
+                    project_role     = getattr(node, "project_role", ""),
+                    resolved_project = pname,
+                    actual_prompt    = actual_prompt,
+                ))
             pipeline.touch(self.pipelines_dir)
 
         return pipeline
@@ -1594,3 +1609,16 @@ class Scheduler:
             pipeline_id    = effective_pipeline_id,
         )
         return task
+
+    def update_pipeline_node_task(self, pipeline_id: str, old_task_id: str, new_task_id: str) -> None:
+        """将 pipeline 中的旧 task_id 替换为重试后的新 task_id（用于 retry 流程）。"""
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline is None:
+            return
+        if old_task_id in pipeline.task_ids:
+            idx = pipeline.task_ids.index(old_task_id)
+            pipeline.task_ids[idx] = new_task_id
+        for nr in pipeline.node_runs:
+            if nr.task_id == old_task_id:
+                nr.task_id = new_task_id
+        pipeline.touch(self.pipelines_dir)

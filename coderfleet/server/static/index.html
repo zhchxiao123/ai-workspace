@@ -323,12 +323,22 @@
                 <div class="workflows-sidebar-header">
                   <span style="font-weight:600;font-size:14px">运行历史</span>
                 </div>
+                <div class="wf-runs-filter-bar" id="wf-runs-filter">
+                  <button class="wf-filter-pill active" onclick="setRunsFilter('all')">全部</button>
+                  <button class="wf-filter-pill" onclick="setRunsFilter('running')">运行中</button>
+                  <button class="wf-filter-pill" onclick="setRunsFilter('failed')">失败</button>
+                  <button class="wf-filter-pill" onclick="setRunsFilter('done')">完成</button>
+                </div>
                 <div id="pipeline-list" style="flex:1;overflow-y:auto"></div>
               </div>
               <div class="workflows-canvas-wrap">
                 <div class="workflows-canvas-toolbar" id="dag-toolbar" style="display:none">
                   <span class="workflows-canvas-title" id="dag-pipeline-name"></span>
-                  <div style="margin-left:auto;display:flex;gap:8px">
+                  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+                    <button class="btn wf-zoom-btn" title="缩小" onclick="zoomDag(-0.15)">－</button>
+                    <span id="dag-zoom-label" style="font-size:11px;color:var(--text-3);min-width:34px;text-align:center">100%</span>
+                    <button class="btn wf-zoom-btn" title="放大" onclick="zoomDag(0.15)">＋</button>
+                    <button class="btn wf-zoom-btn" title="重置缩放" onclick="zoomDag(0)" style="font-size:11px">⊡</button>
                     <button class="btn" style="font-size:12px;padding:5px 12px" onclick="confirmDeletePipeline()">删除</button>
                   </div>
                 </div>
