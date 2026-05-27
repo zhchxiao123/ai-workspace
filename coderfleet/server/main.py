@@ -110,7 +110,7 @@ STATIC_DIR.mkdir(exist_ok=True)
 app = FastAPI(
     title       = "CoderFleet Scheduler API",
     description = "CoderFleet 任务调度服务",
-    version     = "0.1.0",
+    version     = "0.1.3.dev0",
 )
 
 app.add_middleware(
