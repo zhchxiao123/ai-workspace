@@ -1,4 +1,4 @@
-// ── 全局缓存（accounts + conversations），低频刷新 ───────────
+// ── 全局缓存（accounts + conversations + 账号类型），低频刷新 ──
 async function refreshGlobalCaches() {
   try {
     const [accounts, convs] = await Promise.all([
@@ -13,6 +13,8 @@ async function refreshGlobalCaches() {
       populateAccountFilters(accounts);
     }
   } catch { }
+  // 账号类型元数据（低频，与 accounts 并行但独立，失败不影响主缓存）
+  loadAccountTypes().catch(() => {});
 }
 
 // ── 任务列表 ──────────────────────────────────────────────

@@ -48,6 +48,7 @@ let taskRowsCache = [];
 let taskPage = 1;
 const TASK_PAGE_SIZE = 12;
 let globalAccountsCache = [];
+let accountTypesCache = [];   // 账号类型注册表缓存，由 loadAccountTypes() 填充
 
 // ── 工作流 ────────────────────────────────────────────────
 let activePipelineId = null;

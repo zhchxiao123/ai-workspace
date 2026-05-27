@@ -25,11 +25,8 @@ class ConversationStatus(str, Enum):
     archived = "archived"
 
 
-class AccountType(str, Enum):
-    codex    = "codex"
-    claude   = "claude"
-    opencode = "opencode"
-    hermes   = "hermes"
+# AccountType 从账号类型注册表自动派生，添加新类型只需编辑注册表。
+from coderfleet.account_type_registry import AccountType  # noqa: F401, E402
 
 
 class AccountAuth(str, Enum):

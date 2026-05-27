@@ -60,6 +60,7 @@ from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
 from coderfleet.server.push_manager import PushManager
+from coderfleet.account_type_registry import ACCOUNT_TYPES
 
 
 class ConversationCreateRequest(BaseModel):
@@ -187,6 +188,24 @@ async def push_unsubscribe(req: PushUnsubscribeRequest):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "workspace": str(WORKSPACE_DIR)}
+
+
+# ── 账号类型注册表 ─────────────────────────────────────────
+
+@app.get("/api/account-types")
+async def list_account_types():
+    """返回所有已注册账号类型的元数据，用于前端动态渲染。"""
+    return [
+        {
+            "id":               spec.id,
+            "label":            spec.label,
+            "supports_env_auth": spec.supports_env_auth,
+            "env_hint":         spec.env_hint,
+            "badge_bg":         spec.badge_bg,
+            "badge_color":      spec.badge_color,
+        }
+        for spec in ACCOUNT_TYPES.values()
+    ]
 
 
 # ── 账号 ──────────────────────────────────────────────────

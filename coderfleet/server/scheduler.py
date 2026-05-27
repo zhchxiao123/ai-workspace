@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from coderfleet.server import docker_mgr
+from coderfleet.account_type_registry import env_auth_type_ids as _env_auth_ids
 from coderfleet.server.models import (
     Account,
     AccountAuth,
@@ -85,62 +86,18 @@ class Scheduler:
     ) -> str:
         """
         构建在容器内执行的 CLI 命令。
-        始终开启 JSON 输出（--output-format stream-json / --json）以便提取 native_session_id。
-        images: 容器内图片路径列表，仅 codex 支持（-i 参数）。
+        per-type 逻辑委托给注册表中的 build_inner_cmd，此处只处理通用包装。
         """
-        escaped_prompt = shlex.quote(prompt)
-        marker = shlex.quote(Scheduler.task_process_marker(task_id))
+        from coderfleet.account_type_registry import get_spec
+        spec     = get_spec(acc_type.value)
+        marker   = shlex.quote(Scheduler.task_process_marker(task_id))
         task_env = shlex.quote(task_id)
 
-        if acc_type == AccountType.claude:
-            permission = "--dangerously-skip-permissions" if auto else "--permission-mode acceptEdits"
-            # 始终使用流式 JSON 输出以捕获 session_id
-            output_format = " --output-format stream-json --verbose"
-            resume = f" --resume {shlex.quote(native_session_id)}" if native_session_id else ""
-            # claude 不支持 -i flag，通过在 prompt 末尾附加本地路径来传图片
-            if images:
-                paths = "\n".join(images)
-                escaped_prompt = shlex.quote(f"{prompt}\n\n[Attached images:\n{paths}]")
-            # 通过 stdin 传入 prompt，兼容所有 claude CLI 版本（部分版本不再接受位置参数）
-            inner_cmd = (
-                f"printf '%s\\n' {escaped_prompt} | "
-                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-                f"claude -p {permission}{output_format}{resume}"
-            )
-        elif acc_type == AccountType.opencode:
-            permission = " --dangerously-skip-permissions" if auto else ""
-            session = f" --session {shlex.quote(native_session_id)}" if native_session_id else ""
-            file_flags = "".join(f" --file {shlex.quote(img)}" for img in (images or []))
-            inner_cmd = (
-                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-                f"opencode run --format json{permission}{session}{file_flags} {escaped_prompt}"
-            )
-        elif acc_type == AccountType.hermes:
-            yolo = " --yolo" if auto else ""
-            resume = f" --resume {shlex.quote(native_session_id)}" if native_session_id else ""
-            inner_cmd = (
-                f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-                f"/opt/hermes-venv/bin/hermes{resume} chat -q {escaped_prompt}{yolo}"
-            )
-        else:
-            sandbox = "danger-full-access" if auto else "workspace-write"
-            image_flags = "".join(f" -i {shlex.quote(img)}" for img in (images or []))
-            # 始终使用 --json 以捕获 thread_id；prompt 通过 stdin 传入
-            if native_session_id:
-                # codex exec resume <session_id> --json [flags] - prompt via stdin
-                # resume 子命令不支持 --sandbox，使用 --dangerously-bypass-approvals-and-sandbox
-                danger_flag = " --dangerously-bypass-approvals-and-sandbox" if auto else ""
-                inner_cmd = (
-                    f"printf '%s\\n' {escaped_prompt} | "
-                    f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-                    f"codex exec resume {shlex.quote(native_session_id)} --json{danger_flag}{image_flags}"
-                )
-            else:
-                inner_cmd = (
-                    f"printf '%s\\n' {escaped_prompt} | "
-                    f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-                    f"codex exec --json --sandbox {sandbox}{image_flags}"
-                )
+        inner_cmd = spec.build_inner_cmd(
+            prompt, auto, task_id, marker, task_env,
+            native_session_id, list(images or []),
+        )
+
         if container_workdir:
             inner_cmd = f"cd {shlex.quote(container_workdir)} && {inner_cmd}"
 
@@ -148,7 +105,6 @@ class Scheduler:
         task_exit = f"/workspace/.coderfleet-tasks/{task_id}.exit"
         # 用子 shell ( ... ) 包裹 inner_cmd：exec -a 替换的是子 shell 进程，
         # 外层 bash 在子 shell 退出后仍可执行 echo $? 写入 exit 文件。
-        # 若不加括号，exec -a 会直接替换外层 bash，分号后的 echo $? 永远不会执行。
         wrapper_body = (
             f"( {inner_cmd} ) >> {shlex.quote(task_log)} 2>&1"
             f"; echo $? > {shlex.quote(task_exit)}"
@@ -160,49 +116,19 @@ class Scheduler:
 
     @staticmethod
     def build_usage_status_command(acc_type: AccountType) -> str:
-        if acc_type == AccountType.codex:
-            return "coderfleet-usage-status codex 2>&1"
-        return ""
+        from coderfleet.account_type_registry import get_spec
+        try:
+            return get_spec(acc_type.value).usage_status_cmd
+        except KeyError:
+            return ""
 
     @staticmethod
     def extract_native_session_id(acc_type: AccountType, text: str) -> str:
-        # hermes outputs plain text; session ID appears as "Session:   <id>"
-        if acc_type == AccountType.hermes:
-            import re
-            m = re.search(r"^Session:\s+(\S+)", text, re.MULTILINE)
-            return m.group(1) if m else ""
-
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if acc_type == AccountType.codex:
-                if data.get("type") == "thread.started" and data.get("thread_id"):
-                    return str(data["thread_id"])
-            elif acc_type == AccountType.opencode:
-                for key in ("sessionID", "session_id", "sessionId"):
-                    value = data.get(key)
-                    if value:
-                        return str(value)
-                session = data.get("session")
-                if isinstance(session, dict):
-                    for key in ("id", "sessionID", "session_id", "sessionId"):
-                        value = session.get(key)
-                        if value:
-                            return str(value)
-                event_type = str(data.get("type", ""))
-                if "session" in event_type.lower():
-                    for key in ("id", "sessionID", "session_id", "sessionId"):
-                        value = data.get(key)
-                        if value:
-                            return str(value)
-            elif data.get("session_id"):
-                return str(data["session_id"])
-        return ""
+        from coderfleet.account_type_registry import get_spec
+        try:
+            return get_spec(acc_type.value).extract_session_id(text)
+        except KeyError:
+            return ""
 
     # ── 账号管理 ──────────────────────────────────────────
 
@@ -229,7 +155,7 @@ class Scheduler:
             except ValueError:
                 continue
             env_file = parts.get("ENV_FILE", "")
-            if auth == AccountAuth.env and acc_type not in (AccountType.claude, AccountType.opencode):
+            if auth == AccountAuth.env and acc_type.value not in _env_auth_ids():
                 continue
             if auth == AccountAuth.env and not env_file:
                 env_file = f"./accounts/{parts['NAME']}/env"

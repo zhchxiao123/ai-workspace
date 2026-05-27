@@ -15,7 +15,7 @@
   <link rel="apple-touch-icon" href="/static/icons/logo-mark.png">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
   <link rel="stylesheet" href="/static/vendor/drawflow.min.css">
-  <link rel="stylesheet" href="/static/css/main.css?v=20260527c">
+  <link rel="stylesheet" href="/static/css/main.css?v=20260527d">
 </head>
 
 <body>
@@ -422,7 +422,7 @@
               <div class="section-head">
                 <div>
                   <div class="section-title">技能管理</div>
-                  <div class="section-subtitle">管理该账号容器内的 Claude Code Agent Skills（存储于 ~/.claude/skills/）</div>
+                  <div class="section-subtitle">管理该账号容器内的 Agent Skills（存储于账号配置目录下的 skills/ 文件夹）</div>
                 </div>
                 <div style="display:flex;gap:8px">
                   <button class="btn" onclick="openMarketModal()">从市场安装</button>
@@ -724,10 +724,7 @@
         <div class="form-group">
           <label class="form-label">类型</label>
           <select id="create-account-type" class="form-input">
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
-            <option value="opencode">opencode</option>
-            <option value="hermes">hermes</option>
+            <!-- options populated dynamically by loadAccountTypes() -->
           </select>
         </div>
         <div class="form-group">
@@ -795,12 +792,12 @@
   <script src="/static/vendor/xterm/addon-fit.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/utils.js?v=20260526a"></script>
-  <script src="/static/js/renderer.js?v=20260526a"></script>
-  <script src="/static/js/state.js?v=20260527"></script>
+  <script src="/static/js/renderer.js?v=20260527f"></script>
+  <script src="/static/js/state.js?v=20260527f"></script>
   <script src="/static/js/chat.js?v=20260526a"></script>
   <script src="/static/js/terminal.js?v=20260521"></script>
   <script src="/static/js/nav.js?v=20260526a"></script>
-  <script src="/static/js/tasks.js?v=20260521"></script>
+  <script src="/static/js/tasks.js?v=20260527f"></script>
   <script src="/static/js/projects.js?v=20260527b"></script>
   <script src="/static/js/accounts.js?v=20260527e"></script>
   <script src="/static/js/submit.js?v=20260521"></script>

@@ -1,3 +1,37 @@
+// ── 账号类型注册表（动态加载） ────────────────────────────
+async function loadAccountTypes() {
+  try {
+    const types = await fetch(`${API}/api/account-types`).then(r => r.json());
+    accountTypesCache = types;
+    _injectTypeBadgeStyles(types);
+    _populateTypeSelects(types);
+  } catch { /* 加载失败时沿用已有缓存或静态样式 */ }
+}
+
+function _injectTypeBadgeStyles(types) {
+  let el = document.getElementById('type-badge-styles');
+  if (!el) {
+    el = document.createElement('style');
+    el.id = 'type-badge-styles';
+    document.head.appendChild(el);
+  }
+  el.textContent = types.map(t =>
+    `.badge.${CSS.escape(t.id)}{background:${t.badge_bg};color:${t.badge_color}}`
+  ).join('\n');
+}
+
+function _populateTypeSelects(types) {
+  // 填充"新建账号"弹窗的类型下拉
+  const createSel = document.getElementById('create-account-type');
+  if (createSel) {
+    const prev = createSel.value;
+    createSel.innerHTML = types.map(t =>
+      `<option value="${esc(t.id)}">${esc(t.label || t.id)}</option>`
+    ).join('');
+    if (types.some(t => t.id === prev)) createSel.value = prev;
+  }
+}
+
 // ── 账号列表 ──────────────────────────────────────────────
 async function loadAccounts() {
   try {
@@ -467,10 +501,9 @@ async function loadAccountSettings(name) {
           <div class="form-group">
             <label class="form-label">类型</label>
             <select id="settings-type" class="form-input">
-              <option value="claude"   ${acc.type==='claude'   ?'selected':''}>claude</option>
-              <option value="codex"    ${acc.type==='codex'    ?'selected':''}>codex</option>
-              <option value="opencode" ${acc.type==='opencode' ?'selected':''}>opencode</option>
-              <option value="hermes"   ${acc.type==='hermes'   ?'selected':''}>hermes</option>
+              ${(accountTypesCache.length ? accountTypesCache : [{id: acc.type, label: acc.type}])
+                .map(t => `<option value="${esc(t.id)}" ${acc.type===t.id?'selected':''}>${esc(t.label||t.id)}</option>`)
+                .join('')}
             </select>
           </div>
 

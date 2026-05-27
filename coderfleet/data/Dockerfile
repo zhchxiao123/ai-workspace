@@ -73,6 +73,19 @@ RUN python3 -m venv /opt/hermes-venv \
         mistralai \
     && ln -s /opt/hermes-venv/bin/hermes /usr/local/bin/hermes
 
+# ── Grok Build CLI (xAI) ─────────────────────────────────
+# install.sh 把真正的二进制下载到 ~/.grok/downloads/，然后在 ~/.grok/bin/ 建 symlink。
+# GROK_BIN_DIR 只是加第三层 symlink，不改变二进制实际位置。
+# 以 root 安装后 /root/.grok/ 权限为 700，byclaw 无法穿越 symlink 链访问二进制。
+# 解决方案：用 cp -L 把实体二进制复制到 /usr/local/bin/，然后删掉整个 /root/.grok/。
+RUN curl -fsSL https://x.ai/cli/install.sh | bash \
+    && rm -f /usr/local/bin/grok /usr/local/bin/agent \
+    && cp -L /root/.grok/bin/grok /usr/local/bin/grok \
+    && chmod 755 /usr/local/bin/grok \
+    && (cp -L /root/.grok/bin/agent /usr/local/bin/grok-agent && chmod 755 /usr/local/bin/grok-agent || true) \
+    && rm -rf /root/.grok \
+    && grok --version
+
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \

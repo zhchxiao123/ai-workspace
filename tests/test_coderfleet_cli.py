@@ -195,7 +195,8 @@ def test_account_add_env_defaults_env_file(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
     assert "ENV_FILE=./accounts/api-claude/env" in accounts_conf
-    assert "请在 ./accounts/api-claude/env 中配置" in result.stdout
+    # env file path is printed separately; hint text comes from the account type registry
+    assert "./accounts/api-claude/env" in result.stdout
 
 
 def test_account_add_accepts_opencode_env_account(tmp_path: Path) -> None:

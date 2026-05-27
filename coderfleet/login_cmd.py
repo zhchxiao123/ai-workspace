@@ -2,7 +2,7 @@
 login_cmd.py — coderfleet login 命令
 
 交互式账号登录，通过 docker exec（已运行容器）或 docker run（临时容器）
-执行 claude login / codex login --device-auth / opencode auth login。
+执行各 CLI 的登录子命令。per-type 信息从账号类型注册表读取。
 
 关键技术：os.execvp() 替换当前进程，确保 TTY 完整继承。
 当 login all 时改用 subprocess.run() 以便在循环中逐一执行。
@@ -16,10 +16,10 @@ from pathlib import Path
 import click
 
 from coderfleet.config import load_config, parse_conf
+from coderfleet.account_type_registry import ACCOUNT_TYPES
 
 
 # ── helpers ───────────────────────────────────────────────────
-
 
 def _is_running(container: str) -> bool:
     r = subprocess.run(
@@ -27,29 +27,6 @@ def _is_running(container: str) -> bool:
         capture_output=True, text=True,
     )
     return r.stdout.strip() == "true"
-
-
-def _cli_and_args(acc_type: str) -> tuple[str, list[str]]:
-    """Return (cli_binary, login_subcommand_args) for the given account type."""
-    if acc_type == "claude":
-        return "claude", ["login"]
-    if acc_type == "opencode":
-        return "opencode", ["auth", "login"]
-    if acc_type == "hermes":
-        return "hermes", ["setup"]
-    return "codex", ["login", "--device-auth"]
-
-
-def _auth_mount_dst(acc_type: str) -> str:
-    if acc_type == "codex":
-        return "/home/byclaw/.codex"
-    if acc_type == "claude":
-        return "/home/byclaw/.claude"
-    if acc_type == "opencode":
-        return "/home/byclaw/.opencode"
-    if acc_type == "hermes":
-        return "/home/byclaw/.hermes"
-    return "/home/byclaw/.codex"
 
 
 def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int:
@@ -62,9 +39,9 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
     if target not in accounts:
         raise click.ClickException(f"账号 '{target}' 不在 accounts.conf 中")
 
-    acc = accounts[target]
+    acc      = accounts[target]
     acc_type = acc.get("TYPE", "")
-    auth = acc.get("AUTH", "login")
+    auth     = acc.get("AUTH", "login")
     env_file = acc.get("ENV_FILE", "")
 
     if auth == "env":
@@ -79,15 +56,19 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
         )
         return 0
 
-    cli, login_args = _cli_and_args(acc_type)
+    # 从注册表取 per-type 信息
+    spec     = ACCOUNT_TYPES.get(acc_type, ACCOUNT_TYPES["codex"])
+    cli      = spec.login_cli
+    login_args = list(spec.login_args)
+    auth_dst = spec.auth_dir
 
-    # Find a running project container for this account
+    # 找一个正在运行的项目容器
     running_ctr: str | None = None
     for p in parse_conf(ws / "projects.conf"):
         if p.get("ACCOUNT") != target:
             continue
         pname = p.get("NAME", "")
-        ctr = f"{acc_type}-{pname}"
+        ctr   = f"{acc_type}-{pname}"
         if _is_running(ctr):
             running_ctr = ctr
             break
@@ -102,16 +83,15 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
             os.execvp(cmd[0], cmd)
         return subprocess.run(cmd).returncode
 
-    # No running container → start a temporary one
-    cfg = load_config(ws)
-    image = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
-    platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+    # 无运行中容器 → 启动临时认证容器
+    cfg        = load_config(ws)
+    image      = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
+    platform   = cfg.get("BUILD_PLATFORM", "linux/amd64")
     proxy_host = cfg.get("PROXY_HOST", "host.docker.internal")
     proxy_port = cfg.get("PROXY_HTTP_PORT", "7890")
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
-    auth_dst = _auth_mount_dst(acc_type)
-    auth_src = str(ws / "accounts" / target)
-    login_ctr = f"coderfleet-login-{acc_type}-{target}"
+    proxy_url  = f"http://{proxy_host}:{proxy_port}"
+    auth_src   = str(ws / "accounts" / target)
+    login_ctr  = f"coderfleet-login-{acc_type}-{target}"
 
     r = subprocess.run(["docker", "image", "inspect", image], capture_output=True)
     if r.returncode != 0:
@@ -141,25 +121,17 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
         "-e", f"CODERFLEET_ACCOUNT_TYPE={acc_type}",
         "-e", f"CODERFLEET_RELAY_IP={proxy_host}",
         "-e", f"CODERFLEET_RELAY_PORT={proxy_port}",
+    ]
+
+    # per-type 额外环境变量（从注册表读取，无需手动 if/elif）
+    for k, v in spec.env_vars.items():
+        cmd.extend(["-e", f"{k}={v}"])
+
+    cmd += [
         "-v", f"{auth_src}:{auth_dst}",
         "-w", "/workspace",
         image, cli,
     ] + login_args
-
-    if acc_type == "opencode":
-        insert_at = cmd.index("-v")
-        cmd[insert_at:insert_at] = [
-            "-e", "XDG_DATA_HOME=/home/byclaw/.opencode/data",
-            "-e", "XDG_CONFIG_HOME=/home/byclaw/.opencode/config",
-            "-e", "XDG_STATE_HOME=/home/byclaw/.opencode/state",
-            "-e", "XDG_CACHE_HOME=/home/byclaw/.opencode/cache",
-        ]
-
-    if acc_type == "hermes":
-        insert_at = cmd.index("-v")
-        cmd[insert_at:insert_at] = [
-            "-e", "HERMES_HOME=/home/byclaw/.hermes",
-        ]
 
     if replace_process:
         os.execvp(cmd[0], cmd)
@@ -167,7 +139,6 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
 
 
 # ── Click command ─────────────────────────────────────────────
-
 
 @click.command("login")
 @click.argument("target", metavar="<account|all>")

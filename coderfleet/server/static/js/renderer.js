@@ -25,6 +25,12 @@ class ChatLogRenderer {
     this._hermesDuration = '';
     this._hermesMessages = '';
     this._hermesSessionId = '';
+
+    // Grok streaming-json parser state
+    this._grokThoughtBuf = '';
+    this._grokTextBuf = '';
+    this._grokThoughtContentEl = null;  // live-update target inside thought bubble
+    this._grokTextContentEl = null;     // live-update target inside AI bubble
   }
 
   _ensureProcessWrapper() {
@@ -122,6 +128,10 @@ class ChatLogRenderer {
     this._hermesDuration = '';
     this._hermesMessages = '';
     this._hermesSessionId = '';
+    this._grokThoughtBuf = '';
+    this._grokTextBuf = '';
+    this._grokThoughtContentEl = null;
+    this._grokTextContentEl = null;
 
     const lines = text.split('\n');
     let state = 'before';   // before | header | body | footer
@@ -200,6 +210,7 @@ class ChatLogRenderer {
   // ── 私有：单行处理 ────────────────────────────────────────
   _processLine(line) {
     if (this.accountType === 'hermes') { this._hermesLine(line); return; }
+    if (this.accountType === 'grok')   { this._grokLine(line);   return; }
     if (!line.startsWith('{')) { this._rawLine(line); return; }
     let d;
     try { d = JSON.parse(line); } catch { this._rawLine(line); return; }
@@ -705,6 +716,121 @@ class ChatLogRenderer {
     el.classList.add('timeline-node', 'is-muted');
     el.innerHTML = `<span class="chat-sys-pill">${esc(label)}${detail ? ` <span class="pill-detail">· ${esc(detail)}</span>` : ''}</span>`;
     this._appendNode(el);
+  }
+
+  // ── Grok streaming-json 解析器 ────────────────────────────
+  //
+  // 每行格式之一：
+  //   {"type":"thought","data":"<token>"}   → 思考过程（流式拼接）
+  //   {"type":"text","data":"<token>"}      → 回复正文（流式拼接）
+  //   {"type":"end","stopReason":"...","sessionId":"...","requestId":"..."}
+  //
+  // 非 JSON 行（如 printf 写入的 grok_session_id=... 标记行）静默忽略。
+
+  _grokLine(line) {
+    if (!line.startsWith('{')) return;   // grok_session_id= 标记行等，跳过
+    let d;
+    try { d = JSON.parse(line); } catch { return; }
+
+    switch (d.type) {
+      case 'thought':
+        this._grokStreamThought(d.data || '');
+        break;
+      case 'text':
+        // 第一个 text token 到来时：思考阶段结束，用 markdown 最终渲染
+        if (this._grokThoughtBuf && !this._grokTextBuf) {
+          this._grokFinalizeThought();
+        }
+        this._grokStreamText(d.data || '');
+        break;
+      case 'end':
+        this._grokEnd(d);
+        break;
+      // 其他未知 type：静默忽略（不显示红色原始行）
+    }
+  }
+
+  _grokStreamThought(token) {
+    this._grokThoughtBuf += token;
+    if (!this._grokThoughtContentEl) {
+      const el = document.createElement('div');
+      el.className = 'chat-bubble-wrap timeline-node is-muted';
+      el.innerHTML = `
+  <div class="chat-avatar think" aria-hidden="true">TH</div>
+  <div class="bubble-body">
+    <div class="bubble-label think-label">思考过程</div>
+    <div class="bubble think-bubble" id="grok-thought-${this.idPrefix}"></div>
+  </div>`;
+      this._appendNode(el);
+      this._grokThoughtContentEl = el.querySelector(`#grok-thought-${this.idPrefix}`);
+    }
+    // 流式阶段用 textContent（快且安全），结束时再 markdown 渲染
+    this._grokThoughtContentEl.textContent = this._grokThoughtBuf;
+  }
+
+  _grokFinalizeThought() {
+    if (this._grokThoughtContentEl && this._grokThoughtBuf) {
+      this._grokThoughtContentEl.innerHTML = renderMd(this._grokThoughtBuf);
+    }
+  }
+
+  _grokStreamText(token) {
+    this._grokTextBuf += token;
+    if (!this._grokTextContentEl) {
+      const el = document.createElement('div');
+      el.className = 'chat-bubble-wrap timeline-node';
+      el.innerHTML = `
+  <div class="chat-avatar ai" aria-hidden="true">AI</div>
+  <div class="bubble-body">
+    <div class="bubble">
+      <div class="bubble-label-row">
+        <div class="bubble-label">Grok</div>
+        <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+      </div>
+      <div class="bubble-content" id="grok-text-${this.idPrefix}"></div>
+    </div>
+  </div>`;
+      const btn = el.querySelector('.bubble-copy-btn');
+      btn.addEventListener('click', () => {
+        copyTextToClipboard(this._grokTextBuf, btn);
+      });
+      // 保持 lastBubbleEl 逻辑：把上一条 AI 回复移入 process 区
+      if (this.lastBubbleEl) {
+        if (this.foldProcess) {
+          this._appendToProcess(this.lastBubbleEl);
+        } else {
+          this.inner.appendChild(this.lastBubbleEl);
+        }
+      }
+      this.inner.appendChild(el);
+      this.lastBubbleEl = el;
+      this._grokTextContentEl = el.querySelector(`#grok-text-${this.idPrefix}`);
+    }
+    this._grokTextContentEl.textContent = this._grokTextBuf;
+  }
+
+  _grokEnd(d) {
+    // 用 markdown 最终渲染两个缓冲区
+    this._grokFinalizeThought();
+    if (this._grokTextContentEl && this._grokTextBuf) {
+      this._grokTextContentEl.innerHTML = renderMd(this._grokTextBuf);
+    }
+
+    // 用量 / 会话信息行
+    const items = [];
+    if (d.stopReason) items.push(`停止原因 <span>${esc(d.stopReason)}</span>`);
+    if (d.sessionId) {
+      const sid = String(d.sessionId);
+      items.push(`Session <span title="${esc(sid)}">#${esc(sid.slice(0, 8))}</span>`);
+    }
+    if (items.length) {
+      const el = document.createElement('div');
+      el.className = 'chat-usage timeline-node is-muted';
+      el.innerHTML = items.map(i => `<div class="usage-item">${i}</div>`).join('');
+      this._appendNode(el);
+    }
+
+    if (!this._footerRendered) this._renderFooter('done');
   }
 
   // ── Hermes 纯文本解析器 ───────────────────────────────────

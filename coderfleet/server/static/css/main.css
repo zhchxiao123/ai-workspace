@@ -666,25 +666,8 @@
       gap: 3px;
     }
 
-    .badge.codex {
-      background: var(--accent-bg);
-      color: var(--accent);
-    }
-
-    .badge.claude {
-      background: var(--amber-bg);
-      color: var(--amber);
-    }
-
-    .badge.opencode {
-      background: var(--green-bg);
-      color: var(--green);
-    }
-
-    .badge.hermes {
-      background: #2d1f4e;
-      color: #b48ef5;
-    }
+    /* account-type badge colors are injected dynamically by loadAccountTypes() in accounts.js
+       into a <style id="type-badge-styles"> element in <head> */
 
     .badge.busy {
       background: var(--green-bg);

@@ -11,6 +11,7 @@ from typing import Optional
 import click
 
 from coderfleet.config import ensure_workspace, parse_conf, remove_conf_entry, write_conf_line
+from coderfleet.account_type_registry import ACCOUNT_TYPES, env_auth_type_ids
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9-]+$")
 
@@ -38,7 +39,7 @@ def account_group() -> None:
 
 @account_group.command("add")
 @click.argument("name")
-@click.argument("typearg", metavar="TYPE=codex|claude|opencode|hermes")
+@click.argument("typearg", metavar="TYPE=<type>")
 @click.option("--auth", default="login", type=click.Choice(["login", "env"]),
               show_default=True, help="Authentication method")
 @click.option("--env-file", "env_file", default=None,
@@ -54,19 +55,26 @@ def cmd_account_add(
     env_file: Optional[str],
     proxy: str,
 ) -> None:
-    """Add a new account. TYPE=codex|claude|opencode|hermes (or just the type name)."""
+    """Add a new account. TYPE can be any registered type (run 'account list-types' to see all)."""
     ws: Path = ctx.obj["workspace"]
 
     if not _NAME_RE.match(name):
         raise click.ClickException("NAME 只能包含字母、数字、连字符")
 
+    valid_types = list(ACCOUNT_TYPES.keys())
     acc_type = typearg[5:] if typearg.startswith("TYPE=") else typearg
-    if acc_type not in ("codex", "claude", "opencode", "hermes"):
-        raise click.ClickException("TYPE 不合法，只支持 codex、claude、opencode 或 hermes")
+    if acc_type not in valid_types:
+        raise click.ClickException(
+            f"TYPE 不合法，只支持：{' / '.join(valid_types)}"
+        )
 
+    env_auth_types = env_auth_type_ids()
     if auth == "env":
-        if acc_type not in ("claude", "opencode", "hermes"):
-            raise click.ClickException("AUTH=env 目前只支持 TYPE=claude、TYPE=opencode 或 TYPE=hermes")
+        if acc_type not in env_auth_types:
+            raise click.ClickException(
+                f"AUTH=env 不支持 TYPE={acc_type}，"
+                f"目前支持：{' / '.join(env_auth_types)}"
+            )
         if not env_file:
             env_file = f"./accounts/{name}/env"
 
@@ -86,12 +94,13 @@ def cmd_account_add(
 
     click.secho(f"✓ 账号 '{name}' 已添加（类型：{acc_type}，认证：{auth}，代理：{proxy}）", fg="green")
     if auth == "env":
-        if acc_type == "hermes":
-            click.secho(f"  请在 {env_file} 中配置 LLM provider API key", fg="yellow")
-            click.secho(f"  例如：ANTHROPIC_API_KEY=sk-ant-...  或  OPENAI_API_KEY=sk-...", dim=True)
-            click.secho(f"  然后运行 hermes config set model.provider anthropic 等完成初始化", dim=True)
-        else:
-            click.secho(f"  请在 {env_file} 中配置 ANTHROPIC_API_KEY 等环境变量", fg="yellow")
+        click.secho(f"  ENV 文件路径：{env_file}", fg="yellow")
+        spec = ACCOUNT_TYPES[acc_type]
+        if spec.env_hint:
+            lines = spec.env_hint.splitlines()
+            click.secho(f"  {lines[0]}", fg="yellow")
+            for line in lines[1:]:
+                click.secho(f"  {line}", dim=True)
     click.secho(f"  接下来：coderfleet project add <项目名> {name} <项目路径>", dim=True)
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
