@@ -1,37 +1,6 @@
 // ── 项目工作台 ────────────────────────────────────────────
-function normalizeProjectPath(path) {
-  return String(path || '').replace(/\/+$/, '');
-}
-
-function projectPathContains(projectPath, recordPath) {
-  const base = normalizeProjectPath(projectPath);
-  const target = normalizeProjectPath(recordPath);
-  return !!base && (target === base || target.startsWith(base + '/'));
-}
-
-function canonicalProjectForLegacyRecord(record) {
-  const recordPath = String(record?.project || '');
-  return (projectsCache || []).find(p => projectPathContains(p.path, recordPath)) || null;
-}
-
-function legacyRecordBelongsToProject(record, project) {
-  if (!projectPathContains(project?.path, record?.project)) return false;
-
-  const canonical = canonicalProjectForLegacyRecord(record);
-  if (canonical) return canonical.name === project.name;
-
-  return true;
-}
-
-function taskBelongsToProject(task, project) {
-  if (task.project_name) return task.project_name === project.name;
-  return legacyRecordBelongsToProject(task, project);
-}
-
-function conversationBelongsToProject(conversation, project) {
-  if (conversation.project_name) return conversation.project_name === project.name;
-  return legacyRecordBelongsToProject(conversation, project);
-}
+// 项目归属判断函数已统一迁移至 js/shared/project-utils.js
+// （脚本在 utils 之后、projects 之前加载，保证全局可用）
 
 async function loadProjectsDashboard() {
   try {

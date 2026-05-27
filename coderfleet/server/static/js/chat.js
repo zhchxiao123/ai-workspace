@@ -439,7 +439,7 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
         <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
       </div>
       <div class="user-bubble-content">${esc(task.prompt)}</div>
-      ${renderTaskImageAttachments(task)}
+      ${renderTaskImageAttachments(task, currentChatProjectName)}
     </div>`;
       chatContent.appendChild(userWrap);
 
@@ -468,11 +468,18 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
     scrollChatViewportToBottom();
 
     // 追踪任务选择：优先正在运行的任务，其次是第一个 pending 任务，最后是第一个 scheduled 任务
-    const activeTask = runningTask 
-      || convTasks.find(t => t.status === 'pending') 
+    const activeTask = runningTask
+      || convTasks.find(t => t.status === 'pending')
       || convTasks.find(t => t.status === 'scheduled');
     if (activeTask) {
-      startChatFollow(activeTask.id);
+      // chatRenderer 始终对应最后一个任务的渲染器。
+      // 若 activeTask 就是最后一个任务（最常见情况），把其日志字节数告知服务端，
+      // 服务端从该偏移量开始推送，避免重新打开会话时内容重复。
+      const lastIdx = convTasks.length - 1;
+      const activeIdx = convTasks.indexOf(activeTask);
+      const alreadyRenderedLog = activeIdx === lastIdx ? (logs[lastIdx] || '') : '';
+      const skipBytes = new TextEncoder().encode(alreadyRenderedLog).byteLength;
+      startChatFollow(activeTask.id, skipBytes);
     }
   } catch (e) {
     chatContent.innerHTML = `<div style="color:var(--red);padding:16px">加载会话历史失败: ${esc(e.message)}<br><pre style="font-size:11px;color:var(--text-3);margin-top:8px">${esc(e.stack)}</pre></div>`;
@@ -644,10 +651,12 @@ async function sendChatMessage() {
 }
 
 // 实时日志 SSE 追踪
-function startChatFollow(taskId) {
+// skipBytes: 客户端已渲染的字节数，传给服务端 skip_bytes 参数以精确跳过已有内容。
+function startChatFollow(taskId, skipBytes = 0) {
   stopChatFollow();
   chatFollowMode = true;
-  sseChatSource = new EventSource(sseUrl(`${API}/api/tasks/${taskId}/logs/stream?tail=0`));
+  const qs = skipBytes > 0 ? `skip_bytes=${skipBytes}` : 'tail=0';
+  sseChatSource = new EventSource(sseUrl(`${API}/api/tasks/${taskId}/logs/stream?${qs}`));
   sseChatSource.onmessage = e => {
     if (e.data === '[DONE]') {
       stopChatFollow();
@@ -818,58 +827,29 @@ async function handleChatPaste(event) {
 }
 
 async function uploadChatImages(files, fromPaste = false) {
-  const imageFiles = files.filter(file => file.type.startsWith('image/'));
-  if (!imageFiles.length) return;
-
   if (!currentChatProjectName) {
     alert('请先从左侧选择项目后再上传图片');
     return;
   }
 
-  chatUploadingImages += imageFiles.length;
-  updateChatUploadState();
-
-  for (const file of imageFiles) {
-    try {
-      const uploadFile = normalizeImageFileForUpload(file, fromPaste);
-      const fd = new FormData();
-      fd.append('file', uploadFile);
-      const r = await fetch(
-        `${API}/api/uploads?project_name=${encodeURIComponent(currentChatProjectName)}`,
-        { method: 'POST', body: fd }
-      );
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || r.statusText);
-      pendingImages.push({
-        container_path: data.container_path,
-        preview_url: data.preview_url,
-        name: data.filename,
-      });
+  // Phase 2: 复用共享的 uploadImagesForCompose（消除与 mobile 的重复 wrapper）
+  await uploadImagesForCompose(files, fromPaste, {
+    getProjectName: () => currentChatProjectName,
+    onItemUploaded: (item) => {
+      if (!Array.isArray(pendingImages)) pendingImages = [];
+      pendingImages.push(item);
       renderImagePreviews();
-    } catch (e) {
-      alert(`上传图片失败: ${e.message}`);
-    } finally {
-      chatUploadingImages -= 1;
+    },
+    onProgressChange: (count) => {
+      chatUploadingImages = count;
       updateChatUploadState();
-    }
-  }
+    },
+    onError: (msg) => alert(msg),
+    getApiBase: () => (typeof API !== 'undefined' ? API : ''),
+  });
 }
 
-function normalizeImageFileForUpload(file, fromPaste = false) {
-  const name = file.name || '';
-  if (/\.[a-z0-9]+$/i.test(name)) return file;
-
-  const extByType = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/gif': 'gif',
-    'image/webp': 'webp',
-    'image/bmp': 'bmp',
-  };
-  const ext = extByType[file.type] || 'png';
-  const prefix = fromPaste ? 'pasted-image' : 'upload-image';
-  return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || `image/${ext}` });
-}
+// normalizeImageFileForUpload 已迁移至 shared/image-upload.js（全局可用）
 
 function updateChatUploadState() {
   const sendBtn = document.getElementById('chat-send-btn');
@@ -884,38 +864,24 @@ function updateChatUploadState() {
   }
 }
 
+// Phase 2 去重：使用共享的 renderPendingPreviews（desktop 配置）
 function renderImagePreviews() {
-  const container = document.getElementById('chat-image-previews');
-  if (!container) return;
-  if (pendingImages.length === 0) {
-    container.style.display = 'none';
-    container.innerHTML = '';
-    return;
-  }
-  container.style.display = 'flex';
-  container.innerHTML = pendingImages.map((img, i) => `
-    <div class="chat-image-thumb" title="${esc(img.name)}">
-      <img src="${sseUrl(`${API}${img.preview_url}`)}" alt="${esc(img.name)}">
-      <button class="chat-image-thumb-remove" onclick="removePendingImage(${i})" title="移除">×</button>
-    </div>`).join('');
+  renderPendingPreviews({
+    containerId: 'chat-image-previews',
+    thumbClass: 'chat-image-thumb',
+    removeClass: 'chat-image-thumb-remove',
+    getImages: () => pendingImages,
+    removeImage: (index) => pendingImages.splice(index, 1),
+    clearImages: () => { pendingImages = []; },
+    afterRender: () => {},
+    getSseUrl: (u) => sseUrl(u),
+    getApi: () => (typeof API !== 'undefined' ? API : ''),
+    escFn: (s) => esc(s),
+  });
 }
 
-function removePendingImage(index) {
-  pendingImages.splice(index, 1);
-  renderImagePreviews();
-}
+// removePendingImage / clearPendingImages 由 shared 提供（全局）
+// 它们会自动回退调用 renderImagePreviews（window 上已存在）
 
-function renderTaskImageAttachments(task) {
-  const images = task.images || [];
-  if (!images.length) return '';
-  const projectName = task.project_name || currentChatProjectName;
-  if (!projectName) return '';
-
-  const thumbs = images.map(path => {
-    const filename = path.split('/').pop();
-    const src = sseUrl(`${API}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`);
-    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${esc(filename)}"><img src="${src}" alt="${esc(filename)}"></a>`;
-  }).join('');
-
-  return `<div class="user-image-attachments">${thumbs}</div>`;
-}
+// renderTaskImageAttachments 由 shared/image-upload.js 提供（全局可用）
+// 直接调用即可，此处无需再定义包装函数（否则会覆盖 window.renderTaskImageAttachments，导致无限递归）

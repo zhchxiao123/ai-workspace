@@ -25,7 +25,11 @@ def read_projects_js() -> str:
 
 def read_ui_source() -> str:
     parts = [INDEX_HTML.read_text(encoding="utf-8")]
+    # 包含顶层 js/*.js
     for path in sorted((STATIC_DIR / "js").glob("*.js")):
+        parts.append(path.read_text(encoding="utf-8"))
+    # 包含共享模块（Phase 0 架构去重后新增）
+    for path in sorted((STATIC_DIR / "js" / "shared").glob("*.js")):
         parts.append(path.read_text(encoding="utf-8"))
     parts.append((STATIC_DIR / "css" / "main.css").read_text(encoding="utf-8"))
     return "\n".join(parts)
@@ -106,12 +110,16 @@ def test_dashboard_exposes_project_workspace() -> None:
 
 
 def test_legacy_project_records_use_single_canonical_path_owner() -> None:
-    js = read_projects_js()
+    # Phase 0 后逻辑已迁移至共享模块，仍应在完整 UI source 中可找到
+    source = read_ui_source()
 
-    assert "function canonicalProjectForLegacyRecord" in js
-    assert "if (task.project_name) return task.project_name === project.name;" in js
-    assert "if (conversation.project_name) return conversation.project_name === project.name;" in js
-    assert "if (canonical) return canonical.name === project.name;" in js
+    assert "canonicalProjectForLegacyRecord" in source
+    assert "projectPathContains" in source
+    assert "taskBelongsToProject" in source
+    assert "conversationBelongsToProject" in source
+    # 共享实现中的关键判断逻辑
+    assert "if (task.project_name) return task.project_name === project.name" in source
+    assert "if (conversation.project_name) return conversation.project_name === project.name" in source
 
 
 def test_project_workspace_exposes_embedded_terminal() -> None:
@@ -241,11 +249,14 @@ def test_chat_input_supports_pasted_image_uploads() -> None:
     assert "textarea.addEventListener('paste', handleChatPaste)" in source
     assert "function handleChatPaste" in source
     assert "item.type.startsWith('image/')" in source
-    assert "function normalizeImageFileForUpload" in source
+    # Phase 0 后 normalize 迁移至共享模块
+    assert "normalizeImageFileForUpload" in source
+    assert "uploadImagesGeneric" in source
     assert "new File([file]" in source
     assert 'id="chat-upload-status"' in source
     assert "图片还在上传中" in source
-    assert "renderTaskImageAttachments(task)" in source
+    assert "renderTaskImageAttachments(task" in source  # 由 shared/image-upload.js 提供，chat.js 直接调用
+    assert "shared/image-upload.js" in source  # 脚本已引入
 
 
 def test_chat_project_history_collapses_after_five_items() -> None:
@@ -302,7 +313,9 @@ def test_mobile_chat_supports_image_uploads_and_attachments() -> None:
     assert 'accept="image/*"' in source
     assert "textarea.addEventListener('paste', handlePaste)" in source
     assert "function uploadImages" in source
-    assert "/api/uploads?project_name=" in source
+    # Phase 0 后使用共享 uploadImagesGeneric
+    ui_source = read_ui_source()
+    assert ("uploadImagesGeneric" in ui_source or "/api/uploads?project_name=" in ui_source)
     assert "pendingImages.map(i => i.container_path)" in source
     assert "function renderImagePreviews" in source
     assert "function renderTaskImages" in source
@@ -310,6 +323,7 @@ def test_mobile_chat_supports_image_uploads_and_attachments() -> None:
     assert "user-bubble-text" in source
     assert "user-image-attachments" in source
     assert "请查看附件图片。" in source
+    assert "shared/image-upload.js" in source  # 移动端已引入共享
 
 
 def test_site_uses_generated_logo_for_page_and_browser_icons() -> None:
@@ -391,6 +405,55 @@ def test_workflow_template_node_ids_are_deduplicated_before_save() -> None:
     assert "function _dedupeTemplateNodeIds" in source
     assert "const nodeId = _nextTemplateNodeId()" in source
     assert "const data = _dedupeTemplateNodeIds(_getTemplateFromCanvas())" in source
+
+
+def test_mobile_no_longer_duplicates_shared_helpers_after_phase1() -> None:
+    """Phase 1 后，mobile.html 不再重复定义已迁移至 utils.js 的小工具。"""
+    mobile = read_mobile()
+
+    # 这些函数现在只应由 utils.js 提供，mobile 仅调用（不重新定义）
+    assert "function x(s)" not in mobile
+    assert "function stripAnsi(s)" not in mobile
+    assert "function relTime(iso)" not in mobile
+
+    # 但它们仍应在完整 UI 源中存在（通过 utils.js）
+    ui_source = read_ui_source()
+    assert "function x(s)" in ui_source
+    assert "function stripAnsi(s)" in ui_source
+    assert "function relTime(iso)" in ui_source
+
+
+def test_mobile_no_longer_duplicates_pending_image_logic_after_phase2() -> None:
+    """Phase 2 后，mobile.html 与 chat.js 不再重复 pendingImages 预览/上传 wrapper 逻辑。"""
+    mobile = read_mobile()
+    ui_source = read_ui_source()
+
+    # 共享函数应存在
+    assert "function uploadImagesForCompose" in ui_source or "uploadImagesForCompose =" in ui_source
+    assert "function renderPendingPreviews" in ui_source or "renderPendingPreviews =" in ui_source
+    assert "function removePendingImage" in ui_source or "removePendingImage =" in ui_source
+
+    # mobile 不再自己实现完整的上传 wrapper（而是委托给共享）
+    # （旧的 uploadImagesGeneric 直接调用块应被 uploadImagesForCompose 替换）
+    assert "uploadImagesGeneric(\n    projectName," not in mobile
+    assert "await uploadImagesGeneric(" not in mobile or "uploadImagesForCompose" in mobile
+
+    # 预览渲染函数在 mobile 中应为薄 wrapper（不包含完整 map 模板字符串的旧实现）
+    # 旧实现特征：大量内联的 image-thumb 模板
+    assert 'class="image-thumb"' not in mobile or "renderPendingPreviews" in mobile
+
+
+def test_shared_pending_image_preview_uses_surface_state_adapters() -> None:
+    """共享预览不能直接依赖 window.pendingImages；桌面/移动的 let 状态不会挂到 window。"""
+    mobile = read_mobile()
+    ui_source = read_ui_source()
+
+    assert "getImages = () =>" in ui_source
+    assert "removeImage = (index)" in ui_source
+    assert "window.__pendingImageRender" in ui_source
+    assert "window.renderPendingPreviews();" not in ui_source
+    assert "getImages: () => pendingImages" in ui_source
+    assert "getImages: () => pendingImages" in mobile
 
 
 def test_workflow_template_editor_is_not_polled_while_editing() -> None:

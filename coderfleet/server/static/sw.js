@@ -1,4 +1,4 @@
-const CACHE = 'coderfleet-v1';
+const CACHE = 'coderfleet-v2';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.add('/')));

@@ -492,6 +492,13 @@
   </div>
 </div>
 
+<!-- 依赖脚本必须在主逻辑 script 之前加载（移动端 giant inline script 在此之后），否则 renderPendingPreviews 等共享函数未定义会导致发送/上传时崩溃 -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/js/utils.js?v=20260525-auth"></script>
+<script src="/static/js/shared/project-utils.js?v=20260527-shared"></script>
+<script src="/static/js/shared/image-upload.js?v=20260528-imagefix"></script>
+<script src="/static/js/renderer.js"></script>
+
 <script>
 // ── State ────────────────────────────────────────────────
 let projects  = [];
@@ -606,7 +613,7 @@ function renderList() {
 
   el.innerHTML = projects.map(proj => {
     const list = convs
-      .filter(c => convBelongsToProject(c, proj))
+      .filter(c => (window.conversationBelongsToProject || conversationBelongsToProject)(c, proj))
       .sort((a, b) => convTimeValue(b) - convTimeValue(a));
     const isCollapsed = collapsedProjects.has(proj.name);
     const isExpanded = expandedProjects.has(proj.name);
@@ -657,16 +664,8 @@ function convRow(c) {
   </div>`;
 }
 
-function convBelongsToProject(c, proj) {
-  if (c.project_name) return c.project_name === proj.name;
-  return projectPathContains(proj.path, c.project);
-}
-
-function projectPathContains(projectPath, recordPath) {
-  const base = String(projectPath || '').replace(/\/+$/, '');
-  const path = String(recordPath || '').replace(/\/+$/, '');
-  return !!base && (path === base || path.startsWith(base + '/'));
-}
+// 项目归属函数已统一从 shared/project-utils.js 提供（全局）
+// convBelongsToProject / projectPathContains 来自 shared/project-utils.js（已提前加载）
 
 function convTimeValue(c) {
   return new Date(c.updated || c.created || 0).getTime() || 0;
@@ -826,7 +825,12 @@ async function send() {
     const task = await api('/api/tasks', { method:'POST', body });
     tasks.unshift(task);
     pendingImages = [];
-    renderImagePreviews();
+    if (typeof renderImagePreviews === 'function') {
+      renderImagePreviews();
+    } else {
+      const c = document.getElementById('image-previews');
+      if (c) { c.style.display = 'none'; c.innerHTML = ''; }
+    }
 
     // If new chat, attach to the created conversation
     if (!activeConv && task.conversation_id) {
@@ -862,8 +866,29 @@ async function handlePaste(event) {
 }
 
 async function uploadImages(files, fromPaste = false) {
-  const imageFiles = files.filter(file => file.type.startsWith('image/'));
-  if (!imageFiles.length) return;
+  if (typeof uploadImagesForCompose === 'function') {
+    // Phase 2: 复用共享的 uploadImagesForCompose（消除与 chat.js 的重复 wrapper）
+    await uploadImagesForCompose(files, fromPaste, {
+      getProjectName: () => currentUploadProjectName(),
+      onItemUploaded: (item) => {
+        if (!Array.isArray(pendingImages)) pendingImages = [];
+        pendingImages.push(item);
+        renderImagePreviews();
+      },
+      onProgressChange: (count) => {
+        uploadingImages = count;
+        updateUploadState();
+      },
+      onError: (msg) => alert('上传图片失败：' + msg),
+      getApiBase: () => '',
+    });
+    return;
+  }
+
+  if (typeof uploadImagesGeneric !== 'function') {
+    alert('图片上传组件未就绪，请刷新页面后重试');
+    return;
+  }
 
   const projectName = currentUploadProjectName();
   if (!projectName) {
@@ -871,73 +896,51 @@ async function uploadImages(files, fromPaste = false) {
     return;
   }
 
-  uploadingImages += imageFiles.length;
-  updateUploadState();
-
-  for (const file of imageFiles) {
-    try {
-      const uploadFile = normalizeImageFile(file, fromPaste);
-      const fd = new FormData();
-      fd.append('file', uploadFile);
-      const res = await fetch(`/api/uploads?project_name=${encodeURIComponent(projectName)}`, {
-        method: 'POST',
-        body: fd,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || res.statusText);
-      pendingImages.push({
-        container_path: data.container_path,
-        preview_url: data.preview_url,
-        name: data.filename,
-      });
+  await uploadImagesGeneric(projectName, files, fromPaste, {
+    onFileUploaded: (item) => {
+      if (!Array.isArray(pendingImages)) pendingImages = [];
+      pendingImages.push(item);
       renderImagePreviews();
-    } catch (err) {
-      alert('上传图片失败：' + (err.message || err));
-    } finally {
-      uploadingImages -= 1;
+    },
+    onProgressChange: (count) => {
+      uploadingImages = count;
       updateUploadState();
-    }
-  }
+    },
+    onError: (msg) => alert('上传图片失败：' + msg),
+    getApiBase: () => '',
+  });
 }
 
-function normalizeImageFile(file, fromPaste = false) {
-  const name = file.name || '';
-  if (/\.[a-z0-9]+$/i.test(name)) return file;
-  const extByType = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/gif': 'gif',
-    'image/webp': 'webp',
-    'image/bmp': 'bmp',
-  };
-  const ext = extByType[file.type] || 'png';
-  const prefix = fromPaste ? 'pasted-image' : 'upload-image';
-  return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || `image/${ext}` });
-}
+// normalizeImageFileForUpload / uploadImagesGeneric 由 shared/image-upload.js 提供
 
+// Phase 2 去重：使用共享的 renderPendingPreviews（mobile 配置）
 function renderImagePreviews() {
-  const el = document.getElementById('image-previews');
-  if (!el) return;
-  if (!pendingImages.length) {
-    el.style.display = 'none';
-    el.innerHTML = '';
+  if (typeof renderPendingPreviews === 'function') {
+    renderPendingPreviews({
+      containerId: 'image-previews',
+      thumbClass: 'image-thumb',
+      removeClass: 'image-remove',
+      getImages: () => pendingImages,
+      removeImage: (index) => pendingImages.splice(index, 1),
+      clearImages: () => { pendingImages = []; },
+      afterRender: () => updateSendState(),
+      getSseUrl: (u) => (typeof x === 'function' && typeof sseUrl === 'function' ? x(sseUrl(u)) : u),
+      getApi: () => '',
+      escFn: (s) => (typeof x === 'function' ? x(s) : String(s || '')),
+    });
+  } else {
+    // 防御：共享脚本尚未加载或加载失败时避免崩溃（此时预览区简单隐藏即可）
+    const container = document.getElementById('image-previews');
+    if (container) {
+      container.style.display = 'none';
+      container.innerHTML = '';
+    }
     updateSendState();
-    return;
   }
-  el.style.display = 'flex';
-  el.innerHTML = pendingImages.map((img, i) => `
-    <div class="image-thumb" title="${x(img.name)}">
-      <img src="${x(sseUrl(img.preview_url))}" alt="${x(img.name)}">
-      <button class="image-remove" type="button" onclick="removePendingImage(${i})">×</button>
-    </div>
-  `).join('');
-  updateSendState();
 }
 
-function removePendingImage(index) {
-  pendingImages.splice(index, 1);
-  renderImagePreviews();
-}
+// removePendingImage / clearPendingImages 由 shared 提供（全局）
+// 它们会自动回退调用 renderImagePreviews
 
 function updateUploadState() {
   const status = document.getElementById('upload-status');
@@ -958,23 +961,19 @@ function updateSendState() {
 function currentUploadProjectName() {
   if (activeConv?.project_name) return activeConv.project_name;
   if (activeConv?.project) {
-    const proj = projects.find(p => projectPathContains(p.path, activeConv.project));
+    const fn = window.projectPathContains || projectPathContains;
+    const proj = projects.find(p => fn && fn(p.path, activeConv.project));
     if (proj) return proj.name;
   }
   return pendingProj?.name || '';
 }
 
 function renderTaskImages(task) {
-  const images = task.images || [];
-  if (!images.length) return '';
-  const projectName = task.project_name || currentUploadProjectName();
-  if (!projectName) return '';
-  const thumbs = images.map(path => {
-    const filename = String(path).split('/').pop();
-    const src = sseUrl(`/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`);
-    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${x(filename)}"><img src="${src}" alt="${x(filename)}"></a>`;
-  }).join('');
-  return `<div class="user-image-attachments">${thumbs}</div>`;
+  // 由 shared/image-upload.js 提供（脚本加载顺序保证调用时已就绪）
+  if (window.renderTaskImageAttachments) {
+    return window.renderTaskImageAttachments(task, currentUploadProjectName());
+  }
+  return '';
 }
 
 // ── New chat (via proj header button) ────────────────────
@@ -1060,24 +1059,7 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-function x(s) {
-  return String(s ?? '')
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function stripAnsi(s) {
-  return String(s ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g,'').replace(/\r/g,'');
-}
-
-function relTime(iso) {
-  if (!iso) return '';
-  const diff = Date.now() - new Date(iso);
-  if (diff < 60000)    return '刚刚';
-  if (diff < 3600000)  return `${Math.floor(diff/60000)} 分钟前`;
-  if (diff < 86400000) return `${Math.floor(diff/3600000)} 小时前`;
-  return `${Math.floor(diff/86400000)} 天前`;
-}
+// x / stripAnsi / relTime 已统一由 utils.js 提供（移动端与桌面共享）
 
 if (window.innerWidth > 768) {
   location.replace('/');
@@ -1190,11 +1172,8 @@ if ('serviceWorker' in navigator) {
   </div>
 </div>
 
-<script src="/static/vendor/marked.min.js"></script>
-<script src="/static/js/utils.js?v=20260525-auth"></script>
-<script src="/static/js/renderer.js"></script>
 <script>
-  // utils.js 已加载，#auth-overlay 已在 DOM 中，可以安全调用
+  // 依赖脚本已提前加载（见上方 495 之前）。此处仅做登录态检查。
   if (!getApiKey()) {
     showLoginOverlay();
   } else {

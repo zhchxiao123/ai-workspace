@@ -43,7 +43,12 @@ async function openLogModal(taskId) {
     renderer.render(logText, task.type);
     scrollChatToBottom();
 
-    if (task.status === 'running') startFollow();
+    if (task.status === 'running') {
+      // 把客户端已拥有的字节数告诉服务端，服务端从该偏移量开始推送，
+      // 彻底避免重新打开模态框时内容重复渲染的问题。
+      const skipBytes = new TextEncoder().encode(logText).byteLength;
+      startFollow(skipBytes);
+    }
   } catch (e) {
     document.getElementById('log-content').innerHTML =
       `<div style="color:#f87171;padding:16px">加载失败：${esc(e.message)}</div>`;
@@ -51,13 +56,15 @@ async function openLogModal(taskId) {
 }
 
 // ── SSE 跟踪 ──────────────────────────────────────────────
-function startFollow() {
+// skipBytes: 客户端已通过 GET /logs 获取并渲染的字节数。
+// 传给服务端的 skip_bytes 参数，让服务端精确跳过这段内容，避免重复推送。
+function startFollow(skipBytes = 0) {
   stopFollow();
   followMode = true;
   setFollowButton(true);
 
-  // tail=0: 只推送新内容，避免与初次全量加载重复
-  sseSource = new EventSource(sseUrl(`${API}/api/tasks/${currentTaskId}/logs/stream?tail=0`));
+  const qs = skipBytes > 0 ? `skip_bytes=${skipBytes}` : 'tail=0';
+  sseSource = new EventSource(sseUrl(`${API}/api/tasks/${currentTaskId}/logs/stream?${qs}`));
   sseSource.onmessage = e => {
     if (e.data === '[DONE]') {
       stopFollow();

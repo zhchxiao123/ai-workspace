@@ -26,12 +26,13 @@ class ChatLogRenderer {
     this._hermesMessages = '';
     this._hermesSessionId = '';
 
-    // Grok streaming-json parser state
-    this._grokThoughtBuf = '';
-    this._grokTextBuf = '';
-    this._grokThoughtContentEl = null;  // live-update target inside thought bubble
-    this._grokTextContentEl = null;     // live-update target inside AI bubble
-    this._grokRafPending = false;       // requestAnimationFrame 节流标志
+    // Grok streaming-json parser state（支持 thought/text 交替出现）
+    this._grokCurrentType    = null;   // 'thought' | 'text' | null —— 当前正在输出的段落类型
+    this._grokCurrentBuf     = '';    // 当前段落的已累积文本
+    this._grokCurrentEl      = null;  // 当前段落的内容 DOM 元素
+    this._grokCurrentTextRef = null;  // {value} 引用，供文本气泡的复制按钮闭包使用
+    this._grokRafPending     = false; // requestAnimationFrame 节流标志
+    this._grokSegCount       = 0;     // 段落序号，保证元素 ID 唯一
   }
 
   _ensureProcessWrapper() {
@@ -129,11 +130,12 @@ class ChatLogRenderer {
     this._hermesDuration = '';
     this._hermesMessages = '';
     this._hermesSessionId = '';
-    this._grokThoughtBuf = '';
-    this._grokTextBuf = '';
-    this._grokThoughtContentEl = null;
-    this._grokTextContentEl = null;
-    this._grokRafPending = false;
+    this._grokCurrentType    = null;
+    this._grokCurrentBuf     = '';
+    this._grokCurrentEl      = null;
+    this._grokCurrentTextRef = null;
+    this._grokRafPending     = false;
+    this._grokSegCount       = 0;
 
     const lines = text.split('\n');
     let state = 'before';   // before | header | body | footer
@@ -733,38 +735,49 @@ class ChatLogRenderer {
     if (!line.startsWith('{')) return;   // grok_session_id= 标记行等，跳过
     let d;
     try { d = JSON.parse(line); } catch { return; }
-
     switch (d.type) {
-      case 'thought': this._grokStreamThought(d.data || ''); break;
-      case 'text':    this._grokStreamText(d.data || '');    break;
-      case 'end':     this._grokEnd(d);                       break;
-      // 其他未知 type：静默忽略（不显示红色原始行）
+      case 'thought': this._grokToken('thought', d.data || ''); break;
+      case 'text':    this._grokToken('text',    d.data || ''); break;
+      case 'end':     this._grokEnd(d);                         break;
+      // 其他未知 type：静默忽略
     }
   }
 
-  _grokStreamThought(token) {
-    this._grokThoughtBuf += token;
-    if (!this._grokThoughtContentEl) {
-      const el = document.createElement('div');
-      el.className = 'chat-bubble-wrap timeline-node is-muted';
-      el.innerHTML = `
+  // 核心：处理单个 token，自动检测类型切换并开新段落
+  _grokToken(type, token) {
+    // ── 类型切换：刷新上一段，重置状态 ──
+    if (this._grokCurrentType !== type) {
+      this._grokFlushCurrent();
+      this._grokCurrentType    = type;
+      this._grokCurrentBuf     = '';
+      this._grokCurrentEl      = null;
+      this._grokCurrentTextRef = null;
+      this._grokSegCount++;
+    }
+
+    this._grokCurrentBuf += token;
+
+    // ── 本段第一个 token：创建对应气泡元素 ──
+    if (!this._grokCurrentEl) {
+      const segId = `gk${this.idPrefix}${this._grokSegCount}`;
+      if (type === 'thought') {
+        const el = document.createElement('div');
+        el.className = 'chat-bubble-wrap timeline-node is-muted';
+        el.innerHTML = `
   <div class="chat-avatar think" aria-hidden="true">TH</div>
   <div class="bubble-body">
     <div class="bubble-label think-label">思考过程</div>
-    <div class="bubble think-bubble" id="grok-thought-${this.idPrefix}"></div>
+    <div class="bubble think-bubble" id="${segId}"></div>
   </div>`;
-      this._appendNode(el);
-      this._grokThoughtContentEl = el.querySelector(`#grok-thought-${this.idPrefix}`);
-    }
-    this._grokScheduleRender();
-  }
-
-  _grokStreamText(token) {
-    this._grokTextBuf += token;
-    if (!this._grokTextContentEl) {
-      const el = document.createElement('div');
-      el.className = 'chat-bubble-wrap timeline-node';
-      el.innerHTML = `
+        this._appendNode(el);
+        this._grokCurrentEl = el.querySelector(`#${segId}`);
+      } else {
+        // text：需要复制按钮持有当前段文本的引用
+        const textRef = { value: '' };
+        this._grokCurrentTextRef = textRef;
+        const el = document.createElement('div');
+        el.className = 'chat-bubble-wrap timeline-node';
+        el.innerHTML = `
   <div class="chat-avatar ai" aria-hidden="true">AI</div>
   <div class="bubble-body">
     <div class="bubble">
@@ -772,51 +785,60 @@ class ChatLogRenderer {
         <div class="bubble-label">Grok</div>
         <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
       </div>
-      <div class="bubble-content" id="grok-text-${this.idPrefix}"></div>
+      <div class="bubble-content" id="${segId}"></div>
     </div>
   </div>`;
-      const btn = el.querySelector('.bubble-copy-btn');
-      btn.addEventListener('click', () => {
-        copyTextToClipboard(this._grokTextBuf, btn);
-      });
-      if (this.lastBubbleEl) {
-        if (this.foldProcess) {
-          this._appendToProcess(this.lastBubbleEl);
-        } else {
-          this.inner.appendChild(this.lastBubbleEl);
+        el.querySelector('.bubble-copy-btn').addEventListener('click', () => {
+          copyTextToClipboard(textRef.value, el.querySelector('.bubble-copy-btn'));
+        });
+        // 把上一条文本气泡移入折叠区（如有）
+        if (this.lastBubbleEl) {
+          if (this.foldProcess) {
+            this._appendToProcess(this.lastBubbleEl);
+          } else {
+            this.inner.appendChild(this.lastBubbleEl);
+          }
         }
+        this.inner.appendChild(el);
+        this.lastBubbleEl = el;
+        this._grokCurrentEl = el.querySelector(`#${segId}`);
       }
-      this.inner.appendChild(el);
-      this.lastBubbleEl = el;
-      this._grokTextContentEl = el.querySelector(`#grok-text-${this.idPrefix}`);
     }
+
+    // 同步更新复制按钮的文本引用
+    if (this._grokCurrentTextRef) {
+      this._grokCurrentTextRef.value = this._grokCurrentBuf;
+    }
+
     this._grokScheduleRender();
   }
 
-  // 用 requestAnimationFrame 节流：每帧最多渲染一次，token 流再快也能实时显示 markdown
+  // RAF 节流：每帧最多调用一次 renderMd，实时 markdown 渲染不卡顿
   _grokScheduleRender() {
     if (this._grokRafPending) return;
     this._grokRafPending = true;
     requestAnimationFrame(() => {
       this._grokRafPending = false;
-      this._grokDoRender();
+      if (this._grokCurrentEl && this._grokCurrentBuf) {
+        this._grokCurrentEl.innerHTML = renderMd(this._grokCurrentBuf);
+      }
     });
   }
 
-  // 同步立即渲染（用于 end 事件确保最终状态正确）
-  _grokDoRender() {
-    if (this._grokThoughtContentEl && this._grokThoughtBuf) {
-      this._grokThoughtContentEl.innerHTML = renderMd(this._grokThoughtBuf);
-    }
-    if (this._grokTextContentEl && this._grokTextBuf) {
-      this._grokTextContentEl.innerHTML = renderMd(this._grokTextBuf);
+  // 同步刷新当前段（类型切换 / end 事件时调用）
+  _grokFlushCurrent() {
+    if (this._grokCurrentEl && this._grokCurrentBuf) {
+      this._grokCurrentEl.innerHTML = renderMd(this._grokCurrentBuf);
+      if (this._grokCurrentTextRef) {
+        this._grokCurrentTextRef.value = this._grokCurrentBuf;
+      }
     }
   }
 
   _grokEnd(d) {
-    // end 事件：同步执行最终渲染，确保不依赖待处理的 RAF
+    // 清掉待处理的 RAF，同步完成最后一段渲染
     this._grokRafPending = false;
-    this._grokDoRender();
+    this._grokFlushCurrent();
 
     // 用量 / 会话信息行
     const items = [];

@@ -1,4 +1,5 @@
 // ── 顶部多 Tab 终端系统 JS 实现 ──
+// taskBelongsToProject 来自 shared/project-utils.js（全局）
 let topbarTabs = [{ id: 'chat', label: '📁 AI 对话', closable: false }];
 let activeTabId = 'chat';
 let multiTerminalContexts = {}; // projectName -> { terminal, fitAddon, socket, connected }

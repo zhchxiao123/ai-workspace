@@ -1,6 +1,8 @@
 # ============================================================
 #  CoderFleet — 统一工作容器镜像
-#  包含：Python 3.12 / Node.js 20 / Codex CLI / Claude Code / OpenCode
+#  包含：Python 3.12 / Node.js 20 / Rust
+#        Codex CLI / Claude Code / OpenCode / Hermes / Grok
+#        FFmpeg / LibreOffice (headless) / Playwright + Chromium
 #  平台：linux/amd64（Apple Silicon 通过 Docker 模拟运行）
 # ============================================================
 
@@ -95,6 +97,39 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --no-modify-path --default-toolchain 1.93.0 \
     && chmod -R a+w $RUSTUP_HOME $CARGO_HOME \
     && rustc --version
+
+# ── FFmpeg ────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── LibreOffice（含中文字体与语言包）────────────────────
+# 只装 Writer / Calc / Impress / Draw + headless 核心，跳过 Java / Base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
+    libreoffice-draw \
+    libreoffice-l10n-zh-cn \
+    fonts-wqy-zenhei \
+    fonts-noto-cjk \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── Playwright + Chromium ─────────────────────────────────
+# 1. Python Playwright 包（同时提供 `playwright` CLI）
+RUN pip3 install --no-cache-dir --break-system-packages playwright
+
+# 2. 浏览器统一安装到全局共享路径，两种语言运行时共用，避免重复下载
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+
+# 3. 安装 Chromium 系统依赖，再下载 Chromium 二进制
+#    playwright install-deps 内部会调用 apt，需要 root
+RUN playwright install-deps chromium \
+    && playwright install chromium \
+    && chmod -R a+rx /opt/playwright-browsers
+
+# 4. Node.js Playwright（复用 PLAYWRIGHT_BROWSERS_PATH，无需重新下载浏览器）
+RUN npm install -g playwright
 
 # ── 创建非特权用户 byclaw ─────────────────────────────────
 RUN groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw \

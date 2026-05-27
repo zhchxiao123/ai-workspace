@@ -1,4 +1,5 @@
 // ── 提交页辅助 ────────────────────────────────────────────
+// 注意：conversationBelongsToProject 来自 shared/project-utils.js（全局）
 function populateConversations(conversations, tasks = [], projectName = "") {
   const sel = document.getElementById('f-conversation');
   const prev = sel.value;

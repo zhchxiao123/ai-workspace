@@ -257,3 +257,29 @@ function copyUserBubble(btn) {
   copyTextToClipboard(content.textContent, btn);
 }
 
+// ══════════════════════════════════════════════════════════════
+//  移动端共享小工具（desktop + mobile 共用）
+// ══════════════════════════════════════════════════════════════
+
+/** 简短别名（移动端历史代码常用 x()） */
+function x(s) {
+  return esc(s);
+}
+
+/** 去除 ANSI 转义（日志流处理） */
+function stripAnsi(s) {
+  return String(s ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '');
+}
+
+/**
+ * 移动友好相对时间（与桌面 fmtTime 风格略有差异）
+ */
+function relTime(iso) {
+  if (!iso) return '';
+  const diff = Date.now() - new Date(iso);
+  if (diff < 60000)    return '刚刚';
+  if (diff < 3600000)  return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return `${Math.floor(diff / 86400000)} 天前`;
+}
+

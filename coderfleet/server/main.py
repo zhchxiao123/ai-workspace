@@ -798,8 +798,9 @@ async def get_logs(task_id: str):
 
 @app.get("/api/tasks/{task_id}/logs/stream")
 async def stream_logs(
-    task_id: str,
-    tail:    int = Query(50, description="从末尾多少行开始推送"),
+    task_id:    str,
+    tail:       int = Query(50, ge=0, description="从末尾多少行开始推送；0 = 不推送已有内容"),
+    skip_bytes: int = Query(0,  ge=0, description="客户端已获取的字节偏移量；>0 时忽略 tail，从此处开始推送"),
 ):
     """
     Server-Sent Events 实时日志流。
@@ -807,27 +808,61 @@ async def stream_logs(
     协议：
       data: <日志行内容>\n\n
       data: [DONE]\n\n   ← 任务结束时发送，客户端可关闭连接
+
+    防重复策略：
+      - 客户端若已通过 GET /logs 获取了完整日志，应传 skip_bytes=<已获取字节数>，
+        服务端从该偏移量开始推送，彻底避免重复渲染。
+      - 退化路径：skip_bytes=0 且 tail=0 时不推送任何已有内容（注意 Python 的
+        -0 == 0 陷阱，原实现有 bug，此处已修复）。
     """
     log_path = scheduler.get_log_path(task_id)
 
-    async def generate() -> AsyncIterator[str]:
-        # 先推送已有的末尾 N 行
-        existing_lines: list[str] = []
-        if log_path.exists():
-            async with aiofiles.open(log_path, encoding="utf-8") as f:
-                content = await f.read()
-            existing_lines = content.splitlines(keepends=True)
-            for line in existing_lines[-tail:]:
-                yield f"data: {line.rstrip()}\n\n"
+    async def _read_from(offset: int) -> tuple[bytes, int]:
+        """从 offset 字节处读取到文件末尾，返回 (内容, 新的文件大小)。"""
+        if not log_path.exists():
+            return b"", 0
+        cur_size = log_path.stat().st_size
+        start = min(offset, cur_size)
+        if cur_size <= start:
+            return b"", cur_size
+        async with aiofiles.open(log_path, "rb") as f:
+            await f.seek(start)
+            data = await f.read()
+        return data, cur_size
 
-        # 如果任务已结束，直接结束流
+    async def generate() -> AsyncIterator[str]:
+        last_size: int = 0
+
+        if skip_bytes > 0:
+            # ── 精确模式：客户端已持有前 skip_bytes 字节，从此处开始推送剩余内容 ──
+            new_bytes, last_size = await _read_from(skip_bytes)
+            if new_bytes:
+                for line in new_bytes.decode("utf-8", errors="replace").splitlines(keepends=True):
+                    yield f"data: {line.rstrip()}\n\n"
+
+        elif tail > 0:
+            # ── 末尾行模式：推送末尾 tail 行历史 ──
+            # 注意：不能用 existing_lines[-tail:] 而后把 tail 设为 0，
+            # 因为 Python 中 -0 == 0，-0 切片会返回全部内容。
+            if log_path.exists():
+                async with aiofiles.open(log_path, "rb") as f:
+                    raw = await f.read()
+                lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+                for line in lines[-tail:]:
+                    yield f"data: {line.rstrip()}\n\n"
+                last_size = log_path.stat().st_size
+
+        else:
+            # ── tail=0, skip_bytes=0：不推送任何已有内容，直接从文件末尾开始 tail ──
+            last_size = log_path.stat().st_size if log_path.exists() else 0
+
+        # 若任务已不存在（被删除），直接结束
         task = scheduler.get_task(task_id)
         if task is None:
             yield "data: [DONE]\n\n"
             return
 
-        last_size = log_path.stat().st_size if log_path.exists() else 0
-
+        # ── 持续 tail 循环：每 0.3 秒检测文件增量并推送 ──
         while True:
             await asyncio.sleep(0.3)
 
@@ -846,11 +881,11 @@ async def stream_logs(
             if log_path.exists():
                 cur_size = log_path.stat().st_size
                 if cur_size > last_size:
-                    async with aiofiles.open(log_path, encoding="utf-8") as f:
+                    async with aiofiles.open(log_path, "rb") as f:
                         await f.seek(last_size)
-                        new_content = await f.read()
+                        new_bytes = await f.read()
                     last_size = cur_size
-                    for line in new_content.splitlines(keepends=True):
+                    for line in new_bytes.decode("utf-8", errors="replace").splitlines(keepends=True):
                         yield f"data: {line.rstrip()}\n\n"
 
             if is_done:
