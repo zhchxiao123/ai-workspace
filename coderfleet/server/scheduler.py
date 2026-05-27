@@ -265,6 +265,129 @@ class Scheduler:
 
         return projects
 
+    # ── conf 文件写入 ──────────────────────────────────────
+
+    def _rewrite_conf(self, conf_path: Path, key: str, new_line: Optional[str]) -> None:
+        """原子重写 conf 文件：替换/追加/删除 NAME=key 的行，注释行保留。"""
+        lines: list[str] = []
+        if conf_path.exists():
+            lines = conf_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+        target_idx: Optional[int] = None
+        for i, raw in enumerate(lines):
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts: dict[str, str] = {}
+            for token in stripped.split():
+                if "=" in token:
+                    k, v = token.split("=", 1)
+                    parts[k.upper()] = v
+            if parts.get("NAME") == key:
+                target_idx = i
+                break
+
+        if new_line is None:          # 删除
+            if target_idx is not None:
+                lines.pop(target_idx)
+        else:
+            entry = new_line.rstrip("\n") + "\n"
+            if target_idx is not None:
+                lines[target_idx] = entry
+            else:
+                lines.append(entry)
+
+        conf_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = conf_path.with_suffix(".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        tmp.replace(conf_path)
+
+    def save_account(
+        self,
+        name:     str,
+        acc_type: AccountType,
+        auth:     AccountAuth,
+        proxy:    AccountProxy,
+    ) -> Account:
+        """新增或修改 accounts.conf 中的账号行，env 认证时自动创建 env 文件占位。"""
+        parts = [f"NAME={name}", f"TYPE={acc_type.value}", f"AUTH={auth.value}", f"PROXY={proxy.value}"]
+        env_file = ""
+        if auth == AccountAuth.env:
+            env_file = f"./accounts/{name}/env"
+            parts.append(f"ENV_FILE={env_file}")
+            env_path = self.workspace_dir / "accounts" / name / "env"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            if not env_path.exists():
+                env_path.write_text("", encoding="utf-8")
+                try:
+                    env_path.chmod(0o600)
+                except OSError:
+                    pass
+        self._rewrite_conf(self.accounts_conf, name, " ".join(parts))
+        return Account(name=name, type=acc_type, auth=auth, proxy=proxy, env_file=env_file)
+
+    def delete_account(self, name: str) -> None:
+        """从 accounts.conf 删除账号行。"""
+        self._rewrite_conf(self.accounts_conf, name, None)
+
+    def _resolve_env_path(self, acc: Account) -> Path:
+        env_file = acc.env_file or f"./accounts/{acc.name}/env"
+        p = Path(env_file)
+        return p if p.is_absolute() else self.workspace_dir / p
+
+    def get_account_env(self, name: str) -> dict[str, str]:
+        """读取账号 env 文件，返回变量字典（原始值，由调用方决定是否脱敏）。"""
+        acc = next((a for a in self.get_accounts() if a.name == name), None)
+        if acc is None:
+            raise ValueError(f"账号 '{name}' 不存在")
+        env_path = self._resolve_env_path(acc)
+        if not env_path.exists():
+            return {}
+        result: dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            result[k.strip()] = v.strip()
+        return result
+
+    def set_account_env(self, name: str, vars: dict[str, str]) -> None:
+        """合并写入 env 文件；value 为空字符串表示删除该变量。"""
+        acc = next((a for a in self.get_accounts() if a.name == name), None)
+        if acc is None:
+            raise ValueError(f"账号 '{name}' 不存在")
+        env_path = self._resolve_env_path(acc)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, str] = {}
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                existing[k.strip()] = v.strip()
+        for k, v in vars.items():
+            if v == "":
+                existing.pop(k, None)
+            else:
+                existing[k] = v
+        env_path.write_text("".join(f"{k}={v}\n" for k, v in existing.items()), encoding="utf-8")
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+
+    def save_project(self, name: str, account: str, path: str) -> Project:
+        """新增或修改 projects.conf 中的项目行。"""
+        path_norm = str(Path(path).expanduser())
+        self._rewrite_conf(self.projects_conf, name, f"NAME={name} ACCOUNT={account} PATH={path_norm}")
+        return Project(name=name, account=account, path=path_norm)
+
+    def delete_project(self, name: str) -> None:
+        """从 projects.conf 删除项目行。"""
+        self._rewrite_conf(self.projects_conf, name, None)
+
     def get_busy_accounts(self) -> set[str]:
         """返回当前有 running 任务的账号名集合"""
         busy = set()
@@ -328,14 +451,12 @@ class Scheduler:
         prefer_project: Optional[str]         = None,
     ) -> Optional[Account]:
         """
-        找一个满足条件的空闲账号：
+        找一个满足条件的可用账号：
         - 类型匹配（可选）
         - 项目路径匹配（可选，规范化后比较）
         - 至少有一个项目容器在线
-        - 没有 running 任务占用
+        同一账号可以并发执行多个任务（不同 conversation），不再过滤 busy 账号。
         """
-        busy = self.get_busy_accounts()
-
         for acc in self.get_accounts():
             if prefer_type and acc.type != prefer_type:
                 continue
@@ -343,9 +464,6 @@ class Scheduler:
                 project_match = self.find_project_for_path(prefer_project, acc.name)
                 if not project_match:
                     continue
-            if acc.name in busy:
-                continue
-            # Check if any project container for this account is running
             account_projects = [p for p in self.get_projects() if p.account == acc.name]
             if not account_projects:
                 continue
@@ -543,7 +661,14 @@ class Scheduler:
 
         # 按照创建时间升序排列，先进先出
         pending_tasks.sort(key=lambda t: t.created or "")
-        busy_accounts = self.get_busy_accounts()
+
+        # conversation 级串行约束：同一 conversation 同时只能有一个任务在跑
+        busy_conv_ids = {
+            t.conversation_id for t in all_pending
+            if t.status == TaskStatus.running and t.conversation_id
+        }
+        # 本轮已派发的 conversation，防止同一轮调度把同一 conversation 的多个 pending 同时拉起
+        in_flight_conv_ids: set[str] = set()
 
         for task in pending_tasks:
             # ── depends_on 检查 ──────────────────────────────
@@ -558,10 +683,14 @@ class Scheduler:
                 if not all(d.status == TaskStatus.done for d in deps):
                     continue
 
-            if task.account not in busy_accounts:
-                busy_accounts.add(task.account)
-                # 异步拉起执行该 pending 任务
-                await self._start_pending_task(task)
+            # 有 conversation 的任务：同一 conversation 内保持串行
+            if task.conversation_id:
+                if task.conversation_id in busy_conv_ids or task.conversation_id in in_flight_conv_ids:
+                    continue
+                in_flight_conv_ids.add(task.conversation_id)
+
+            # 异步拉起执行该 pending 任务
+            await self._start_pending_task(task)
 
     async def _start_pending_task(self, task: Task) -> None:
         try:
@@ -690,50 +819,22 @@ class Scheduler:
                 raise ValueError(
                     f"账号 '{account_name}' 类型为 {acc.type.value}，与筛选类型 {prefer_type.value} 不一致"
                 )
-            # 若账号忙碌，则标记为排队
-            if acc.name in self.get_busy_accounts():
-                is_pending = True
+            # 账号级不再限制并发，同一账号的不同 conversation 可以同时跑
         else:
-            # 优先寻找空闲账号
             acc = self.find_idle_account(
                 prefer_type    = prefer_type,
                 prefer_project = prefer_project,
             )
             if acc is None:
-                # 寻找支持该项目且对应的项目容器在线的忙碌账号
-                matching_busy_accounts = []
-                for a in self.get_accounts():
-                    if prefer_type and a.type != prefer_type:
-                        continue
-                    if prefer_project:
-                        project_match = self.find_project_for_path(prefer_project, a.name)
-                        if not project_match:
-                            continue
-                    account_projects = [p for p in self.get_projects() if p.account == a.name]
-                    if not account_projects:
-                        continue
-                    any_running = any(
-                        docker_mgr.is_container_running(p.container_name(a.type))
-                        for p in account_projects
-                    )
-                    if not any_running:
-                        continue
-                    matching_busy_accounts.append(a)
-
-                if not matching_busy_accounts:
-                    hints = []
-                    if prefer_project:
-                        hints.append(f"项目：{prefer_project}")
-                    if prefer_type:
-                        hints.append(f"类型：{prefer_type.value}")
-                    hint_str = "，".join(hints)
-                    raise RuntimeError(
-                        f"没有匹配的空闲账号{('（' + hint_str + '）') if hint_str else ''}"
-                    )
-
-                # 分配第一个可用的忙碌账号并标记为 pending
-                acc = matching_busy_accounts[0]
-                is_pending = True
+                hints = []
+                if prefer_project:
+                    hints.append(f"项目：{prefer_project}")
+                if prefer_type:
+                    hints.append(f"类型：{prefer_type.value}")
+                hint_str = "，".join(hints)
+                raise RuntimeError(
+                    f"没有匹配的可用账号{('（' + hint_str + '）') if hint_str else ''}"
+                )
 
         task_project = self.resolve_task_project(acc, prefer_project)
         selected_project = selected_project or self.find_project_for_path(task_project, acc.name)

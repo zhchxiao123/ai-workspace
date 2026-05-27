@@ -90,6 +90,10 @@ function renderProjectCards(projects, tasks, accounts) {
     <div class="project-stat"><div class="account-stat-label">失败</div><div class="account-stat-value">${failed}</div></div>
   </div>
   <div class="account-meta" style="margin-top:10px" ${latest ? `title="${esc(latest.prompt)}"` : ''}>${latestText}</div>
+  <div class="account-footer" style="margin-top:10px">
+    <button class="btn" style="font-size:12px" onclick="event.stopPropagation();openProjectFormModal('${esc(project.name)}')">编辑</button>
+    <button class="btn danger" style="font-size:12px" onclick="event.stopPropagation();deleteProjectConfirm('${esc(project.name)}')">删除</button>
+  </div>
 </div>`;
   }).join('');
 }
@@ -170,6 +174,97 @@ function updateTerminalWarning() {
     warning.textContent = '';
     warning.classList.remove('active');
   }
+}
+
+// ── 项目 CRUD ─────────────────────────────────────────────
+let _editingProjectName = null;
+
+async function openProjectFormModal(name) {
+  _editingProjectName = name || null;
+  document.getElementById('project-form-title').textContent = name ? `编辑项目 · ${name}` : '新建项目';
+  document.getElementById('project-form-msg').style.display = 'none';
+
+  const nameInput = document.getElementById('project-form-name');
+  nameInput.disabled = !!name;
+
+  // 填充账号下拉
+  const accounts = (await fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => []));
+  const sel = document.getElementById('project-form-account');
+  sel.innerHTML = accounts.map(a =>
+    `<option value="${esc(a.name)}">${esc(a.name)} (${a.type})</option>`
+  ).join('');
+
+  if (name) {
+    const project = (projectsCache || []).find(p => p.name === name);
+    if (project) {
+      nameInput.value = project.name;
+      sel.value = project.account;
+      document.getElementById('project-form-path').value = project.path;
+    }
+  } else {
+    nameInput.value = '';
+    sel.value = accounts[0]?.name || '';
+    document.getElementById('project-form-path').value = '';
+  }
+
+  document.getElementById('project-form-modal').style.display = '';
+}
+
+function closeProjectFormModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('project-form-modal').style.display = 'none';
+}
+
+async function saveProjectForm() {
+  const name    = _editingProjectName || document.getElementById('project-form-name').value.trim();
+  const account = document.getElementById('project-form-account').value;
+  const path    = document.getElementById('project-form-path').value.trim();
+  if (!name)    { showProjectFormMsg('请填写项目名', 'error'); return; }
+  if (!account) { showProjectFormMsg('请选择账号',   'error'); return; }
+  if (!path)    { showProjectFormMsg('请填写路径',   'error'); return; }
+
+  const btn = document.getElementById('project-form-btn');
+  btn.disabled = true;
+  try {
+    const isEdit = !!_editingProjectName;
+    const url    = isEdit ? `${API}/api/projects/${encodeURIComponent(name)}` : `${API}/api/projects`;
+    const r = await fetch(url, {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isEdit ? { account, path } : { name, account, path }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { showProjectFormMsg(data.detail || '保存失败', 'error'); return; }
+    closeProjectFormModal();
+    await loadProjectsDashboard();
+  } catch (e) {
+    showProjectFormMsg(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteProjectConfirm(name) {
+  if (!confirm(`确认删除项目「${name}」？容器不会自动销毁，配置从 projects.conf 中移除。`)) return;
+  try {
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || '删除失败');
+      return;
+    }
+    if (projectContext?.name === name) backToProjects();
+    else await loadProjectsDashboard();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function showProjectFormMsg(text, type) {
+  const el = document.getElementById('project-form-msg');
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert' : '';
+  el.style.display = '';
 }
 
 function openProjectTerminal() {

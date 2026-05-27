@@ -32,6 +32,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from coderfleet.server.models import (
+    Account,
+    AccountAuth,
+    AccountProxy,
     AccountResponse,
     AccountType,
     Conversation,
@@ -63,6 +66,35 @@ class ConversationCreateRequest(BaseModel):
     """从已有任务创建任务链的请求体"""
     name:    str
     task_id: str  # 用该任务的 native_session_id 初始化任务链
+
+
+class AccountCreateRequest(BaseModel):
+    name:  str
+    type:  AccountType
+    auth:  AccountAuth  = AccountAuth.login
+    proxy: AccountProxy = AccountProxy.relay
+
+
+class AccountUpdateRequest(BaseModel):
+    type:  Optional[AccountType]  = None
+    auth:  Optional[AccountAuth]  = None
+    proxy: Optional[AccountProxy] = None
+
+
+class EnvVarsRequest(BaseModel):
+    vars: dict[str, str]
+
+
+class ProjectCreateRequest(BaseModel):
+    name:    str
+    account: str
+    path:    str
+
+
+class ProjectUpdateRequest(BaseModel):
+    account: Optional[str] = None
+    path:    Optional[str] = None
+
 
 # ── 初始化 ────────────────────────────────────────────────
 
@@ -163,6 +195,66 @@ async def health():
 async def list_accounts():
     """列出所有账号，包含容器状态和忙碌状态"""
     return scheduler.list_accounts()
+
+
+import re as _re
+
+def _validate_identifier(name: str, label: str) -> None:
+    if not _re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise HTTPException(status_code=422, detail=f"{label}名只能包含字母、数字、横线和下划线")
+
+
+
+@app.post("/api/accounts", status_code=201)
+async def create_account(req: AccountCreateRequest):
+    _validate_identifier(req.name, "账号")
+    existing = {a.name for a in scheduler.get_accounts()}
+    if req.name in existing:
+        raise HTTPException(status_code=409, detail=f"账号 '{req.name}' 已存在")
+    scheduler.save_account(req.name, req.type, req.auth, req.proxy)
+    return {"ok": True, "name": req.name}
+
+
+@app.put("/api/accounts/{name}")
+async def update_account(name: str, req: AccountUpdateRequest):
+    acc = next((a for a in scheduler.get_accounts() if a.name == name), None)
+    if acc is None:
+        raise HTTPException(status_code=404, detail=f"账号 '{name}' 不存在")
+    scheduler.save_account(
+        name,
+        req.type  or acc.type,
+        req.auth  or acc.auth,
+        req.proxy or acc.proxy,
+    )
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/accounts/{name}", status_code=204)
+async def delete_account(name: str):
+    acc = next((a for a in scheduler.get_accounts() if a.name == name), None)
+    if acc is None:
+        raise HTTPException(status_code=404, detail=f"账号 '{name}' 不存在")
+    if name in scheduler.get_busy_accounts():
+        raise HTTPException(status_code=409, detail=f"账号 '{name}' 有任务正在运行，无法删除")
+    scheduler.delete_account(name)
+
+
+@app.get("/api/accounts/{name}/env")
+async def get_account_env(name: str):
+    try:
+        raw = scheduler.get_account_env(name)
+        return {"vars": raw}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.put("/api/accounts/{name}/env", status_code=200)
+async def set_account_env(name: str, req: EnvVarsRequest):
+    try:
+        scheduler.set_account_env(name, req.vars)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 def _account_skills_dir(account_name: str) -> Path:
@@ -279,6 +371,82 @@ async def list_projects():
         ProjectResponse.from_project(p)
         for p in scheduler.list_projects()
     ]
+
+
+@app.post("/api/projects", status_code=201)
+async def create_project(req: ProjectCreateRequest):
+    _validate_identifier(req.name, "项目")
+    if any(p.name == req.name for p in scheduler.get_projects()):
+        raise HTTPException(status_code=409, detail=f"项目 '{req.name}' 已存在")
+    if not any(a.name == req.account for a in scheduler.get_accounts()):
+        raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
+    project = scheduler.save_project(req.name, req.account, req.path)
+    return ProjectResponse.from_project(project)
+
+
+@app.put("/api/projects/{name}")
+async def update_project(name: str, req: ProjectUpdateRequest):
+    existing = next((p for p in scheduler.get_projects() if p.name == name), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    new_account = req.account or existing.account
+    new_path    = req.path    or existing.path
+    if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
+        raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
+    project = scheduler.save_project(name, new_account, new_path)
+    return ProjectResponse.from_project(project)
+
+
+@app.delete("/api/projects/{name}", status_code=204)
+async def delete_project(name: str):
+    if not any(p.name == name for p in scheduler.get_projects()):
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    scheduler.delete_project(name)
+
+
+# ── 系统运维 ──────────────────────────────────────────────
+
+@app.post("/api/system/apply")
+async def system_apply():
+    """重新生成 docker-compose.yml 并重启所有容器，SSE 流式输出进度。"""
+    from coderfleet.compose import write_compose
+    from coderfleet.docker_ops import _dc
+
+    async def _stream() -> AsyncIterator[str]:
+        try:
+            yield ">>> 生成 docker-compose.yml...\n"
+            await asyncio.get_event_loop().run_in_executor(None, write_compose, WORKSPACE_DIR)
+            yield "✓ docker-compose.yml 已生成\n\n"
+
+            yield ">>> 停止旧容器 (down --remove-orphans)...\n"
+            dc = _dc(WORKSPACE_DIR)
+            proc = await asyncio.create_subprocess_exec(
+                *dc, "down", "--remove-orphans",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            async for line in proc.stdout:
+                yield line.decode("utf-8", errors="replace")
+            await proc.wait()
+
+            yield "\n>>> 启动容器 (up -d)...\n"
+            proc = await asyncio.create_subprocess_exec(
+                *dc, "up", "-d",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            async for line in proc.stdout:
+                yield line.decode("utf-8", errors="replace")
+            rc = await proc.wait()
+
+            if rc != 0:
+                yield f"\n✗ 容器启动失败（exit={rc}）\n"
+            else:
+                yield "\n✓ 完成！所有容器已重启\n"
+        except Exception as e:
+            yield f"\n✗ 操作失败：{e}\n"
+
+    return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
 
 
 # ── 图片上传 ──────────────────────────────────────────────

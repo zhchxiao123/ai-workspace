@@ -111,7 +111,8 @@ function switchAcctTab(tab) {
   const panel = document.getElementById(`acct-panel-${tab}`);
   if (btn) btn.classList.add('active');
   if (panel) panel.style.display = '';
-  if (tab === 'skills' && accountContext) loadAccountSkills(accountContext.name);
+  if (tab === 'skills'   && accountContext) loadAccountSkills(accountContext.name);
+  if (tab === 'settings' && accountContext) loadAccountSettings(accountContext.name);
 }
 
 // ── 技能列表 ──────────────────────────────────────────────
@@ -370,4 +371,287 @@ function showMarketInstallMsg(text, type) {
   el.textContent = text;
   el.className = type === 'error' ? 'inline-alert mt-16' : 'mt-16';
   el.style.display = '';
+}
+
+// ── 新建账号 ──────────────────────────────────────────────
+function openCreateAccountModal() {
+  document.getElementById('create-account-name').value = '';
+  document.getElementById('create-account-type').value = 'claude';
+  document.getElementById('create-account-auth').value = 'login';
+  document.getElementById('create-account-proxy').value = 'relay';
+  document.getElementById('create-account-msg').style.display = 'none';
+  document.getElementById('create-account-modal').style.display = '';
+}
+
+function closeCreateAccountModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('create-account-modal').style.display = 'none';
+}
+
+async function saveNewAccount() {
+  const name  = document.getElementById('create-account-name').value.trim();
+  const type  = document.getElementById('create-account-type').value;
+  const auth  = document.getElementById('create-account-auth').value;
+  const proxy = document.getElementById('create-account-proxy').value;
+  if (!name) { showCreateAccountMsg('请填写账号名', 'error'); return; }
+  const btn = document.getElementById('create-account-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, type, auth, proxy }),
+    });
+    const data = await r.json();
+    if (!r.ok) { showCreateAccountMsg(data.detail || '创建失败', 'error'); return; }
+    closeCreateAccountModal();
+    await loadAccounts();
+  } catch (e) {
+    showCreateAccountMsg(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showCreateAccountMsg(text, type) {
+  const el = document.getElementById('create-account-msg');
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert' : '';
+  el.style.display = '';
+}
+
+// ── 账号设置 tab ──────────────────────────────────────────
+async function loadAccountSettings(name) {
+  const panel = document.getElementById('acct-panel-settings');
+  panel.innerHTML = '<div class="empty">加载中...</div>';
+
+  try {
+    const [accounts, envResp] = await Promise.all([
+      fetch(`${API}/api/accounts`).then(r => r.json()),
+      fetch(`${API}/api/accounts/${encodeURIComponent(name)}/env`).then(r => r.json()).catch(() => ({ vars: {} })),
+    ]);
+    const acc = accounts.find(a => a.name === name);
+    if (!acc) { panel.innerHTML = '<div class="empty">账号不存在</div>'; return; }
+
+    const isEnv = acc.auth === 'env';
+    const envVars = envResp.vars || {};
+    const envRows = Object.entries(envVars).map(([k, v]) => `
+      <div class="env-row" id="env-row-${esc(k)}">
+        <span class="env-key">${esc(k)}</span>
+        <input class="env-val-input" id="env-val-${esc(k)}" type="text" value="${esc(v)}" autocomplete="off" spellcheck="false">
+        <button class="btn danger" style="font-size:11px;padding:2px 8px" onclick="removeEnvRow('${esc(k)}')">删除</button>
+      </div>`).join('');
+
+    panel.innerHTML = `
+      <div style="max-width:560px;display:flex;flex-direction:column;gap:18px">
+        <div class="card" style="padding:20px;display:flex;flex-direction:column;gap:14px">
+          <div style="font-weight:600;font-size:13px;color:var(--text-2);margin-bottom:2px">账号配置</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="form-group">
+              <label class="form-label">认证方式</label>
+              <select id="settings-auth" class="form-input" onchange="toggleEnvSection()">
+                <option value="login" ${acc.auth==='login'?'selected':''}>login（浏览器授权）</option>
+                <option value="env"   ${acc.auth==='env'  ?'selected':''}>env（API Key）</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">代理</label>
+              <select id="settings-proxy" class="form-input">
+                <option value="relay" ${acc.proxy==='relay'?'selected':''}>relay（gost 中继）</option>
+                <option value="off"   ${acc.proxy==='off'  ?'selected':''}>off（直连）</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">类型</label>
+            <select id="settings-type" class="form-input">
+              <option value="claude"   ${acc.type==='claude'   ?'selected':''}>claude</option>
+              <option value="codex"    ${acc.type==='codex'    ?'selected':''}>codex</option>
+              <option value="opencode" ${acc.type==='opencode' ?'selected':''}>opencode</option>
+              <option value="hermes"   ${acc.type==='hermes'   ?'selected':''}>hermes</option>
+            </select>
+          </div>
+
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn primary" style="font-size:12px" onclick="saveAccountSettings('${esc(name)}')">保存配置</button>
+            <div id="settings-msg" style="display:none"></div>
+          </div>
+
+          <!-- env 编辑区：认证方式=env 时内联展开 -->
+          <div id="env-section" style="display:${isEnv?'flex':'none'};flex-direction:column;gap:10px;
+               padding-top:14px;margin-top:2px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-weight:600;font-size:12px;color:var(--text-2)">环境变量</span>
+              <span style="font-size:11px;color:var(--text-3)">写入账号容器 env 文件，重启容器后生效</span>
+            </div>
+            <div id="env-rows">${envRows || '<div style="color:var(--text-3);font-size:12px;padding:4px 0">暂无变量，在下方添加</div>'}</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="new-env-key" class="form-input" placeholder="变量名（如 ANTHROPIC_API_KEY）" style="flex:1.4" autocomplete="off">
+              <input id="new-env-val" class="form-input" type="text" placeholder="值" style="flex:1" autocomplete="off" spellcheck="false">
+              <button class="btn" style="font-size:12px;white-space:nowrap" onclick="addEnvRow()">+ 添加</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn primary" style="font-size:12px" onclick="saveEnvVars('${esc(name)}')">保存环境变量</button>
+              <div id="env-msg" style="display:none"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:18px;border-color:var(--red);display:flex;flex-direction:column;gap:10px">
+          <div style="font-weight:600;font-size:13px;color:var(--red)">危险操作</div>
+          <div style="font-size:12px;color:var(--text-3)">从 accounts.conf 删除此账号。容器不会自动销毁，需执行「应用配置」。</div>
+          <button class="btn danger" style="font-size:12px;width:fit-content" onclick="deleteAccount('${esc(name)}')">删除账号</button>
+        </div>
+      </div>`;
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function toggleEnvSection() {
+  const auth = document.getElementById('settings-auth')?.value;
+  const sec  = document.getElementById('env-section');
+  if (sec) sec.style.display = auth === 'env' ? 'flex' : 'none';
+}
+
+
+function addEnvRow() {
+  const k = document.getElementById('new-env-key').value.trim();
+  const v = document.getElementById('new-env-val').value;
+  if (!k) return;
+  const container = document.getElementById('env-rows');
+  // Remove "暂无变量" text if present
+  const empty = container.querySelector('div[style*="color"]');
+  if (empty) empty.remove();
+  // Remove existing row with same key
+  document.getElementById(`env-row-${k}`)?.remove();
+  container.insertAdjacentHTML('beforeend', `
+    <div class="env-row" id="env-row-${esc(k)}">
+      <span class="env-key">${esc(k)}</span>
+      <input class="env-val-input" id="env-val-${esc(k)}" type="text" value="${esc(v)}" autocomplete="off" spellcheck="false">
+      <button class="btn danger" style="font-size:11px;padding:2px 8px" onclick="removeEnvRow('${esc(k)}')">删除</button>
+    </div>`);
+  document.getElementById('new-env-key').value = '';
+  document.getElementById('new-env-val').value = '';
+}
+
+function removeEnvRow(key) {
+  document.getElementById(`env-row-${key}`)?.remove();
+}
+
+async function saveAccountSettings(name) {
+  const type  = document.getElementById('settings-type').value;
+  const auth  = document.getElementById('settings-auth').value;
+  const proxy = document.getElementById('settings-proxy').value;
+  const btn   = document.querySelector('#acct-panel-settings .btn.primary');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/accounts/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, auth, proxy }),
+    });
+    const data = await r.json();
+    if (!r.ok) { showSettingsMsg(data.detail || '保存失败', 'error'); return; }
+    showSettingsMsg('已保存', 'ok');
+    await loadAccounts();
+    toggleEnvSection();
+  } catch (e) {
+    showSettingsMsg(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function saveEnvVars(name) {
+  const rows  = document.querySelectorAll('#env-rows .env-row');
+  const vars  = {};
+  rows.forEach(row => {
+    const key = row.id.replace('env-row-', '');
+    const inp = row.querySelector('.env-val-input');
+    if (key && inp) vars[key] = inp.value;
+  });
+  try {
+    const r = await fetch(`${API}/api/accounts/${encodeURIComponent(name)}/env`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vars }),
+    });
+    const data = await r.json();
+    if (!r.ok) { showEnvMsg(data.detail || '保存失败', 'error'); return; }
+    showEnvMsg('已保存', 'ok');
+  } catch (e) {
+    showEnvMsg(e.message, 'error');
+  }
+}
+
+async function deleteAccount(name) {
+  if (!confirm(`确认删除账号「${name}」？此操作只删除配置，容器不会自动销毁。`)) return;
+  try {
+    const r = await fetch(`${API}/api/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || '删除失败');
+      return;
+    }
+    backToAccounts();
+    await loadAccounts();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function showSettingsMsg(text, type) {
+  const el = document.getElementById('settings-msg');
+  if (!el) return;
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert' : '';
+  el.style.display = '';
+  if (type !== 'error') setTimeout(() => { el.style.display = 'none'; }, 2000);
+}
+
+function showEnvMsg(text, type) {
+  const el = document.getElementById('env-msg');
+  if (!el) return;
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert' : '';
+  el.style.display = '';
+  if (type !== 'error') setTimeout(() => { el.style.display = 'none'; }, 2000);
+}
+
+// ── 应用配置（system/apply） ──────────────────────────────
+function openApplyModal() {
+  document.getElementById('apply-output').textContent = '';
+  document.getElementById('apply-running').style.display = '';
+  document.getElementById('apply-done-btn').style.display = 'none';
+  document.getElementById('apply-modal').style.display = '';
+  _runApply();
+}
+
+function closeApplyModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('apply-modal').style.display = 'none';
+}
+
+async function _runApply() {
+  const out = document.getElementById('apply-output');
+  try {
+    const r = await fetch(`${API}/api/system/apply`, { method: 'POST' });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.textContent += decoder.decode(value, { stream: true });
+      out.scrollTop = out.scrollHeight;
+    }
+  } catch (e) {
+    out.textContent += `\n✗ 请求失败：${e.message}\n`;
+  } finally {
+    document.getElementById('apply-running').style.display = 'none';
+    document.getElementById('apply-done-btn').style.display = '';
+    loadAccounts();
+  }
 }

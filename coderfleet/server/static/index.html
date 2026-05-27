@@ -15,7 +15,7 @@
   <link rel="apple-touch-icon" href="/static/icons/logo-mark.png">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
   <link rel="stylesheet" href="/static/vendor/drawflow.min.css">
-  <link rel="stylesheet" href="/static/css/main.css?v=20260526a">
+  <link rel="stylesheet" href="/static/css/main.css?v=20260527c">
 </head>
 
 <body>
@@ -277,6 +277,7 @@
                 <div class="section-title">项目工作台</div>
                 <div class="section-subtitle">以项目为入口查看任务、任务链和绑定账号</div>
               </div>
+              <button class="btn primary" style="font-size:12px" onclick="openProjectFormModal()">+ 新建项目</button>
             </div>
             <div class="project-grid" id="project-grid">
               <div class="empty">加载中...</div>
@@ -393,6 +394,10 @@
                 <div class="section-title">账号资源</div>
                 <div class="section-subtitle">容器状态、任务占用和项目绑定</div>
               </div>
+              <div style="display:flex;gap:8px">
+                <button class="btn" style="font-size:12px" onclick="openApplyModal()">⚙ 应用配置</button>
+                <button class="btn primary" style="font-size:12px" onclick="openCreateAccountModal()">+ 新建账号</button>
+              </div>
             </div>
             <div class="account-grid" id="account-grid">
               <div class="empty">加载中...</div>
@@ -407,8 +412,11 @@
             </div>
             <!-- 子 Tab -->
             <div class="wf-tabs" style="margin-bottom:16px">
-              <button class="wf-tab active" id="acct-tab-skills" onclick="switchAcctTab('skills')">技能管理</button>
+              <button class="wf-tab active" id="acct-tab-skills"   onclick="switchAcctTab('skills')">技能管理</button>
+              <button class="wf-tab"        id="acct-tab-settings" onclick="switchAcctTab('settings')">设置</button>
             </div>
+            <!-- 设置面板 -->
+            <div id="acct-panel-settings" style="display:none;padding:4px 0"></div>
             <!-- 技能面板 -->
             <div id="acct-panel-skills">
               <div class="section-head">
@@ -701,22 +709,103 @@
     </div>
   </div>
 
+  <!-- 新建账号 Modal -->
+  <div class="modal-backdrop" id="create-account-modal" style="display:none" onclick="closeCreateAccountModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()" style="max-width:420px">
+      <div class="section-head" style="margin-bottom:16px">
+        <div class="modal-title">新建账号</div>
+        <button class="btn" onclick="closeCreateAccountModal()">关闭</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">账号名 <span style="color:var(--text-3);font-size:11px">（字母/数字/横线/下划线）</span></label>
+          <input id="create-account-name" class="form-input" placeholder="my-account" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">类型</label>
+          <select id="create-account-type" class="form-input">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="opencode">opencode</option>
+            <option value="hermes">hermes</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">认证方式</label>
+          <select id="create-account-auth" class="form-input">
+            <option value="login">login（浏览器授权）</option>
+            <option value="env">env（API Key）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">代理</label>
+          <select id="create-account-proxy" class="form-input">
+            <option value="relay">relay（走 gost 中继）</option>
+            <option value="off">off（直连）</option>
+          </select>
+        </div>
+        <div id="create-account-msg" style="display:none"></div>
+        <button id="create-account-btn" class="btn primary" onclick="saveNewAccount()">创建账号</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建/编辑项目 Modal -->
+  <div class="modal-backdrop" id="project-form-modal" style="display:none" onclick="closeProjectFormModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()" style="max-width:440px">
+      <div class="section-head" style="margin-bottom:16px">
+        <div class="modal-title" id="project-form-title">新建项目</div>
+        <button class="btn" onclick="closeProjectFormModal()">关闭</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">项目名 <span style="color:var(--text-3);font-size:11px">（字母/数字/横线/下划线）</span></label>
+          <input id="project-form-name" class="form-input" placeholder="my-project" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">绑定账号</label>
+          <select id="project-form-account" class="form-input"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">宿主机路径</label>
+          <input id="project-form-path" class="form-input" placeholder="/home/user/my-project" autocomplete="off">
+        </div>
+        <div id="project-form-msg" style="display:none"></div>
+        <button id="project-form-btn" class="btn primary" onclick="saveProjectForm()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用配置输出 Modal -->
+  <div class="modal-backdrop" id="apply-modal" style="display:none" onclick="closeApplyModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()" style="max-width:640px;width:90vw">
+      <div class="section-head" style="margin-bottom:12px">
+        <div class="modal-title">应用配置 · docker-compose 重建</div>
+        <span id="apply-running" style="font-size:12px;color:var(--text-3)">执行中…</span>
+      </div>
+      <pre id="apply-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--mono);max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+      <div style="margin-top:12px;display:flex;justify-content:flex-end">
+        <button id="apply-done-btn" class="btn primary" style="display:none" onclick="closeApplyModal()">完成</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/vendor/drawflow.min.js"></script>
   <script src="/static/vendor/xterm/xterm.js"></script>
   <script src="/static/vendor/xterm/addon-fit.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/utils.js?v=20260526a"></script>
   <script src="/static/js/renderer.js?v=20260526a"></script>
-  <script src="/static/js/state.js?v=20260526a"></script>
+  <script src="/static/js/state.js?v=20260527"></script>
   <script src="/static/js/chat.js?v=20260526a"></script>
   <script src="/static/js/terminal.js?v=20260521"></script>
   <script src="/static/js/nav.js?v=20260526a"></script>
   <script src="/static/js/tasks.js?v=20260521"></script>
-  <script src="/static/js/projects.js?v=20260525-auth"></script>
-  <script src="/static/js/accounts.js?v=20260525"></script>
+  <script src="/static/js/projects.js?v=20260527b"></script>
+  <script src="/static/js/accounts.js?v=20260527e"></script>
   <script src="/static/js/submit.js?v=20260521"></script>
   <script src="/static/js/log.js?v=20260525-auth"></script>
-  <script src="/static/js/workflows.js?v=20260523b"></script>
+  <script src="/static/js/workflows.js?v=20260527"></script>
   <script src="/static/js/app.js?v=20260526a"></script>
   <script>
     if ('serviceWorker' in navigator) {
