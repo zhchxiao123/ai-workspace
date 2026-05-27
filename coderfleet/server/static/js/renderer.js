@@ -31,6 +31,7 @@ class ChatLogRenderer {
     this._grokTextBuf = '';
     this._grokThoughtContentEl = null;  // live-update target inside thought bubble
     this._grokTextContentEl = null;     // live-update target inside AI bubble
+    this._grokRafPending = false;       // requestAnimationFrame 节流标志
   }
 
   _ensureProcessWrapper() {
@@ -132,6 +133,7 @@ class ChatLogRenderer {
     this._grokTextBuf = '';
     this._grokThoughtContentEl = null;
     this._grokTextContentEl = null;
+    this._grokRafPending = false;
 
     const lines = text.split('\n');
     let state = 'before';   // before | header | body | footer
@@ -733,19 +735,9 @@ class ChatLogRenderer {
     try { d = JSON.parse(line); } catch { return; }
 
     switch (d.type) {
-      case 'thought':
-        this._grokStreamThought(d.data || '');
-        break;
-      case 'text':
-        // 第一个 text token 到来时：思考阶段结束，用 markdown 最终渲染
-        if (this._grokThoughtBuf && !this._grokTextBuf) {
-          this._grokFinalizeThought();
-        }
-        this._grokStreamText(d.data || '');
-        break;
-      case 'end':
-        this._grokEnd(d);
-        break;
+      case 'thought': this._grokStreamThought(d.data || ''); break;
+      case 'text':    this._grokStreamText(d.data || '');    break;
+      case 'end':     this._grokEnd(d);                       break;
       // 其他未知 type：静默忽略（不显示红色原始行）
     }
   }
@@ -764,14 +756,7 @@ class ChatLogRenderer {
       this._appendNode(el);
       this._grokThoughtContentEl = el.querySelector(`#grok-thought-${this.idPrefix}`);
     }
-    // 流式阶段用 textContent（快且安全），结束时再 markdown 渲染
-    this._grokThoughtContentEl.textContent = this._grokThoughtBuf;
-  }
-
-  _grokFinalizeThought() {
-    if (this._grokThoughtContentEl && this._grokThoughtBuf) {
-      this._grokThoughtContentEl.innerHTML = renderMd(this._grokThoughtBuf);
-    }
+    this._grokScheduleRender();
   }
 
   _grokStreamText(token) {
@@ -794,7 +779,6 @@ class ChatLogRenderer {
       btn.addEventListener('click', () => {
         copyTextToClipboard(this._grokTextBuf, btn);
       });
-      // 保持 lastBubbleEl 逻辑：把上一条 AI 回复移入 process 区
       if (this.lastBubbleEl) {
         if (this.foldProcess) {
           this._appendToProcess(this.lastBubbleEl);
@@ -806,15 +790,33 @@ class ChatLogRenderer {
       this.lastBubbleEl = el;
       this._grokTextContentEl = el.querySelector(`#grok-text-${this.idPrefix}`);
     }
-    this._grokTextContentEl.textContent = this._grokTextBuf;
+    this._grokScheduleRender();
   }
 
-  _grokEnd(d) {
-    // 用 markdown 最终渲染两个缓冲区
-    this._grokFinalizeThought();
+  // 用 requestAnimationFrame 节流：每帧最多渲染一次，token 流再快也能实时显示 markdown
+  _grokScheduleRender() {
+    if (this._grokRafPending) return;
+    this._grokRafPending = true;
+    requestAnimationFrame(() => {
+      this._grokRafPending = false;
+      this._grokDoRender();
+    });
+  }
+
+  // 同步立即渲染（用于 end 事件确保最终状态正确）
+  _grokDoRender() {
+    if (this._grokThoughtContentEl && this._grokThoughtBuf) {
+      this._grokThoughtContentEl.innerHTML = renderMd(this._grokThoughtBuf);
+    }
     if (this._grokTextContentEl && this._grokTextBuf) {
       this._grokTextContentEl.innerHTML = renderMd(this._grokTextBuf);
     }
+  }
+
+  _grokEnd(d) {
+    // end 事件：同步执行最终渲染，确保不依赖待处理的 RAF
+    this._grokRafPending = false;
+    this._grokDoRender();
 
     // 用量 / 会话信息行
     const items = [];
