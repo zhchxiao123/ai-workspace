@@ -277,10 +277,56 @@ def test_mobile_project_history_collapses_after_five_items_and_sorts_newest_firs
     assert "expandedProjects" in source
     assert "collapsedProjects" in source
     assert "list.slice(0, PROJECT_VISIBLE_LIMIT)" in source
-    assert ".sort((a, b) => convTimeValue(b) - convTimeValue(a))" in source
+    assert "function projectDevItems" in source
+    assert "return [...convItems, ...oneOffItems].sort((a, b) => b.time - a.time)" in source
     assert "function toggleProjectGroup" in source
     assert "function toggleProjectItems" in source
     assert "展开显示" in source
+
+
+def test_mobile_development_controls_cover_task_lifecycle() -> None:
+    source = read_mobile()
+
+    assert 'id="auto-mode"' in source
+    assert 'id="schedule-mode"' in source
+    assert 'id="schedule-time"' in source
+    assert "function currentScheduleTime" in source
+    assert "execute_at: executeAt" in source
+    assert "function taskActionsHtml" in source
+    assert "function killMobileTask" in source
+    assert "function retryMobileTask" in source
+    assert "取消排队" in source
+    assert "取消定时" in source
+    assert "重试" in source
+
+
+def test_mobile_shows_one_off_tasks_and_can_upgrade_to_conversation() -> None:
+    source = read_mobile()
+
+    assert "type: 'one-off'" in source
+    assert "function oneOffRow" in source
+    assert "function openOneOff" in source
+    assert "isOneOff: true" in source
+    assert "function upgradeOneOffToConversation" in source
+    assert "task_id: taskId" in source
+    assert "一次性任务" in source
+
+
+def test_mobile_conversation_actions_and_terminal_entry_exist() -> None:
+    source = read_mobile()
+
+    assert 'id="action-sheet"' in source
+    assert "function showItemActions" in source
+    assert "function archiveActionTarget" in source
+    assert "function deleteActionTarget" in source
+    assert "归档" in source
+    assert 'id="v-terminal"' in source
+    assert 'id="mobile-terminal"' in source
+    assert "/static/vendor/xterm/xterm.js" in source
+    assert "function openMobileTerminal" in source
+    assert "function connectMobileTerminal" in source
+    assert "function sendTerminalKey" in source
+    assert "/api/projects/${encodeURIComponent(projectName)}/terminal" in source
 
 
 def test_mobile_shell_uses_dynamic_viewport_height() -> None:
@@ -324,6 +370,17 @@ def test_mobile_chat_supports_image_uploads_and_attachments() -> None:
     assert "user-image-attachments" in source
     assert "请查看附件图片。" in source
     assert "shared/image-upload.js" in source  # 移动端已引入共享
+
+
+def test_mobile_running_chat_hydrates_history_before_streaming() -> None:
+    source = read_mobile()
+
+    assert "existing.dataset.status !== (task.status || '')" in source
+    assert "existing.replaceWith(replacement)" in source
+    assert "const txt = await fetch(`/api/tasks/${id}/logs`).then(r => r.ok ? r.text() : '')" in source
+    assert "skipBytes = new TextEncoder().encode(txt).byteLength" in source
+    assert "skip_bytes=${skipBytes}" in source
+    assert "logs/stream?${qs}" in source
 
 
 def test_site_uses_generated_logo_for_page_and_browser_icons() -> None:

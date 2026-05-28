@@ -13,6 +13,7 @@
   <link rel="apple-touch-icon" href="/static/icons/logo-mark.png">
   <link rel="manifest" href="/static/manifest.json">
   <link rel="stylesheet" href="/static/css/renderer.css">
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -152,6 +153,13 @@
       -webkit-tap-highlight-color: transparent;
     }
     .proj-new-btn:active { background: var(--surface); }
+    .proj-term-btn {
+      background: none; border: none; color: var(--text3);
+      font: 700 12px var(--mono);
+      padding: 5px 7px; border-radius: 6px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .proj-term-btn:active { background: var(--surface); color: var(--accent); }
     .proj-empty,
     .proj-more {
       margin-left: 16px;
@@ -177,6 +185,18 @@
       cursor: pointer; -webkit-tap-highlight-color: transparent;
     }
     .conv-row:active { background: var(--surface); }
+    .row-action {
+      width: 32px; height: 32px;
+      border: 0; border-radius: 50%;
+      background: transparent;
+      color: var(--text3);
+      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; line-height: 1;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .row-action:active { background: var(--surface2); color: var(--accent); }
     .avatar {
       width: 44px; height: 44px; border-radius: 50%;
       background: var(--accent-bg); color: var(--accent);
@@ -200,6 +220,11 @@
       flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
       padding: 14px 14px 8px;
       display: flex; flex-direction: column; gap: 22px;
+    }
+    /* 顶部弹性占位：消息少时把消息推到底部（类 iMessage 布局） */
+    .chat-top-spacer {
+      flex: 1 1 0;
+      min-height: 0;
     }
     .empty-hint {
       flex: 1;
@@ -308,6 +333,66 @@
     }
     .input-bar textarea:focus { border-color: var(--accent-dk); }
     .input-bar textarea::placeholder { color: var(--text3); }
+    .compose-options {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 0 2px;
+      color: var(--text3);
+      font-size: 12px;
+    }
+    .compose-option {
+      display: inline-flex; align-items: center; gap: 5px;
+      min-height: 28px;
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface2);
+      color: var(--text2);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .compose-option input[type="checkbox"] {
+      width: 15px; height: 15px;
+      accent-color: var(--accent-dk);
+    }
+    .compose-time {
+      min-height: 28px;
+      max-width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface2);
+      color: var(--text);
+      font: 12px system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+      padding: 3px 8px;
+      outline: none;
+    }
+    .task-actions {
+      display: flex; align-items: center; justify-content: flex-start;
+      flex-wrap: wrap; gap: 8px;
+      margin: -2px 0 6px;
+      padding-left: 2px;
+    }
+    .task-action-btn {
+      border: 1px solid var(--border-md);
+      background: var(--surface2);
+      color: var(--text2);
+      min-height: 30px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .task-action-btn:active { border-color: var(--accent-dk); color: var(--accent); }
+    .task-action-btn.danger {
+      color: #fca5a5;
+      border-color: rgba(248,113,113,.35);
+      background: rgba(220,38,38,.12);
+    }
+    .task-state-note {
+      color: var(--text3);
+      font-size: 12px;
+      line-height: 30px;
+    }
     .btn-send {
       width: 40px; height: 40px; border-radius: 50%;
       background: var(--accent-dk); border: none; color: #fff;
@@ -349,6 +434,36 @@
       color: var(--text3);
       font-size: 12px;
     }
+    .terminal-body {
+      flex: 1;
+      display: flex; flex-direction: column;
+      min-height: 0;
+      padding: 10px;
+      gap: 8px;
+    }
+    .mobile-terminal-mount {
+      flex: 1;
+      min-height: 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #020617;
+      overflow: hidden;
+      padding: 6px;
+    }
+    .terminal-keys {
+      display: flex; flex-wrap: wrap; gap: 7px;
+      flex-shrink: 0;
+    }
+    .terminal-key {
+      min-width: 44px;
+      min-height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface2);
+      color: var(--text2);
+      font: 700 12px var(--mono);
+    }
+    .terminal-key.primary { color: var(--accent); border-color: rgba(45,212,191,.32); }
 
     /* ── Bottom sheet ───────────────────────────────────── */
     .backdrop {
@@ -397,6 +512,26 @@
       cursor: pointer; -webkit-tap-highlight-color: transparent;
     }
     .sheet-row:active { background: var(--surface2); }
+    .sheet-actions {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 8px 16px calc(var(--sb) + 18px);
+    }
+    .sheet-action-btn {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 650;
+      text-align: center;
+    }
+    .sheet-action-btn.danger {
+      color: #fca5a5;
+      border-color: rgba(248,113,113,.3);
+      background: rgba(220,38,38,.12);
+    }
     .sheet-icon {
       width: 38px; height: 38px; border-radius: 9px;
       background: var(--accent-bg); color: var(--accent);
@@ -450,6 +585,7 @@
   </div>
 
   <div class="chat-body" id="chat-body">
+    <div class="chat-top-spacer" id="chat-top-spacer" style="display:none"></div>
     <div class="empty-hint" id="chat-empty">
       <div class="ei">🤖</div>
       <div>发送消息，开始对话</div>
@@ -475,7 +611,50 @@
         </svg>
       </button>
     </div>
+    <div class="compose-options">
+      <label class="compose-option">
+        <input type="checkbox" id="auto-mode" checked>
+        <span>自动</span>
+      </label>
+      <label class="compose-option">
+        <input type="checkbox" id="schedule-mode" onchange="toggleScheduleInput(this.checked)">
+        <span>定时</span>
+      </label>
+      <input class="compose-time" id="schedule-time" type="datetime-local" style="display:none">
+    </div>
     <div class="upload-status" id="upload-status"></div>
+  </div>
+</div>
+
+<div class="view slide-out" id="v-terminal">
+  <div class="hdr">
+    <button class="icon-btn" onclick="backFromTerminal()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path d="M15 6l-6 6 6 6"/>
+      </svg>
+    </button>
+    <div style="flex:1;min-width:0">
+      <div class="hdr-title" id="term-ttl">终端</div>
+      <div class="hdr-sub" id="term-sub">未连接</div>
+    </div>
+    <button class="icon-btn" onclick="connectMobileTerminal()" title="重新连接">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path d="M23 4v6h-6"/>
+        <path d="M1 20v-6h6"/>
+        <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+      </svg>
+    </button>
+  </div>
+  <div class="terminal-body">
+    <div class="mobile-terminal-mount" id="mobile-terminal"></div>
+    <div class="terminal-keys">
+      <button class="terminal-key" onclick="sendTerminalKey('\u0003')">Ctrl-C</button>
+      <button class="terminal-key" onclick="sendTerminalKey('\t')">Tab</button>
+      <button class="terminal-key" onclick="sendTerminalKey('\u001b')">Esc</button>
+      <button class="terminal-key" onclick="sendTerminalKey('\u001b[A')">Up</button>
+      <button class="terminal-key" onclick="sendTerminalKey('\u001b[B')">Down</button>
+      <button class="terminal-key primary" onclick="fitMobileTerminal()">Fit</button>
+    </div>
   </div>
 </div>
 
@@ -492,11 +671,25 @@
   </div>
 </div>
 
+<div class="backdrop" id="action-sheet" onclick="closeActionSheet()">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <div class="sheet-ttl" id="action-sheet-title">操作</div>
+    <div class="sheet-actions">
+      <button class="sheet-action-btn" id="action-archive-btn" onclick="archiveActionTarget()">归档</button>
+      <button class="sheet-action-btn danger" id="action-delete-btn" onclick="deleteActionTarget()">删除</button>
+      <button class="sheet-action-btn" onclick="closeActionSheet()">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- 依赖脚本必须在主逻辑 script 之前加载（移动端 giant inline script 在此之后），否则 renderPendingPreviews 等共享函数未定义会导致发送/上传时崩溃 -->
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/js/utils.js?v=20260525-auth"></script>
 <script src="/static/js/shared/project-utils.js?v=20260527-shared"></script>
 <script src="/static/js/shared/image-upload.js?v=20260528-imagefix"></script>
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/addon-fit.js"></script>
 <script src="/static/js/renderer.js"></script>
 
 <script>
@@ -513,6 +706,14 @@ const collapsedProjects = new Set();
 let stableAppHeight = 0;
 let pendingImages = [];
 let uploadingImages = 0;
+let actionTarget = null;
+let mobileTerminal = {
+  projectName: '',
+  socket: null,
+  terminal: null,
+  fitAddon: null,
+  connected: false,
+};
 
 function setViewportVars() {
   const vv = window.visualViewport;
@@ -542,9 +743,12 @@ function setViewportVars() {
 
 setViewportVars();
 window.addEventListener('resize', setViewportVars);
+window.addEventListener('resize', fitMobileTerminal);
+window.addEventListener('beforeunload', () => disconnectMobileTerminal(false));
 window.addEventListener('orientationchange', () => {
   stableAppHeight = 0;
   setTimeout(setViewportVars, 80);
+  setTimeout(fitMobileTerminal, 160);
 });
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', setViewportVars);
@@ -612,9 +816,7 @@ function renderList() {
   }
 
   el.innerHTML = projects.map(proj => {
-    const list = convs
-      .filter(c => (window.conversationBelongsToProject || conversationBelongsToProject)(c, proj))
-      .sort((a, b) => convTimeValue(b) - convTimeValue(a));
+    const list = projectDevItems(proj);
     const isCollapsed = collapsedProjects.has(proj.name);
     const isExpanded = expandedProjects.has(proj.name);
     const visible = isExpanded ? list : list.slice(0, PROJECT_VISIBLE_LIMIT);
@@ -624,7 +826,7 @@ function renderList() {
     const body = isCollapsed
       ? ''
       : list.length
-        ? `${visible.map(c => convRow(c)).join('')}${hiddenCount ? `
+        ? `${visible.map(item => devItemRow(item)).join('')}${hiddenCount ? `
       <button class="proj-more" onclick="event.stopPropagation();toggleProjectItems('${encodedName}')">
         ${isExpanded ? '收起' : `展开显示 ${hiddenCount} 个`}
       </button>` : ''}`
@@ -635,6 +837,8 @@ function renderList() {
           <span class="proj-toggle">${isCollapsed ? '+' : '-'}</span>
           <span>${x(proj.name)}</span>
         </div>
+        <button class="proj-term-btn" title="打开终端"
+          onclick="event.stopPropagation();openMobileTerminal('${encodedName}')">&gt;_</button>
         <button class="proj-new-btn" title="新建对话"
           onclick="event.stopPropagation();startNew(${projJson})">+</button>
       </div>
@@ -643,9 +847,33 @@ function renderList() {
   }).join('');
 }
 
+function projectDevItems(proj) {
+  const convItems = convs
+    .filter(c => (window.conversationBelongsToProject || conversationBelongsToProject)(c, proj))
+    .map(c => ({
+      type: 'conversation',
+      id: c.id,
+      time: convTimeValue(c),
+      data: c,
+    }));
+  const oneOffItems = tasks
+    .filter(t => !t.conversation_id && (window.taskBelongsToProject || taskBelongsToProject)(t, proj))
+    .map(t => ({
+      type: 'one-off',
+      id: `task-${t.id}`,
+      time: new Date(t.created || 0).getTime() || 0,
+      data: t,
+    }));
+  return [...convItems, ...oneOffItems].sort((a, b) => b.time - a.time);
+}
+
+function devItemRow(item) {
+  return item.type === 'one-off' ? oneOffRow(item.data) : convRow(item.data);
+}
+
 function convRow(c) {
   const ct = tasks
-    .filter(t => t.conversation_id === c.id)
+    .filter(t => t.conversation_id === c.id || (c.last_task_id && t.id === c.last_task_id))
     .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
   const latest = ct[0];
   const st = latest?.status ?? 'done';
@@ -661,6 +889,25 @@ function convRow(c) {
       <div class="conv-meta">${x(relTime(c.updated))}${ct.length ? ` · ${ct.length} 条` : ''}</div>
     </div>
     ${badge}
+    <button class="row-action" title="更多操作" onclick="event.stopPropagation();showItemActions('conversation','${x(c.id)}')">...</button>
+  </div>`;
+}
+
+function oneOffRow(task) {
+  const st = task.status ?? 'done';
+  const isRun  = ['running','pending','scheduled'].includes(st);
+  const isFail = ['failed','killed'].includes(st);
+  const badge  = isRun  ? `<span class="pill pill-run">${x(mobileTaskStatusLabel(st))}</span>`
+               : isFail ? `<span class="pill pill-fail">${x(mobileTaskStatusLabel(st))}</span>`
+               : '';
+  return `<div class="conv-row" onclick="openOneOff('${task.id}')">
+    <div class="avatar">${x((task.prompt || '?')[0]?.toUpperCase() ?? '?')}</div>
+    <div class="conv-info">
+      <div class="conv-name">${x(task.prompt || task.id)}</div>
+      <div class="conv-meta">${x(relTime(task.created))} · 一次性任务</div>
+    </div>
+    ${badge}
+    <button class="row-action" title="更多操作" onclick="event.stopPropagation();showItemActions('one-off','${x(task.id)}')">...</button>
   </div>`;
 }
 
@@ -697,20 +944,53 @@ function openConv(id) {
   syncMessages(true);
 }
 
+function openOneOff(id) {
+  const task = tasks.find(t => t.id === id) || null;
+  if (!task) return;
+  activeConv = {
+    id: `task-${task.id}`,
+    name: task.prompt,
+    project: task.project,
+    project_name: task.project_name,
+    account: task.account,
+    isOneOff: true,
+  };
+  pendingProj = null;
+
+  document.getElementById('chat-ttl').textContent = task.prompt;
+  document.getElementById('chat-sub').textContent = task.project_name || task.project || '一次性任务';
+  showChat();
+  syncMessages(true);
+}
+
 // ── Bubble rendering ──────────────────────────────────────
 function syncMessages(scrollEnd) {
-  const body  = document.getElementById('chat-body');
-  const empty = document.getElementById('chat-empty');
+  const body   = document.getElementById('chat-body');
+  const empty  = document.getElementById('chat-empty');
+  const spacer = document.getElementById('chat-top-spacer');
   const ct    = tasks
-    .filter(t => t.conversation_id === activeConv?.id)
+    .filter(t => activeConv?.isOneOff
+      ? `task-${t.id}` === activeConv.id
+      : t.conversation_id === activeConv?.id || (activeConv?.last_task_id && t.id === activeConv.last_task_id))
     .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
 
-  if (!ct.length) { empty.style.display = 'flex'; return; }
+  if (!ct.length) {
+    body.querySelectorAll('.msg-pair').forEach(el => el.remove());
+    empty.style.display = 'flex';
+    if (spacer) spacer.style.display = 'none';
+    return;
+  }
   empty.style.display = 'none';
+  if (spacer) spacer.style.display = '';
 
   ct.forEach(task => {
-    if (!document.getElementById(`mp-${task.id}`)) {
+    const existing = document.getElementById(`mp-${task.id}`);
+    if (!existing) {
       body.appendChild(makeMsgPair(task));
+      loadAiContent(task);
+    } else if (existing.dataset.status !== (task.status || '')) {
+      const replacement = makeMsgPair(task);
+      existing.replaceWith(replacement);
       loadAiContent(task);
     }
   });
@@ -726,6 +1006,7 @@ function makeMsgPair(task) {
   const div = document.createElement('div');
   div.className = 'msg-pair';
   div.id = `mp-${task.id}`;
+  div.dataset.status = task.status || '';
   div.innerHTML = `
     <div class="msg-user">
       <div class="user-msg-stack">
@@ -741,6 +1022,7 @@ function makeMsgPair(task) {
         <span>正在执行…</span>
       </div>
     </div>
+    ${taskActionsHtml(task)}
   `;
   return div;
 }
@@ -750,24 +1032,46 @@ async function loadAiContent(task) {
   if (!wrap) return;
 
   if (task.status === 'running') {
-    streamAiContent(task.id, wrap);
+    streamAiContent(task, wrap);
     return;
   }
-  if (['pending', 'scheduled'].includes(task.status)) return;
+  if (task.status === 'pending') {
+    const renderer = new ChatLogRenderer(wrap, false, true);
+    renderer.renderPending();
+    return;
+  }
+  if (task.status === 'scheduled') {
+    const renderer = new ChatLogRenderer(wrap, false, true);
+    renderer.renderScheduled(task.execute_at);
+    return;
+  }
 
   try {
     const txt = await fetch(`/api/tasks/${task.id}/logs`).then(r => r.text());
     const renderer = new ChatLogRenderer(wrap, false, true);
-    renderer.render(stripAnsi(txt));
+    renderer.render(stripAnsi(txt), task.type);
   } catch { wrap.textContent = '加载失败'; }
 }
 
-function streamAiContent(id, wrap) {
+async function streamAiContent(task, wrap) {
+  const id = task.id;
   if (liveStream) { liveStream.close(); liveStream = null; }
   const renderer = new ChatLogRenderer(wrap, true, true);
-  renderer.renderPending();
+  let skipBytes = 0;
+  try {
+    const txt = await fetch(`/api/tasks/${id}/logs`).then(r => r.ok ? r.text() : '');
+    skipBytes = new TextEncoder().encode(txt).byteLength;
+    if (txt.trim()) {
+      renderer.render(stripAnsi(txt), task.type);
+    } else {
+      renderer.renderPending();
+    }
+  } catch {
+    renderer.renderPending();
+  }
   const body = document.getElementById('chat-body');
-  const es = new EventSource(sseUrl(`/api/tasks/${id}/logs/stream?tail=0`));
+  const qs = skipBytes > 0 ? `skip_bytes=${skipBytes}` : 'tail=0';
+  const es = new EventSource(sseUrl(`/api/tasks/${id}/logs/stream?${qs}`));
   es.taskId = id;
   liveStream = es;
   es.onmessage = e => {
@@ -796,18 +1100,25 @@ async function send() {
   btn.disabled = true;
   ta.value = '';
   ta.style.height = '';
+  const autoMode = document.getElementById('auto-mode')?.checked ?? true;
+  const executeAt = currentScheduleTime();
 
   try {
     let body;
     if (activeConv) {
+      let conversationId = activeConv.id;
+      if (activeConv.isOneOff) {
+        conversationId = await upgradeOneOffToConversation(activeConv);
+      }
       body = {
         prompt,
         project:      activeConv.project,
         project_name: activeConv.project_name,
         account:      activeConv.account,
-        conversation_id: activeConv.id,
-        auto: true,
+        conversation_id: conversationId,
+        auto: autoMode,
         images: pendingImages.map(i => i.container_path),
+        execute_at: executeAt,
       };
     } else if (pendingProj) {
       const name = prompt.slice(0, 28) + (prompt.length > 28 ? '…' : '');
@@ -817,8 +1128,9 @@ async function send() {
         project_name:      pendingProj.name,
         account:           pendingProj.account,
         conversation_name: name,
-        auto: true,
+        auto: autoMode,
         images: pendingImages.map(i => i.container_path),
+        execute_at: executeAt,
       };
     } else { return; }
 
@@ -831,6 +1143,7 @@ async function send() {
       const c = document.getElementById('image-previews');
       if (c) { c.style.display = 'none'; c.innerHTML = ''; }
     }
+    resetScheduleControls();
 
     // If new chat, attach to the created conversation
     if (!activeConv && task.conversation_id) {
@@ -846,6 +1159,117 @@ async function send() {
   } catch (err) {
     alert('发送失败：' + (err.message || err));
     updateSendState();
+  }
+}
+
+async function upgradeOneOffToConversation(conv) {
+  const taskId = String(conv.id || '').replace(/^task-/, '');
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) throw new Error('未找到一次性任务，无法升级任务链');
+  const res = await api('/api/conversations', {
+    method: 'POST',
+    body: {
+      name: task.prompt.slice(0, 20) + (task.prompt.length > 20 ? '…' : ''),
+      task_id: taskId,
+    },
+  });
+  convs = await api('/api/conversations').catch(() => convs);
+  activeConv = convs.find(c => c.id === res.id) || res;
+  document.getElementById('chat-ttl').textContent = activeConv.name;
+  document.getElementById('chat-sub').textContent = activeConv.project_name || activeConv.project || '';
+  return res.id;
+}
+
+function currentScheduleTime() {
+  const enabled = document.getElementById('schedule-mode')?.checked;
+  const input = document.getElementById('schedule-time');
+  if (!enabled || !input?.value) return null;
+  return input.value.includes(':') && input.value.split(':').length === 2
+    ? `${input.value}:00`
+    : input.value;
+}
+
+function toggleScheduleInput(checked) {
+  const input = document.getElementById('schedule-time');
+  if (!input) return;
+  input.style.display = checked ? '' : 'none';
+  if (checked && !input.value) input.focus();
+}
+
+function resetScheduleControls() {
+  const enabled = document.getElementById('schedule-mode');
+  const input = document.getElementById('schedule-time');
+  if (enabled) enabled.checked = false;
+  if (input) {
+    input.value = '';
+    input.style.display = 'none';
+  }
+}
+
+function taskActionsHtml(task) {
+  const status = task.status || '';
+  if (['running', 'pending', 'scheduled'].includes(status)) {
+    const label = status === 'running' ? '终止执行' : status === 'pending' ? '取消排队' : '取消定时';
+    return `<div class="task-actions">
+      <button class="task-action-btn danger" onclick="event.stopPropagation();killMobileTask('${x(task.id)}')">${label}</button>
+      <span class="task-state-note">${x(mobileTaskStatusLabel(status))}</span>
+    </div>`;
+  }
+  if (['failed', 'killed'].includes(status)) {
+    return `<div class="task-actions">
+      <button class="task-action-btn" onclick="event.stopPropagation();retryMobileTask('${x(task.id)}')">重试</button>
+      <span class="task-state-note">${x(mobileTaskStatusLabel(status))}</span>
+    </div>`;
+  }
+  return '';
+}
+
+function mobileTaskStatusLabel(status) {
+  return {
+    running: '运行中',
+    pending: '排队中',
+    scheduled: '已定时',
+    done: '完成',
+    failed: '失败',
+    killed: '已终止',
+  }[status] || status;
+}
+
+async function killMobileTask(taskId) {
+  if (!confirm('确认终止这个任务？')) return;
+  try {
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error(await r.text());
+    await bgRefresh();
+    if (activeConv) syncMessages(false);
+  } catch (err) {
+    alert('终止失败：' + (err.message || err));
+  }
+}
+
+async function retryMobileTask(taskId) {
+  const task = tasks.find(t => t.id === taskId);
+  if (!task) return;
+  try {
+    const body = task.conversation_id ? {
+      prompt: task.prompt,
+      conversation_id: task.conversation_id,
+      auto: task.auto,
+      images: task.images || [],
+    } : {
+      prompt: task.prompt,
+      project: task.project,
+      project_name: task.project_name,
+      account: task.account,
+      auto: task.auto,
+      images: task.images || [],
+    };
+    const next = await api('/api/tasks', { method: 'POST', body });
+    tasks.unshift(next);
+    await bgRefresh();
+    if (activeConv) syncMessages(true);
+  } catch (err) {
+    alert('重试失败：' + (err.message || err));
   }
 }
 
@@ -1011,12 +1435,73 @@ function startNew(proj) {
   document.getElementById('chat-sub').textContent = proj.name;
   document.getElementById('chat-body').querySelectorAll('.msg-pair').forEach(el => el.remove());
   document.getElementById('chat-empty').style.display = 'flex';
+  const spacer = document.getElementById('chat-top-spacer');
+  if (spacer) spacer.style.display = 'none';
   showChat();
   document.getElementById('ta').focus();
 }
 
 function closeSheet() {
   document.getElementById('proj-sheet').classList.remove('open');
+}
+
+function showItemActions(type, id) {
+  actionTarget = { type, id };
+  const title = document.getElementById('action-sheet-title');
+  if (title) title.textContent = type === 'one-off' ? '一次性任务操作' : '对话操作';
+  document.getElementById('action-sheet').classList.add('open');
+}
+
+function closeActionSheet() {
+  document.getElementById('action-sheet').classList.remove('open');
+  actionTarget = null;
+}
+
+async function archiveActionTarget() {
+  if (!actionTarget) return;
+  const { type, id } = actionTarget;
+  try {
+    if (type === 'conversation') {
+      await api(`/api/conversations/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: { status: 'archived' },
+      });
+      if (activeConv?.id === id) backToList();
+    } else {
+      await api(`/api/tasks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: { archived: true },
+      });
+      if (activeConv?.id === `task-${id}`) backToList();
+    }
+    closeActionSheet();
+    await refresh();
+  } catch (err) {
+    alert('归档失败：' + (err.message || err));
+  }
+}
+
+async function deleteActionTarget() {
+  if (!actionTarget) return;
+  const { type, id } = actionTarget;
+  const msg = type === 'one-off'
+    ? '确认永久删除这个一次性任务？日志也会被删除。'
+    : '确认永久删除这个对话？任务记录会保留。';
+  if (!confirm(msg)) return;
+  try {
+    const url = type === 'one-off'
+      ? `/api/tasks/${encodeURIComponent(id)}/record`
+      : `/api/conversations/${encodeURIComponent(id)}`;
+    const r = await fetch(url, { method: 'DELETE' });
+    if (!r.ok && r.status !== 204) throw new Error(await r.text());
+    if ((type === 'conversation' && activeConv?.id === id) || (type === 'one-off' && activeConv?.id === `task-${id}`)) {
+      backToList();
+    }
+    closeActionSheet();
+    await refresh();
+  } catch (err) {
+    alert('删除失败：' + (err.message || err));
+  }
 }
 
 // ── Navigation ────────────────────────────────────────────
@@ -1028,6 +1513,111 @@ function backToList() {
   if (liveStream) { liveStream.close(); liveStream = null; }
   document.getElementById('v-chat').classList.add('slide-out');
   renderList();
+}
+
+function openMobileTerminal(encodedProjectName) {
+  const projectName = decodeURIComponent(encodedProjectName);
+  mobileTerminal.projectName = projectName;
+  document.getElementById('term-ttl').textContent = `终端 · ${projectName}`;
+  document.getElementById('term-sub').textContent = '连接中...';
+  document.getElementById('v-terminal').classList.remove('slide-out');
+  connectMobileTerminal();
+}
+
+function backFromTerminal() {
+  document.getElementById('v-terminal').classList.add('slide-out');
+  disconnectMobileTerminal();
+}
+
+function ensureMobileTerminal() {
+  const mount = document.getElementById('mobile-terminal');
+  if (!mount || !window.Terminal || !window.FitAddon) return false;
+  if (mobileTerminal.terminal && mount.childElementCount) return true;
+  mount.innerHTML = '';
+  mobileTerminal.fitAddon = new window.FitAddon.FitAddon();
+  mobileTerminal.terminal = new window.Terminal({
+    cursorBlink: true,
+    fontSize: 12,
+    fontFamily: 'SF Mono, Menlo, monospace',
+    theme: { background: '#020617', foreground: '#e5edf2', cursor: '#2dd4bf' },
+    scrollback: 1500,
+  });
+  mobileTerminal.terminal.loadAddon(mobileTerminal.fitAddon);
+  mobileTerminal.terminal.open(mount);
+  mobileTerminal.terminal.onData(data => sendTerminalKey(data));
+  setTimeout(fitMobileTerminal, 60);
+  return true;
+}
+
+function terminalSocketUrl(projectName) {
+  return wsUrl(`/api/projects/${encodeURIComponent(projectName)}/terminal`);
+}
+
+function connectMobileTerminal() {
+  const projectName = mobileTerminal.projectName;
+  if (!projectName || !ensureMobileTerminal()) return;
+  disconnectMobileTerminal(false);
+  const term = mobileTerminal.terminal;
+  term.clear();
+  term.writeln(`Connecting to ${projectName}...`);
+  const socket = new WebSocket(terminalSocketUrl(projectName));
+  mobileTerminal.socket = socket;
+  socket.onopen = () => {
+    mobileTerminal.connected = true;
+    document.getElementById('term-sub').textContent = '已连接';
+    fitMobileTerminal();
+  };
+  socket.onmessage = event => {
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === 'output') term.write(String(message.data || ''));
+    if (message.type === 'status') {
+      document.getElementById('term-sub').textContent = message.message || message.state || '';
+      if (message.state === 'error') term.writeln(`\r\n${message.message || '连接失败'}`);
+    }
+  };
+  socket.onclose = () => {
+    mobileTerminal.connected = false;
+    document.getElementById('term-sub').textContent = '已断开';
+  };
+  socket.onerror = () => {
+    mobileTerminal.connected = false;
+    document.getElementById('term-sub').textContent = '连接失败';
+  };
+}
+
+function sendTerminalKey(data) {
+  const socket = mobileTerminal.socket;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ type: 'input', data }));
+}
+
+function fitMobileTerminal() {
+  if (!mobileTerminal.terminal || !mobileTerminal.fitAddon) return;
+  try {
+    mobileTerminal.fitAddon.fit();
+    const socket = mobileTerminal.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'resize',
+        cols: mobileTerminal.terminal.cols,
+        rows: mobileTerminal.terminal.rows,
+      }));
+    }
+  } catch {}
+}
+
+function disconnectMobileTerminal(dispose = true) {
+  const socket = mobileTerminal.socket;
+  mobileTerminal.socket = null;
+  mobileTerminal.connected = false;
+  if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
+  if (dispose && mobileTerminal.terminal) {
+    mobileTerminal.terminal.dispose();
+    mobileTerminal.terminal = null;
+    mobileTerminal.fitAddon = null;
+    document.getElementById('mobile-terminal').innerHTML = '';
+  }
 }
 
 function isListVisible() {
