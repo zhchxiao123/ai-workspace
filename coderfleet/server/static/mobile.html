@@ -542,6 +542,21 @@
     .sheet-name { font-size: 15px; font-weight: 500; }
     .sheet-sub  { font-size: 12px; color: var(--text3); margin-top: 2px; }
     #notif-btn.subscribed svg { stroke: var(--accent); fill: rgba(45,212,191,.15); }
+
+    /* ── Sort button ────────────────────────────────────── */
+    .mobile-sort-btn {
+      display: flex; align-items: center; gap: 4px;
+      background: none; border: 1px solid var(--border);
+      color: var(--text2);
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+      cursor: pointer; flex-shrink: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mobile-sort-btn:active { border-color: var(--accent-dk); color: var(--accent); }
+    .mobile-sort-btn svg { width: 13px; height: 13px; stroke-width: 2; }
+    .mobile-sort-btn.active { border-color: rgba(45,212,191,.45); color: var(--accent); }
   </style>
 </head>
 <body>
@@ -553,6 +568,14 @@
       <div class="hdr-title">CoderFleet</div>
       <div class="hdr-sub" id="health-lbl">连接中…</div>
     </div>
+    <button class="mobile-sort-btn" id="mobile-sort-btn" onclick="cycleMobileSort()" title="切换排序方式">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <line x1="21" y1="6" x2="3" y2="6"/>
+        <line x1="15" y1="12" x2="3" y2="12"/>
+        <line x1="9" y1="18" x2="3" y2="18"/>
+      </svg>
+      <span id="mobile-sort-label">默认</span>
+    </button>
     <button class="icon-btn" id="notif-btn" onclick="togglePushSubscription()" title="开启推送通知" style="display:none">
       <svg id="notif-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -704,6 +727,9 @@ const PROJECT_VISIBLE_LIMIT = 5;
 const expandedProjects = new Set();
 const collapsedProjects = new Set();
 let stableAppHeight = 0;
+let mobileSortOrder = localStorage.getItem('coderfleet.mobileSortOrder') || 'default';
+const MOBILE_SORT_CYCLE  = ['default', 'activity', 'name', 'running'];
+const MOBILE_SORT_LABELS = { default: '默认', activity: '活跃', name: '名称', running: '运行中' };
 let pendingImages = [];
 let uploadingImages = 0;
 let actionTarget = null;
@@ -757,6 +783,7 @@ if (window.visualViewport) {
 
 // ── Bootstrap（由 utils.js 加载后触发，见页尾 script）────
 async function initApp() {
+  _updateMobileSortLabel();
   await refresh();
   setInterval(checkHealth, 12000);
   setInterval(bgRefresh, 7000);
@@ -815,7 +842,26 @@ function renderList() {
     return;
   }
 
-  el.innerHTML = projects.map(proj => {
+  const belongsToConv  = window.conversationBelongsToProject || conversationBelongsToProject;
+  const belongsToTask  = window.taskBelongsToProject || taskBelongsToProject;
+  const sortedProjects = [...projects];
+  if (mobileSortOrder === 'name') {
+    sortedProjects.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (mobileSortOrder === 'activity') {
+    const latestTime = proj => {
+      const times = [
+        ...convs.filter(c => belongsToConv(c, proj)).map(c => new Date(c.updated || c.created || 0).getTime()),
+        ...tasks.filter(t => belongsToTask(t, proj)).map(t => new Date(t.created || 0).getTime()),
+      ];
+      return times.length ? Math.max(...times) : 0;
+    };
+    sortedProjects.sort((a, b) => latestTime(b) - latestTime(a));
+  } else if (mobileSortOrder === 'running') {
+    const runCount = proj => tasks.filter(t => belongsToTask(t, proj) && t.status === 'running').length;
+    sortedProjects.sort((a, b) => runCount(b) - runCount(a));
+  }
+
+  el.innerHTML = sortedProjects.map(proj => {
     const list = projectDevItems(proj);
     const isCollapsed = collapsedProjects.has(proj.name);
     const isExpanded = expandedProjects.has(proj.name);
@@ -916,6 +962,25 @@ function oneOffRow(task) {
 
 function convTimeValue(c) {
   return new Date(c.updated || c.created || 0).getTime() || 0;
+}
+
+// ── Sort controls ─────────────────────────────────────────
+function _updateMobileSortLabel() {
+  const label = document.getElementById('mobile-sort-label');
+  const btn   = document.getElementById('mobile-sort-btn');
+  const text  = MOBILE_SORT_LABELS[mobileSortOrder] || '默认';
+  if (label) label.textContent = text;
+  if (btn) btn.classList.toggle('active', mobileSortOrder !== 'default');
+  if (btn) btn.title = `切换排序（当前：${text}）`;
+}
+
+function cycleMobileSort() {
+  const idx  = MOBILE_SORT_CYCLE.indexOf(mobileSortOrder);
+  const next = MOBILE_SORT_CYCLE[(idx + 1) % MOBILE_SORT_CYCLE.length];
+  mobileSortOrder = next;
+  localStorage.setItem('coderfleet.mobileSortOrder', next);
+  _updateMobileSortLabel();
+  renderList();
 }
 
 function toggleProjectGroup(encodedName) {

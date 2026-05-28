@@ -498,6 +498,14 @@ class Scheduler:
         conv.save(self.conversations_dir)
         return conv
 
+    def rename_conversation(self, conversation_id: str, name: str) -> Conversation:
+        conv = self.get_conversation(conversation_id)
+        if conv is None:
+            raise ValueError(f"任务链 '{conversation_id}' 不存在")
+        conv.name = name.strip() or conv.name
+        conv.save(self.conversations_dir)
+        return conv
+
     def delete_conversation(self, conversation_id: str) -> None:
         path = self.conversations_dir / f"{conversation_id}.json"
         if not path.exists():

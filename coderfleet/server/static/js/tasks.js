@@ -18,6 +18,14 @@ async function refreshGlobalCaches() {
 }
 
 // ── 任务列表 ──────────────────────────────────────────────
+let taskSearchQuery = '';
+
+function handleTaskSearch(value) {
+  taskSearchQuery = value.trim().toLowerCase();
+  taskPage = 1;
+  renderTasks(taskRowsCache);
+}
+
 async function loadTasks(options = {}) {
   if (options.resetPage) taskPage = 1;
   const status = document.getElementById('filter-status').value;
@@ -38,7 +46,17 @@ async function loadTasks(options = {}) {
 
 function renderTasks(tasks) {
   const tbody = document.getElementById('task-tbody');
-  const rows = taskRowsCache.length || tasks.length ? taskRowsCache : tasks;
+  let rows = taskRowsCache.length || tasks.length ? taskRowsCache : tasks;
+  // 文本搜索过滤
+  if (taskSearchQuery) {
+    const q = taskSearchQuery;
+    rows = rows.filter(t =>
+      (t.prompt || '').toLowerCase().includes(q) ||
+      (t.project_name || '').toLowerCase().includes(q) ||
+      (t.project || '').toLowerCase().includes(q) ||
+      (t.account || '').toLowerCase().includes(q)
+    );
+  }
   const pageCount = Math.max(1, Math.ceil(rows.length / TASK_PAGE_SIZE));
   taskPage = Math.min(Math.max(taskPage, 1), pageCount);
   if (!rows.length) {

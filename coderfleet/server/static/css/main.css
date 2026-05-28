@@ -874,6 +874,8 @@
     }
 
     .terminal-card {
+      display: flex;
+      flex-direction: column;
       border: 1px solid var(--border);
       border-radius: var(--radius);
       background: var(--log-bg);
@@ -932,6 +934,148 @@
     .terminal-mount .xterm {
       height: 100%;
     }
+
+    /* ── 终端右键菜单 ──────────────────────────────────────── */
+    .term-ctx-menu {
+      position: fixed;
+      z-index: 99999;
+      background: var(--surface);
+      border: 1px solid var(--border-md);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+      min-width: 200px;
+      padding: 4px;
+      animation: ctxMenuIn 0.1s ease;
+    }
+
+    .term-ctx-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      border-radius: calc(var(--radius-lg) - 4px);
+      text-align: left;
+      gap: 16px;
+      transition: background 0.1s;
+    }
+
+    .term-ctx-item:hover:not(.disabled) {
+      background: var(--surface-2);
+    }
+
+    .term-ctx-item.disabled {
+      color: var(--text-3);
+      cursor: default;
+    }
+
+    .term-ctx-item kbd {
+      font-size: 11px;
+      color: var(--text-3);
+      font-family: inherit;
+      white-space: nowrap;
+    }
+
+    .term-ctx-sep {
+      height: 1px;
+      background: var(--border);
+      margin: 3px 8px;
+    }
+
+    /* ── 终端搜索栏 ────────────────────────────────────────── */
+    .term-search-bar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 8px;
+      background: #1e2d3d;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      flex-shrink: 0;
+    }
+
+    .term-search-icon {
+      color: rgba(255, 255, 255, 0.4);
+      flex-shrink: 0;
+    }
+
+    .term-search-input {
+      flex: 1;
+      min-width: 0;
+      padding: 3px 8px;
+      font-size: 13px;
+      font-family: var(--mono);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+      color: #e5e7eb;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .term-search-input:focus {
+      border-color: rgba(249, 115, 22, 0.6);
+    }
+
+    .term-search-input::placeholder {
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    .term-search-count {
+      font-size: 11px;
+      min-width: 40px;
+      color: rgba(255, 255, 255, 0.5);
+      white-space: nowrap;
+    }
+
+    .term-search-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.6);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.1s, color 0.1s;
+    }
+
+    .term-search-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .term-search-close {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.5);
+      cursor: pointer;
+      flex-shrink: 0;
+      margin-left: 2px;
+      transition: background 0.1s, color 0.1s;
+    }
+
+    .term-search-close:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
 
 
     /* ── 任务表格 ─────────────────────────────────────── */
@@ -1089,6 +1233,45 @@
     .filter-bar select:focus-visible {
       outline: 2px solid var(--accent-2);
       outline-offset: 2px;
+    }
+
+    .task-search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .task-search-icon {
+      position: absolute;
+      left: 9px;
+      color: var(--text-3);
+      pointer-events: none;
+    }
+
+    .task-search-input {
+      padding: 7px 10px 7px 28px;
+      min-width: 180px;
+      font-size: 13px;
+      font-family: inherit;
+      background: var(--surface);
+      border: 1px solid var(--border-md);
+      border-radius: var(--radius);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+      min-height: 36px;
+    }
+
+    .task-search-input::placeholder {
+      color: var(--text-3);
+    }
+
+    .task-search-input:focus {
+      border-color: var(--accent);
+    }
+
+    .task-search-input::-webkit-search-cancel-button {
+      cursor: pointer;
     }
 
     .pagination-bar {
@@ -2536,7 +2719,63 @@
       flex-shrink: 0;
     }
 
+    /* 项目头部操作区 */
+    .proj-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .chat-project-header:hover .proj-header-actions {
+      opacity: 1;
+    }
+
+    .proj-dots-btn,
     .proj-new-chat-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+      border-radius: var(--radius);
+      transition: color 0.15s, background 0.15s;
+      flex-shrink: 0;
+    }
+
+    .proj-dots-btn:hover {
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    .proj-new-chat-btn:hover {
+      color: var(--accent);
+      background: var(--bg);
+    }
+
+    /* 置顶项目的左侧标记点 */
+    .proj-pin-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      flex-shrink: 0;
+      margin-left: 2px;
+    }
+
+    .chat-project-group.pinned > .chat-project-header {
+      border-left: 2px solid var(--accent-2);
+    }
+
+    /* 会话条目三点按钮 */
+    .session-dots-btn {
       display: flex;
       align-items: center;
       justify-content: center;
@@ -2549,17 +2788,140 @@
       cursor: pointer;
       border-radius: var(--radius);
       opacity: 0;
-      transition: opacity 0.15s, color 0.15s, background 0.15s;
+      transition: opacity 0.12s, color 0.12s, background 0.12s;
       flex-shrink: 0;
     }
 
-    .chat-project-header:hover .proj-new-chat-btn {
+    .chat-session-item:hover .session-dots-btn,
+    .chat-session-item.active .session-dots-btn {
       opacity: 1;
     }
 
-    .proj-new-chat-btn:hover {
-      color: var(--accent);
-      background: var(--bg);
+    .session-dots-btn:hover {
+      color: var(--text);
+      background: rgba(0,0,0,.06);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .session-dots-btn:hover { background: rgba(255,255,255,.08); }
+    }
+
+    /* 会话名称内联重命名输入框 */
+    .session-rename-input {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      font-family: inherit;
+      background: var(--surface-2);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 1px 5px;
+      outline: none;
+    }
+
+    /* 全局浮动 context menu */
+    .ctx-menu {
+      position: fixed;
+      z-index: 9999;
+      background: var(--surface);
+      border: 1px solid var(--border-md);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+      min-width: 180px;
+      padding: 4px;
+      animation: ctxMenuIn 0.1s ease;
+    }
+
+    @keyframes ctxMenuIn {
+      from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+      to   { opacity: 1; transform: scale(1)    translateY(0); }
+    }
+
+    .ctx-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      border-radius: calc(var(--radius-lg) - 4px);
+      text-align: left;
+      transition: background 0.1s;
+    }
+
+    .ctx-menu-item:hover {
+      background: var(--surface-2);
+    }
+
+    .ctx-menu-item.danger {
+      color: var(--red);
+    }
+
+    .ctx-menu-item.danger .ctx-menu-icon {
+      color: var(--red);
+    }
+
+    .ctx-menu-icon {
+      width: 16px;
+      height: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      color: var(--text-3);
+    }
+
+    .ctx-menu-sep {
+      height: 1px;
+      background: var(--border);
+      margin: 3px 6px;
+    }
+
+    /* 搜索框 - 聊天侧边栏 */
+    .chat-search-bar {
+      position: relative;
+      margin-bottom: 6px;
+      flex-shrink: 0;
+    }
+
+    .chat-search-icon {
+      position: absolute;
+      left: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-3);
+      pointer-events: none;
+    }
+
+    .chat-search-input {
+      width: 100%;
+      padding: 5px 8px 5px 26px;
+      font-size: 12px;
+      font-family: inherit;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .chat-search-input::placeholder {
+      color: var(--text-3);
+    }
+
+    .chat-search-input:focus {
+      border-color: var(--accent);
+    }
+
+    .chat-search-input::-webkit-search-cancel-button {
+      cursor: pointer;
     }
 
     .chat-project-items {
@@ -2643,17 +3005,6 @@
       font-size: 11px;
       color: var(--text-3);
       white-space: nowrap;
-    }
-
-    .chat-session-item .session-actions {
-      display: none;
-      align-items: center;
-      gap: 2px;
-      flex-shrink: 0;
-    }
-
-    .chat-session-item:hover .session-actions {
-      display: flex;
     }
 
     .chat-session-item:hover .session-time {

@@ -32,7 +32,14 @@ let chatCollapsedProjectNames = (function() {
     return new Set(Array.isArray(saved) ? saved : []);
   } catch { return new Set(); }
 })();
+let chatPinnedProjectNames = (function() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('coderfleet.chatPinnedProjects') || '[]');
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch { return new Set(); }
+})();
 let chatProjectSortOrder = localStorage.getItem('coderfleet.chatProjectSort') || 'default';
+let chatSearchQuery = '';
 let tasksCache = [];
 let terminalContext = {
   projectName: '',

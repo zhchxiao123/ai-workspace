@@ -15,7 +15,7 @@
   <link rel="apple-touch-icon" href="/static/icons/logo-mark.png">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
   <link rel="stylesheet" href="/static/vendor/drawflow.min.css">
-  <link rel="stylesheet" href="/static/css/main.css?v=20260527d">
+  <link rel="stylesheet" href="/static/css/main.css?v=20260528a">
 </head>
 
 <body>
@@ -117,6 +117,10 @@
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5H4"/><path d="M7 19H4"/><path d="M15 12H4"/><path d="M17 5l4 4-4 4"/></svg>
                   <span id="chat-sort-label">默认</span>
                 </button>
+              </div>
+              <div class="chat-search-bar">
+                <svg class="chat-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input type="search" id="chat-search-input" class="chat-search-input" placeholder="搜索项目/对话..." oninput="handleChatSearch(this.value)" autocomplete="off">
               </div>
               <div class="chat-history-list" id="chat-history-list">
                 <!-- 会话历史由 JS 动态渲染 -->
@@ -233,6 +237,10 @@
             <select id="filter-account" onchange="loadTasks({resetPage:true})">
               <option value="">全部账号</option>
             </select>
+            <div class="task-search-wrap">
+              <svg class="task-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input type="search" id="task-search-input" class="task-search-input" placeholder="搜索任务..." oninput="handleTaskSearch(this.value)" autocomplete="off">
+            </div>
             <span class="spacer"></span>
             <button class="btn" onclick="cleanTasks()" style="font-size:12px">清理旧记录</button>
           </div>
@@ -790,8 +798,11 @@
   <script src="/static/vendor/drawflow.min.js"></script>
   <script src="/static/vendor/xterm/xterm.js"></script>
   <script src="/static/vendor/xterm/addon-fit.js"></script>
+  <script src="/static/vendor/xterm/addon-web-links.js"></script>
+  <script src="/static/vendor/xterm/addon-search.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/js/utils.js?v=20260526a"></script>
+  <script src="/static/js/terminal-utils.js?v=20260528a"></script>
   <script src="/static/js/shared/project-utils.js?v=20260527-shared"></script>
   <script src="/static/js/shared/image-upload.js?v=20260528-imagefix"></script>
   <script src="/static/js/renderer.js?v=20260527g"></script>

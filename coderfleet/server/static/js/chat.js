@@ -80,6 +80,14 @@ function renderConversations(convs, projects, tasks) {
     const runningCount = proj => tasks.filter(t => taskBelongsToProject(t, proj) && t.status === 'running').length;
     sortedProjects.sort((a, b) => runningCount(b) - runningCount(a));
   }
+  // 置顶项目始终排在最前
+  sortedProjects.sort((a, b) => {
+    const ap = chatPinnedProjectNames.has(a.name) ? 0 : 1;
+    const bp = chatPinnedProjectNames.has(b.name) ? 0 : 1;
+    return ap - bp;
+  });
+
+  const q = chatSearchQuery.trim().toLowerCase();
 
   sortedProjects.forEach(proj => {
     const projConvs = convs.filter(c => conversationBelongsToProject(c, proj));
@@ -104,66 +112,66 @@ function renderConversations(convs, projects, tasks) {
     });
 
     items.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    // 搜索过滤
+    let filteredItems = items;
+    if (q) {
+      filteredItems = items.filter(item => item.name.toLowerCase().includes(q));
+      const projNameMatch = proj.name.toLowerCase().includes(q);
+      if (!projNameMatch && filteredItems.length === 0) return;
+    }
+
     const encodedProjectName = encodeURIComponent(proj.name).replace(/'/g, '%27');
     const isCollapsed = chatCollapsedProjectNames.has(proj.name);
+    const isPinned = chatPinnedProjectNames.has(proj.name);
 
     html += `
-  <div class="chat-project-group ${isCollapsed ? 'collapsed' : ''}">
+  <div class="chat-project-group ${isCollapsed ? 'collapsed' : ''} ${isPinned ? 'pinned' : ''}">
     <div class="chat-project-header" onclick="toggleChatProjectGroup('${encodedProjectName}')" title="${isCollapsed ? '展开项目' : '收起项目'}">
       <div class="proj-header-title" title="${esc(proj.name)}">
         <span class="proj-collapse-icon">${isCollapsed ? '+' : '-'}</span>
         ${folderSvg}
         <span>${esc(proj.name)}</span>
+        ${isPinned ? `<span class="proj-pin-dot" title="已置顶"></span>` : ''}
       </div>
-      <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewChat({ projectName: '${esc(proj.name)}' })" title="在 ${esc(proj.name)} 中开始新对话">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-          <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-        </svg>
-      </button>
+      <div class="proj-header-actions">
+        <button class="proj-dots-btn" onclick="event.stopPropagation(); openProjMenu(event, '${encodedProjectName}', ${isPinned})" title="更多操作" aria-label="更多操作">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewChat({ projectName: '${esc(proj.name)}' })" title="新建对话" aria-label="新建对话">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="chat-project-items">
 `;
 
     const isExpanded = chatExpandedProjectNames.has(proj.name);
-    const visibleItems = isExpanded ? items : items.slice(0, CHAT_PROJECT_VISIBLE_LIMIT);
-    const hiddenCount = Math.max(0, items.length - visibleItems.length);
+    const visibleItems = isExpanded ? filteredItems : filteredItems.slice(0, CHAT_PROJECT_VISIBLE_LIMIT);
+    const hiddenCount = Math.max(0, filteredItems.length - visibleItems.length);
 
     if (isCollapsed) {
       html += '';
-    } else if (items.length === 0) {
+    } else if (filteredItems.length === 0) {
       html += `<div class="chat-project-empty">暂无对话</div>`;
     } else {
       html += visibleItems.map(item => {
         const isActive = item.id === activeConversationId;
         const displayTime = fmtTimeFriendly(item.time);
-        const archiveBtn = item.type === 'conversation'
-          ? `<button class="session-action-btn" title="归档" onclick="event.stopPropagation(); archiveConversation('${esc(item.id)}')">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
-             </button>`
-          : (item.type === 'one-off'
-            ? `<button class="session-action-btn" title="归档" onclick="event.stopPropagation(); archiveOneOff('${esc(item.id)}')">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
-               </button>`
-            : '');
-        const deleteBtn = item.type === 'conversation'
-          ? `<button class="session-action-btn danger" title="删除" onclick="event.stopPropagation(); deleteConversation('${esc(item.id)}')">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
-             </button>`
-          : (item.type === 'one-off'
-            ? `<button class="session-action-btn danger" title="删除" onclick="event.stopPropagation(); deleteOneOff('${esc(item.id)}')">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
-               </button>`
-            : '');
         return `
-      <div class="chat-session-item ${isActive ? 'active' : ''}" onclick="selectConversation('${esc(item.id)}')">
+      <div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
         <span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
         <span class="session-time">${esc(displayTime)}</span>
-        <span class="session-actions">${archiveBtn}${deleteBtn}</span>
+        <button class="session-dots-btn" onclick="event.stopPropagation(); openSessionMenu(event, '${esc(item.id)}', '${item.type}')" title="更多操作" aria-label="更多操作">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+        </button>
       </div>`;
       }).join('');
 
-      if (items.length > CHAT_PROJECT_VISIBLE_LIMIT) {
+      if (filteredItems.length > CHAT_PROJECT_VISIBLE_LIMIT) {
         html += `
       <button class="chat-project-expand-btn" onclick="event.stopPropagation(); toggleChatProjectItems('${encodedProjectName}')">
         ${isExpanded ? '收起' : `展开显示 ${hiddenCount} 个`}
@@ -203,6 +211,178 @@ function toggleChatProjectGroup(encodedProjectName) {
   }
   saveChatCollapsedState();
   rerenderChatProjectList();
+}
+
+function toggleChatProjectPin(encodedProjectName) {
+  const projectName = decodeURIComponent(encodedProjectName);
+  if (chatPinnedProjectNames.has(projectName)) {
+    chatPinnedProjectNames.delete(projectName);
+  } else {
+    chatPinnedProjectNames.add(projectName);
+  }
+  try {
+    localStorage.setItem('coderfleet.chatPinnedProjects', JSON.stringify([...chatPinnedProjectNames]));
+  } catch { }
+  rerenderChatProjectList();
+}
+
+function handleChatSearch(value) {
+  chatSearchQuery = value;
+  rerenderChatProjectList();
+}
+
+// ── 全局浮动 context menu ─────────────────────────────────
+let _ctxMenuEl = null;
+let _ctxMenuCleanup = null;
+
+function openCtxMenu(anchor, items) {
+  closeCtxMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = items.map((item, i) =>
+    item.sep
+      ? `<div class="ctx-menu-sep"></div>`
+      : `<button class="ctx-menu-item${item.danger ? ' danger' : ''}" data-idx="${i}">
+           <span class="ctx-menu-icon">${item.icon}</span>
+           <span>${item.label}</span>
+         </button>`
+  ).join('');
+
+  document.body.appendChild(menu);
+  _ctxMenuEl = menu;
+
+  // 定位：优先显示在锚点下方，空间不足时翻转到上方
+  const rect = anchor.getBoundingClientRect();
+  const menuW = 190;
+  let left = rect.right - menuW;
+  let top = rect.bottom + 6;
+  if (left < 8) left = 8;
+  if (top + 220 > window.innerHeight) top = rect.top - 6 - menu.offsetHeight;
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  // 再次取高度（渲染后）
+  requestAnimationFrame(() => {
+    if (!_ctxMenuEl) return;
+    const h = menu.offsetHeight;
+    if (parseFloat(menu.style.top) + h > window.innerHeight - 8) {
+      menu.style.top = (rect.top - 6 - h) + 'px';
+    }
+  });
+
+  // 绑定每一项
+  menu.querySelectorAll('.ctx-menu-item').forEach(btn => {
+    const idx = parseInt(btn.dataset.idx, 10);
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      closeCtxMenu();
+      items[idx].action();
+    });
+  });
+
+  // 点击外部关闭
+  const outsideHandler = e => { if (_ctxMenuEl && !_ctxMenuEl.contains(e.target)) closeCtxMenu(); };
+  const escHandler = e => { if (e.key === 'Escape') closeCtxMenu(); };
+  setTimeout(() => {
+    document.addEventListener('click', outsideHandler);
+    document.addEventListener('keydown', escHandler);
+  }, 0);
+  _ctxMenuCleanup = () => {
+    document.removeEventListener('click', outsideHandler);
+    document.removeEventListener('keydown', escHandler);
+  };
+}
+
+function closeCtxMenu() {
+  if (_ctxMenuEl) { _ctxMenuEl.remove(); _ctxMenuEl = null; }
+  if (_ctxMenuCleanup) { _ctxMenuCleanup(); _ctxMenuCleanup = null; }
+}
+
+// SVG 图标片段
+const _menuIcons = {
+  pin:     `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24z"/></svg>`,
+  unpin:   `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16 2l-1.5 1.5L13 2 8 7l-.5 3.5L4 14l2 2 3-1 4.5 4.5L14 21l3.5-3.5-.5-3.5L22 9l-1.5-1.5L22 6z"/></svg>`,
+  rename:  `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  newchat: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+  edit:    `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>`,
+  archive: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`,
+  trash:   `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>`,
+};
+
+function openProjMenu(event, encodedProjectName, isPinned) {
+  const projectName = decodeURIComponent(encodedProjectName);
+  openCtxMenu(event.currentTarget, [
+    {
+      label: isPinned ? '取消置顶' : '置顶项目',
+      icon: isPinned ? _menuIcons.unpin : _menuIcons.pin,
+      action: () => toggleChatProjectPin(encodedProjectName),
+    },
+    {
+      label: '编辑项目',
+      icon: _menuIcons.edit,
+      action: () => { showPage('projects'); openProjectFormModal(projectName); },
+    },
+  ]);
+}
+
+function openSessionMenu(event, itemId, itemType) {
+  const items = [];
+  if (itemType === 'conversation') {
+    items.push({ label: '重命名', icon: _menuIcons.rename, action: () => inlineRenameConversation(itemId) });
+    items.push({ sep: true });
+    items.push({ label: '归档', icon: _menuIcons.archive, action: () => archiveConversation(itemId) });
+    items.push({ label: '删除', icon: _menuIcons.trash, danger: true, action: () => deleteConversation(itemId) });
+  } else {
+    items.push({ label: '归档', icon: _menuIcons.archive, action: () => archiveOneOff(itemId) });
+    items.push({ label: '删除', icon: _menuIcons.trash, danger: true, action: () => deleteOneOff(itemId) });
+  }
+  openCtxMenu(event.currentTarget, items);
+}
+
+async function inlineRenameConversation(convId) {
+  const itemEl = document.querySelector(`.chat-session-item[data-item-id="${CSS.escape(convId)}"]`);
+  if (!itemEl) return;
+  const nameSpan = itemEl.querySelector('.session-name');
+  if (!nameSpan) return;
+
+  const oldName = nameSpan.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = oldName;
+  input.className = 'session-rename-input';
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const newName = input.value.trim();
+    input.removeEventListener('blur', commit);
+    if (!newName || newName === oldName) {
+      rerenderChatProjectList();
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/api/conversations/${encodeURIComponent(convId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      });
+      if (r.ok) {
+        const conv = chatConversationsList.find(c => c.id === convId);
+        if (conv) {
+          conv.name = newName;
+          conversationsCache[convId] = newName;
+        }
+      }
+    } catch { }
+    rerenderChatProjectList();
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { rerenderChatProjectList(); }
+  });
+  input.addEventListener('blur', commit);
 }
 
 const CHAT_SORT_CYCLE = ['default', 'activity', 'name', 'running'];

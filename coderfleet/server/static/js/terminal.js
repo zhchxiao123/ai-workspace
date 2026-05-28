@@ -208,21 +208,10 @@ function ensureMultiTerminalMounted(projectName) {
   if (ctx && ctx.terminal && mount.childElementCount) return true;
 
   mount.innerHTML = '';
-  ctx.fitAddon = new window.FitAddon.FitAddon();
-  ctx.terminal = new window.Terminal({
-    cursorBlink: true,
-    fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-    fontSize: 13,
-    scrollback: 5000,
-    theme: {
-      background: '#111827',
-      foreground: '#e5e7eb',
-      cursor: '#f97316',
-      selectionBackground: '#334155',
-    },
-  });
-  ctx.terminal.loadAddon(ctx.fitAddon);
-  ctx.terminal.open(mount);
+  const { terminal, fitAddon } = createEnhancedTerminal(mount);
+  ctx.terminal = terminal;
+  ctx.fitAddon  = fitAddon;
+
   ctx.terminal.onData(data => {
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
       ctx.socket.send(JSON.stringify({ type: 'input', data }));

@@ -256,21 +256,10 @@ function ensureTerminalMounted() {
   if (terminalContext.terminal && mount.childElementCount) return true;
 
   mount.innerHTML = '';
-  terminalContext.fitAddon  = new window.FitAddon.FitAddon();
-  terminalContext.terminal  = new window.Terminal({
-    cursorBlink: true,
-    fontFamily:  "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-    fontSize:    13,
-    scrollback:  5000,
-    theme: {
-      background:         '#111827',
-      foreground:         '#e5e7eb',
-      cursor:             '#f97316',
-      selectionBackground:'#334155',
-    },
-  });
-  terminalContext.terminal.loadAddon(terminalContext.fitAddon);
-  terminalContext.terminal.open(mount);
+  const { terminal, fitAddon } = createEnhancedTerminal(mount);
+  terminalContext.terminal = terminal;
+  terminalContext.fitAddon = fitAddon;
+
   terminalContext.terminal.onData(data => {
     const socket = terminalContext.socket;
     if (socket && socket.readyState === WebSocket.OPEN) {

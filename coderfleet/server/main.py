@@ -664,13 +664,21 @@ async def get_conversation(conversation_id: str):
 
 
 class ConversationStatusUpdate(BaseModel):
-    status: ConversationStatus
+    status: Optional[ConversationStatus] = None
+    name: Optional[str] = None
 
 
 @app.patch("/api/conversations/{conversation_id}", response_model=ConversationResponse)
-async def update_conversation_status(conversation_id: str, body: ConversationStatusUpdate):
+async def update_conversation(conversation_id: str, body: ConversationStatusUpdate):
     try:
-        conv = scheduler.archive_conversation(conversation_id, body.status)
+        if body.name is not None:
+            conv = scheduler.rename_conversation(conversation_id, body.name)
+        elif body.status is not None:
+            conv = scheduler.archive_conversation(conversation_id, body.status)
+        else:
+            conv = scheduler.get_conversation(conversation_id)
+            if conv is None:
+                raise ValueError(f"任务链 '{conversation_id}' 不存在")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return ConversationResponse.from_conversation(conv)
