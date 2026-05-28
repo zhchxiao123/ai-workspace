@@ -7,6 +7,7 @@ coderfleet account add alice TYPE=codex
 coderfleet account add bob TYPE=claude
 coderfleet account add carol TYPE=opencode
 coderfleet account add dave TYPE=hermes
+coderfleet account add eve TYPE=grok --auth env
 ```
 
 账号名只允许字母、数字和连字符。
@@ -39,8 +40,9 @@ coderfleet login alice
 | `claude` | `claude login` | `/home/byclaw/.claude` |
 | `opencode` | `opencode auth login` | `/home/byclaw/.opencode` |
 | `hermes` | `hermes setup` | `/home/byclaw/.hermes` |
+| `grok` | 仅支持 `AUTH=env`，无需登录 | `/home/byclaw/.grok` |
 
-登录所有需要网页登录的账号：
+登录所有需要网页登录的账号（`AUTH=env` 账号自动跳过）：
 
 ```bash
 coderfleet login all
@@ -48,12 +50,13 @@ coderfleet login all
 
 ## API Key 认证
 
-Claude Code、OpenCode 和 Hermes Agent 可以通过 env 文件注入 API key：
+Claude Code、OpenCode、Hermes Agent 和 Grok Build 可以通过 env 文件注入 API key：
 
 ```bash
 coderfleet account add claude-api TYPE=claude --auth env
 coderfleet account add opencode-api TYPE=opencode --auth env
 coderfleet account add hermes-api TYPE=hermes --auth env
+coderfleet account add grok-api TYPE=grok --auth env
 ```
 
 然后编辑：
@@ -62,10 +65,14 @@ coderfleet account add hermes-api TYPE=hermes --auth env
 ~/.coderfleet/accounts/<账号名>/env
 ```
 
-示例：
+各类型示例：
 
 ```env
+# Claude Code
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Grok Build
+XAI_API_KEY=xai-...
 ```
 
 Hermes Agent 需要根据实际 provider 配置对应 API key，例如 `ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`。添加 `TYPE=hermes --auth env` 后，还需要在容器里完成 Hermes provider 初始化：
@@ -76,6 +83,24 @@ hermes config set model.provider anthropic
 ```
 
 CoderFleet 会在 Hermes 容器启动时设置 `HERMES_HOME=/home/byclaw/.hermes`，并关闭交互式审批提示，便于后台任务执行。
+
+## Grok Build
+
+Grok Build 只支持 `AUTH=env` 认证，不支持交互式登录：
+
+```bash
+coderfleet account add my-grok TYPE=grok --auth env
+coderfleet project add my-project my-grok ~/projects/my-project
+coderfleet apply
+```
+
+在 `~/.coderfleet/accounts/my-grok/env` 中配置：
+
+```env
+XAI_API_KEY=xai-...
+```
+
+API Key 在 [console.x.ai](https://console.x.ai/) 获取。CoderFleet 会在 Grok 容器启动时设置 `GROK_HOME=/home/byclaw/.grok` 和 `GROK_NO_AUTO_UPDATE=1`。
 
 ## 代理模式
 

@@ -33,6 +33,7 @@ NAME=alice TYPE=codex
 NAME=bob TYPE=claude
 NAME=carol TYPE=opencode
 NAME=dave TYPE=hermes
+NAME=eve TYPE=grok AUTH=env
 NAME=claude-api TYPE=claude AUTH=env ENV_FILE=./accounts/claude-api/env
 NAME=hermes-api TYPE=hermes AUTH=env ENV_FILE=./accounts/hermes-api/env
 NAME=local TYPE=claude PROXY=off
@@ -43,18 +44,24 @@ NAME=local TYPE=claude PROXY=off
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `NAME` | 是 | 账号名 |
-| `TYPE` | 是 | `codex`、`claude`、`opencode` 或 `hermes` |
-| `AUTH` | 否 | `login` 或 `env`。`env` 适用于 `claude`、`opencode` 和 `hermes` |
-| `ENV_FILE` | 否 | env 文件路径，默认可放在 `./accounts/<账号名>/env` |
+| `TYPE` | 是 | `codex`、`claude`、`opencode`、`hermes` 或 `grok` |
+| `AUTH` | 否 | `login` 或 `env`。`env` 适用于 `claude`、`opencode`、`hermes` 和 `grok`；`grok` 仅支持 `env` |
+| `ENV_FILE` | 否 | env 文件路径，默认 `./accounts/<账号名>/env` |
 | `PROXY` | 否 | `relay` 或 `off` |
 
-Hermes Agent 会额外设置 `HERMES_HOME=/home/byclaw/.hermes`。如果使用 `AUTH=env`，需要在 env 文件中配置所选 provider 的 API key，并通过 `hermes config set model.provider <provider>` 完成 provider 初始化。
+各类型注入的容器环境变量：
+
+| 类型 | 自动注入变量 |
+| --- | --- |
+| `hermes` | `HERMES_HOME=/home/byclaw/.hermes` |
+| `grok` | `GROK_HOME=/home/byclaw/.grok`、`GROK_NO_AUTO_UPDATE=1` |
 
 ## projects.conf
 
 ```conf
 NAME=my-app ACCOUNT=alice PATH=~/projects/my-app
 NAME=api-server ACCOUNT=bob PATH=~/projects/api-server
+NAME=grok-app ACCOUNT=eve PATH=~/projects/grok-app
 ```
 
 字段：

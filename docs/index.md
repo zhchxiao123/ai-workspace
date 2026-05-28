@@ -12,13 +12,14 @@ hide:
 
 # 面向 UI 端编程的多账号 AI 开发工作台
 
-<p class="cf-subtitle">在 Web 控制台里提交任务、跟踪日志、管理项目和账号，把 Codex CLI、Claude Code、OpenCode 和 Hermes Agent 账号组织成一套可视化开发调度系统。</p>
+<p class="cf-subtitle">在 Web 控制台里提交任务、跟踪日志、管理项目和账号，把 Codex CLI、Claude Code、OpenCode、Hermes Agent 和 Grok Build 账号组织成一套可视化开发调度系统。</p>
 
 <div class="cf-tags">
   <span>任务监控</span>
   <span>项目工作台</span>
   <span>多账号状态</span>
   <span>容器终端</span>
+  <span>macOS 托盘</span>
 </div>
 
 <div class="cf-actions" markdown>
@@ -32,7 +33,8 @@ hide:
 ```bash
 uv tool install coderfleet
 coderfleet init
-coderfleet server
+coderfleet tray install   # macOS：托盘守护进程，登录自动启动
+# 或手动启动：coderfleet server
 ```
 
 </div>
@@ -69,7 +71,7 @@ CoderFleet 的思路是把多个普通账号组织成一个可调度的开发舰
 
 ### 多账号并行
 
-同时管理 Codex、Claude Code、OpenCode、Hermes Agent 账号，减少手工切换认证目录和终端环境。
+同时管理 Codex、Claude Code、OpenCode、Hermes Agent、Grok Build 账号，减少手工切换认证目录和终端环境。
 
 </div>
 <div class="feature-card" markdown>
@@ -95,9 +97,9 @@ CoderFleet 的思路是把多个普通账号组织成一个可调度的开发舰
 </div>
 <div class="feature-card" markdown>
 
-### 异步任务调度
+### macOS 系统托盘
 
-从宿主机提交后台任务，支持实时日志、任务终止、任务链续接和项目优先匹配。
+登录自动启动、后台守护 server，任务完成时推送原生系统通知。
 
 </div>
 <div class="feature-card" markdown>
@@ -124,6 +126,7 @@ Docker Compose
     +-- claude-bob    -> /workspace
     +-- opencode-carl -> /workspace
     +-- hermes-dave   -> /workspace
+    +-- grok-eve      -> /workspace
     |
     v
 proxy relay -> host proxy -> internet
@@ -131,6 +134,6 @@ proxy relay -> host proxy -> internet
 
 ## 下一步
 
-新用户建议从 [快速开始](quickstart.md) 走完整流程；已经安装过的用户可以直接查看 [命令速查](commands.md) 或 [Web 控制台](server.md)。
+新用户建议从 [快速开始](quickstart.md) 走完整流程；已经安装过的用户可以直接查看 [命令速查](commands.md) 或 [Web 控制台](server.md)。macOS 用户可以参考 [系统托盘](tray.md) 一键配置后台守护进程。
 
 </section>

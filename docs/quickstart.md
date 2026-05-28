@@ -44,7 +44,7 @@ accounts/
 coderfleet build
 ```
 
-镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code、OpenCode 和 Hermes Agent。
+镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code、OpenCode、Hermes Agent 和 Grok Build。
 
 ## 4. 添加账号与项目
 
@@ -53,29 +53,39 @@ coderfleet account add alice TYPE=codex
 coderfleet project add app-a alice ~/projects/app-a
 ```
 
-也可以添加 Claude Code、OpenCode 或 Hermes Agent 账号：
+也可以添加其他类型账号：
 
 ```bash
 coderfleet account add bob TYPE=claude
 coderfleet account add carol TYPE=opencode
 coderfleet account add dave TYPE=hermes
+coderfleet account add eve TYPE=grok --auth env   # Grok 只支持 API key
 ```
+
+Grok Build 账号需要在 `~/.coderfleet/accounts/eve/env` 中配置 `XAI_API_KEY=xai-...`，无需执行 login。
 
 ## 5. 应用配置并登录
 
 ```bash
 coderfleet apply
-coderfleet login alice
+coderfleet login alice   # AUTH=env 账号自动跳过
 ```
 
 登录命令会输出授权 URL。把 URL 复制到宿主机浏览器打开，完成授权后把 code 粘贴回终端。
 
-不同账号类型会调用对应 CLI 的登录或初始化流程：Codex 使用 `codex login --device-auth`，Claude Code 使用 `claude login`，OpenCode 使用 `opencode auth login`，Hermes Agent 使用 `hermes setup`。
+## 6. 启动服务
 
-## 6. 启动 Web 控制台
+**macOS — 推荐使用系统托盘**（登录自动启动，后台守护）：
 
 ```bash
-coderfleet server
+coderfleet tray install
+```
+
+**其他平台或手动启动**：
+
+```bash
+coderfleet server              # 前台运行
+coderfleet server --daemon     # 后台守护进程
 ```
 
 默认访问：
@@ -95,3 +105,5 @@ coderfleet task list
 ```bash
 coderfleet task logs <任务ID> -f
 ```
+
+macOS 用户安装 tray 后，任务完成时会自动推送系统通知。

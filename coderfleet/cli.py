@@ -1,111 +1,12 @@
 from __future__ import annotations
 
 import os
-import signal
-import subprocess
 import sys
-import time
 import click
 from pathlib import Path
 
 from coderfleet.config import get_workspace, load_config
-
-
-# ── server daemon helpers ──────────────────────────────────────
-
-
-def _pid_file(ws: Path) -> Path:
-    return ws / "server.pid"
-
-
-def _log_file(ws: Path) -> Path:
-    return ws / "server.log"
-
-
-def _is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def _read_pid(ws: Path) -> int | None:
-    p = _pid_file(ws)
-    if not p.exists():
-        return None
-    try:
-        return int(p.read_text().strip())
-    except ValueError:
-        return None
-
-
-def _server_start_daemon(ws: Path, port: int) -> None:
-    pid = _read_pid(ws)
-    if pid and _is_running(pid):
-        click.secho(f"server 已在运行（PID {pid}）", fg="yellow")
-        click.echo(f"  日志：{_log_file(ws)}")
-        click.echo(f"  停止：coderfleet server --stop")
-        return
-
-    log = _log_file(ws)
-    cmd = [sys.executable, "-m", "coderfleet", "server", "--port", str(port)]
-
-    with log.open("a") as fh:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=fh,
-            stderr=fh,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,          # 脱离当前终端会话
-            env={**os.environ, "CODERFLEET_WORKSPACE": str(ws), "CODERFLEET_PORT": str(port)},
-        )
-
-    _pid_file(ws).write_text(str(proc.pid))
-
-    # 短暂等待确认进程存活
-    time.sleep(1)
-    if _is_running(proc.pid):
-        click.secho(f"✓ server 已在后台启动（PID {proc.pid}）", fg="green")
-        click.echo(f"  Web UI：http://localhost:{port}")
-        click.echo(f"  日志：{log}")
-        click.echo(f"  停止：coderfleet server --stop")
-    else:
-        _pid_file(ws).unlink(missing_ok=True)
-        raise click.ClickException(f"server 启动失败，查看日志：{log}")
-
-
-def _server_stop(ws: Path) -> None:
-    pid = _read_pid(ws)
-    if pid is None:
-        click.secho("server 未在运行（找不到 PID 文件）", fg="yellow")
-        return
-    if not _is_running(pid):
-        _pid_file(ws).unlink(missing_ok=True)
-        click.secho("server 未在运行（PID 文件已清理）", fg="yellow")
-        return
-
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(20):          # 最多等 10 秒
-        time.sleep(0.5)
-        if not _is_running(pid):
-            break
-    else:
-        os.kill(pid, signal.SIGKILL)
-
-    _pid_file(ws).unlink(missing_ok=True)
-    click.secho(f"✓ server 已停止（PID {pid}）", fg="green")
-
-
-def _server_status(ws: Path) -> None:
-    pid = _read_pid(ws)
-    if pid and _is_running(pid):
-        click.secho(f"● server 运行中（PID {pid}）", fg="green")
-        click.echo(f"  日志：{_log_file(ws)}")
-    else:
-        if pid:
-            _pid_file(ws).unlink(missing_ok=True)
-        click.secho("○ server 未运行", fg="yellow")
+from coderfleet import server_daemon as sd
 
 
 @click.group()
@@ -152,15 +53,14 @@ def cmd_init(ctx: click.Context) -> None:
     run_init_wizard(ctx.obj["workspace"])
 
 
+# ── server ─────────────────────────────────────────────────────────────────────
+
 @main.command("server")
 @click.option("--port", default=None, type=int, envvar="CODERFLEET_PORT",
               help="监听端口（默认 8765）")
-@click.option("--daemon", "-d", is_flag=True,
-              help="后台守护进程模式运行")
-@click.option("--stop", "do_stop", is_flag=True,
-              help="停止后台运行的 server")
-@click.option("--status", "do_status", is_flag=True,
-              help="查看 server 运行状态")
+@click.option("--daemon", "-d", is_flag=True, help="后台守护进程模式运行")
+@click.option("--stop", "do_stop", is_flag=True, help="停止后台运行的 server")
+@click.option("--status", "do_status", is_flag=True, help="查看 server 运行状态")
 @click.pass_context
 def cmd_server(
     ctx: click.Context,
@@ -182,27 +82,43 @@ def cmd_server(
     ws = ctx.obj["workspace"]
 
     if do_stop:
-        _server_stop(ws)
+        stopped = sd.stop_daemon(ws)
+        if stopped:
+            click.secho("✓ server 已停止", fg="green")
+        else:
+            click.secho("server 未在运行", fg="yellow")
         return
 
     if do_status:
-        _server_status(ws)
+        pid = sd.read_pid(ws)
+        if pid and sd.is_running(pid):
+            click.secho(f"● server 运行中（PID {pid}）", fg="green")
+            click.echo(f"  日志：{sd.log_file(ws)}")
+        else:
+            if pid:
+                sd.pid_file(ws).unlink(missing_ok=True)
+            click.secho("○ server 未运行", fg="yellow")
         return
 
     cfg = load_config(ws)
     resolved_port = port or int(cfg.get("CODERFLEET_PORT", 8765))
 
     if daemon:
-        _server_start_daemon(ws, resolved_port)
+        try:
+            pid = sd.start_daemon(ws, resolved_port)
+            click.secho(f"✓ server 已在后台启动（PID {pid}）", fg="green")
+            click.echo(f"  Web UI：http://localhost:{resolved_port}")
+            click.echo(f"  日志：{sd.log_file(ws)}")
+            click.echo(f"  停止：coderfleet server --stop")
+        except RuntimeError as e:
+            raise click.ClickException(str(e))
         return
 
     # 前台模式
     os.environ["CODERFLEET_WORKSPACE"] = str(ws)
     os.environ["CODERFLEET_PORT"] = str(resolved_port)
-
     click.echo(f"Workspace: {ws}")
     click.echo(f"Starting CoderFleet server at http://localhost:{resolved_port}")
-
     uvicorn.run(
         "coderfleet.server.main:app",
         host="0.0.0.0",
@@ -210,3 +126,108 @@ def cmd_server(
         reload=False,
         workers=1,
     )
+
+
+# ── tray ───────────────────────────────────────────────────────────────────────
+
+@main.group("tray", invoke_without_command=True)
+@click.pass_context
+def cmd_tray(ctx: click.Context) -> None:
+    """macOS menu-bar tray — manages server lifecycle and sends task notifications.
+
+    \b
+    coderfleet tray install    # install LaunchAgent (auto-start at login) + start now
+    coderfleet tray uninstall  # remove LaunchAgent + stop tray
+    coderfleet tray start      # start tray (if LaunchAgent is installed)
+    coderfleet tray stop       # stop tray (server keeps running)
+    coderfleet tray status     # show tray + server status
+    coderfleet tray            # run tray in foreground (debug / first run)
+    """
+    if ctx.invoked_subcommand is None:
+        from coderfleet.tray import run_tray
+        run_tray()
+
+
+@cmd_tray.command("install")
+@click.pass_context
+def tray_install(ctx: click.Context) -> None:
+    """Install LaunchAgent so the tray auto-starts at login, then start it now."""
+    if sys.platform != "darwin":
+        raise click.ClickException("LaunchAgent is macOS-only.")
+    from coderfleet.tray import install_launchagent, launchagent_installed, _LAUNCHAGENT_PLIST
+    install_launchagent()
+    click.secho(f"✓ LaunchAgent installed: {_LAUNCHAGENT_PLIST}", fg="green")
+    click.echo("  Tray will auto-start at login and restart on crash.")
+    click.echo(f"  Stop:      coderfleet tray stop")
+    click.echo(f"  Uninstall: coderfleet tray uninstall")
+
+
+@cmd_tray.command("uninstall")
+def tray_uninstall() -> None:
+    """Remove LaunchAgent and stop the tray process."""
+    if sys.platform != "darwin":
+        raise click.ClickException("LaunchAgent is macOS-only.")
+    from coderfleet.tray import uninstall_launchagent, _LAUNCHAGENT_PLIST, launchagent_installed
+    if not launchagent_installed():
+        click.secho("LaunchAgent is not installed.", fg="yellow")
+        return
+    uninstall_launchagent()
+    click.secho(f"✓ LaunchAgent removed ({_LAUNCHAGENT_PLIST})", fg="green")
+    click.echo("  Server continues running. Stop it with: coderfleet server --stop")
+
+
+@cmd_tray.command("start")
+def tray_start() -> None:
+    """Start the tray via launchctl (requires install first)."""
+    if sys.platform != "darwin":
+        raise click.ClickException("macOS-only.")
+    from coderfleet.tray import launchagent_ctl, launchagent_installed
+    if not launchagent_installed():
+        raise click.ClickException("LaunchAgent not installed. Run: coderfleet tray install")
+    launchagent_ctl("start")
+    click.secho("✓ Tray started", fg="green")
+
+
+@cmd_tray.command("stop")
+def tray_stop() -> None:
+    """Stop the tray process (server keeps running)."""
+    if sys.platform != "darwin":
+        raise click.ClickException("macOS-only.")
+    from coderfleet.tray import launchagent_ctl, launchagent_installed
+    if not launchagent_installed():
+        raise click.ClickException("LaunchAgent not installed. Run: coderfleet tray install")
+    launchagent_ctl("stop")
+    click.secho("✓ Tray stopped (server still running)", fg="green")
+
+
+@cmd_tray.command("status")
+@click.pass_context
+def tray_status(ctx: click.Context) -> None:
+    """Show tray and server status."""
+    from coderfleet.tray import launchagent_installed, _LAUNCHAGENT_LABEL, _LAUNCHAGENT_PLIST
+    import subprocess as sp
+
+    # LaunchAgent
+    if launchagent_installed():
+        click.secho(f"● LaunchAgent installed ({_LAUNCHAGENT_PLIST.name})", fg="green")
+    else:
+        click.secho("○ LaunchAgent not installed", fg="yellow")
+
+    # Tray process (check via launchctl)
+    if sys.platform == "darwin":
+        result = sp.run(
+            ["launchctl", "list", _LAUNCHAGENT_LABEL],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            click.secho("● Tray running", fg="green")
+        else:
+            click.secho("○ Tray not running", fg="yellow")
+
+    # Server
+    ws = ctx.obj["workspace"]
+    pid = sd.read_pid(ws)
+    if pid and sd.is_running(pid):
+        click.secho(f"● Server running (PID {pid})", fg="green")
+    else:
+        click.secho("○ Server not running", fg="yellow")

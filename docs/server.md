@@ -1,10 +1,28 @@
-# Web 控制台
+# Web 控制台与调度服务
 
-启动服务：
+## 启动方式
+
+**前台运行**（适合开发调试）：
 
 ```bash
 coderfleet server
 ```
+
+**后台守护进程**（推荐生产使用）：
+
+```bash
+coderfleet server --daemon    # 启动，写入 PID 文件
+coderfleet server --status    # 查看运行状态
+coderfleet server --stop      # 停止
+```
+
+**macOS 用户推荐使用系统托盘**，登录自动启动，无需手动管理 server：
+
+```bash
+coderfleet tray install
+```
+
+详见 [系统托盘](tray.md)。
 
 默认地址：
 
@@ -32,7 +50,7 @@ http://localhost:8765
 
 ### 账号
 
-展示账号类型、容器状态、忙碌状态和相关资源。
+展示账号类型、容器状态、忙碌状态和相关资源。支持 Codex、Claude Code、OpenCode、Hermes Agent、Grok Build 全部类型。
 
 ## API 文档
 

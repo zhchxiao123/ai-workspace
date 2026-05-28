@@ -1,6 +1,6 @@
 # CoderFleet
 
-> 把多个 Codex CLI / Claude Code / OpenCode / Hermes Agent 账号变成一支可调度的 AI 开发舰队。
+> 把多个 Codex CLI / Claude Code / OpenCode / Hermes Agent / Grok Build 账号变成一支可调度的 AI 开发舰队。
 
 CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作台。
 
@@ -8,19 +8,20 @@ CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作�
 
 ## 适合谁？
 
-- 同时使用多个 Codex / Claude Code / OpenCode 账号的开发者
+- 同时使用多个 Codex / Claude Code / OpenCode / Grok Build 账号的开发者
 - 经常遇到单账号额度限制的 AI 编程重度用户
 - 希望多个 AI Agent 并行处理任务的独立开发者
 - 需要本地容器隔离、代理隔离和账号隔离的用户
 
 ## 核心能力
 
-- 多账号管理：Codex / Claude Code / OpenCode / Hermes Agent
+- 多账号管理：Codex / Claude Code / OpenCode / Hermes Agent / Grok Build
 - 每个账号独立容器隔离
 - 每个项目可绑定不同账号
 - Web 控制台提交任务和查看日志
 - CLI 异步任务队列
 - 宿主机代理中继，统一管理网络出口
+- macOS 系统托盘：登录自动启动，任务完成原生通知
 ---
 
 <video src="https://github.com/user-attachments/assets/37bee884-09c7-40ca-bc7b-87ce26422c8c" controls width="100%"></video>
@@ -129,6 +130,7 @@ coderfleet build
 - Claude Code（`@anthropic-ai/claude-code`）
 - OpenCode（`opencode-ai`）
 - Hermes Agent（安装在 `/opt/hermes-venv`）
+- Grok Build（`grok` CLI，需 `XAI_API_KEY`）
 
 ### 3. 添加账号与项目
 
@@ -148,6 +150,11 @@ coderfleet project add app-c carol ~/projects/app-c
 # Hermes Agent 账号
 coderfleet account add dave TYPE=hermes
 coderfleet project add app-d dave ~/projects/app-d
+
+# Grok Build 账号（API Key 认证）
+coderfleet account add eve TYPE=grok --auth env
+coderfleet project add app-e eve ~/projects/app-e
+# 编辑 ~/.coderfleet/accounts/eve/env，填入 XAI_API_KEY=xai-...
 ```
 
 ### 4. 生成配置并启动容器
@@ -166,6 +173,8 @@ CLI 会输出授权 URL，在宿主机浏览器打开 → 完成授权 → 复�
 
 如果账号容器还未启动，`login` 会自动拉起一个临时认证容器；登录结束后容器删除，认证文件保留在 `accounts/<账号名>/`。
 
+> Grok Build 只支持 `AUTH=env`，不需要执行 `coderfleet login`，直接配置 env 文件后 `coderfleet apply` 即可。
+
 ### 6. 进入容器工作
 
 ```bash
@@ -174,6 +183,7 @@ coderfleet enter app-a   # 进入 app-a 项目容器（使用 Codex 账号 alice
 coderfleet enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号 bob）
 coderfleet enter app-c   # 进入 app-c 项目容器（使用 OpenCode 账号 carol）
 coderfleet enter app-d   # 进入 app-d 项目容器（使用 Hermes Agent 账号 dave）
+coderfleet enter app-e   # 进入 app-e 项目容器（使用 Grok Build 账号 eve）
 ```
 
 进入后使用对应 CLI：
@@ -190,6 +200,9 @@ opencode run "帮我修复测试"
 
 # Hermes Agent 容器内
 hermes chat -q "帮我分析这个项目"
+
+# Grok Build 容器内
+grok -p "帮我实现支付接口" --output-format streaming-json
 ```
 
 ### 7. 启动调度服务与 Web 控制台
@@ -197,7 +210,10 @@ hermes chat -q "帮我分析这个项目"
 除了交互式进入容器，CoderFleet 还提供 **FastAPI 任务调度服务与 Web 聊天控制台**，可在宿主机直接触发并监控容器内的异步开发任务。
 
 ```bash
-coderfleet server
+coderfleet server              # 前台运行
+coderfleet server --daemon     # 后台守护进程模式
+coderfleet server --status     # 查看运行状态
+coderfleet server --stop       # 停止后台 server
 ```
 
 启动后可访问：
@@ -228,6 +244,67 @@ coderfleet task logs <任务ID> -f
 
 ---
 
+## macOS 系统托盘
+
+CoderFleet 提供原生 macOS 菜单栏 tray，可在登录时自动启动、后台管理 server 生命周期，并在任务完成时推送系统通知。
+
+### 安装（一次性）
+
+```bash
+coderfleet tray install
+```
+
+这会：
+1. 写入 `~/Library/LaunchAgents/com.coderfleet.tray.plist`
+2. 立即启动 tray 进程（launchd 管理，登录自动启动，崩溃自动重启）
+3. Tray 启动时若 server 未运行，自动以守护进程模式拉起 server
+
+### Tray 功能
+
+菜单栏图标提供：
+
+| 功能 | 说明 |
+|------|------|
+| Server 状态 | 显示当前 server 运行状态和 PID |
+| Open Web UI | 在浏览器打开 `http://localhost:8765` |
+| Start / Stop Server | 独立控制 server 生命周期，关闭 tray 不影响 server |
+| Check for Updates | 对比 PyPI 最新版本，提示升级命令 |
+| Quit | 退出 tray 进程，server 继续运行，任务不中断 |
+
+任务完成、失败或终止时，自动发送系统通知（内容含项目名和状态）。
+
+### Tray 管理命令
+
+```bash
+coderfleet tray install    # 安装 LaunchAgent + 立即启动
+coderfleet tray uninstall  # 移除 LaunchAgent（server 继续运行）
+coderfleet tray start      # 启动 tray（需已安装）
+coderfleet tray stop       # 停止 tray（server 继续运行）
+coderfleet tray status     # 查看 tray 和 server 状态
+coderfleet tray            # 前台调试运行（不经过 LaunchAgent）
+```
+
+### Server 与 Tray 的生命周期关系
+
+```
+登录
+  └── launchd 自动启动 coderfleet tray
+          └── tray 检测 server 未运行
+                  └── 自动启动 coderfleet server --daemon（写 PID 文件）
+
+关闭 tray（Quit 菜单或 coderfleet tray stop）
+  └── tray 进程退出
+  └── server 继续运行，任务不中断 ✓
+
+coderfleet server --stop
+  └── server 停止
+  └── tray 继续运行，5 秒内自动重启 server ✓
+```
+
+> **注意**：`coderfleet tray` 目前仅支持 macOS。
+
+---
+
 ## 命令速查
 
 ### 生命周期
@@ -241,13 +318,16 @@ coderfleet task logs <任务ID> -f
 | `coderfleet down` | 停止所有容器 |
 | `coderfleet restart` | 重启所有容器 |
 | `coderfleet status` | 查看容器、代理中继和镜像状态 |
-| `coderfleet server [--port N]` | 启动 FastAPI 调度服务及 Web UI（默认端口 8765） |
+| `coderfleet server` | 前台启动 FastAPI 调度服务及 Web UI（默认端口 8765） |
+| `coderfleet server --daemon` | 后台守护进程模式启动 server |
+| `coderfleet server --stop` | 停止后台 server |
+| `coderfleet server --status` | 查看 server 运行状态 |
 
 ### 账号管理
 
 | 命令 | 说明 |
 |------|------|
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号（自动停止关联容器） |
 | `coderfleet account list` | 列出所有账号及运行状态 |
 | `coderfleet login <账号名\|all>` | 登录账号并持久化认证文件 |
@@ -278,6 +358,16 @@ coderfleet task logs <任务ID> -f
 | `coderfleet task logs <任务ID> [-f]` | 查看任务日志（`-f` 实时跟踪） |
 | `coderfleet task kill <任务ID>` | 终止任务 |
 | `coderfleet task clean [N]` | 清理历史记录（保留最近 N 条，默认 30） |
+
+### macOS 系统托盘
+
+| 命令 | 说明 |
+|------|------|
+| `coderfleet tray install` | 安装 LaunchAgent，登录自动启动 |
+| `coderfleet tray uninstall` | 移除 LaunchAgent |
+| `coderfleet tray start` | 启动 tray |
+| `coderfleet tray stop` | 停止 tray（server 继续运行） |
+| `coderfleet tray status` | 查看 tray 和 server 状态 |
 
 ---
 
@@ -310,15 +400,16 @@ RELAY_IMAGE=gogost/gost:3
 ### accounts.conf
 
 ```conf
-# 格式：NAME=<名称>  TYPE=codex|claude|opencode|hermes  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
+# 格式：NAME=<名称>  TYPE=codex|claude|opencode|hermes|grok  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
 NAME=alice       TYPE=codex
 NAME=bob         TYPE=claude
 NAME=carol       TYPE=opencode
 NAME=dave        TYPE=hermes
-NAME=claude-api  TYPE=claude  AUTH=env  ENV_FILE=./accounts/claude-api/env
+NAME=eve         TYPE=grok     AUTH=env
+NAME=claude-api  TYPE=claude   AUTH=env  ENV_FILE=./accounts/claude-api/env
 NAME=opencode-api TYPE=opencode AUTH=env ENV_FILE=./accounts/opencode-api/env
-NAME=hermes-api TYPE=hermes AUTH=env ENV_FILE=./accounts/hermes-api/env
-NAME=local       TYPE=claude  PROXY=off
+NAME=hermes-api  TYPE=hermes   AUTH=env  ENV_FILE=./accounts/hermes-api/env
+NAME=local       TYPE=claude   PROXY=off
 ```
 
 字段说明：
@@ -326,28 +417,22 @@ NAME=local       TYPE=claude  PROXY=off
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `NAME` | 是 | 账号名，只允许字母/数字/连字符 |
-| `TYPE` | 是 | `codex` 使用 Codex CLI，`claude` 使用 Claude Code，`opencode` 使用 OpenCode，`hermes` 使用 Hermes Agent |
-| `AUTH` | 否 | 认证方式，默认 `login`；Claude Code / OpenCode / Hermes Agent 可用 `env` 通过 API Key 认证 |
+| `TYPE` | 是 | `codex` / `claude` / `opencode` / `hermes` / `grok` |
+| `AUTH` | 否 | 认证方式，默认 `login`；`claude` / `opencode` / `hermes` / `grok` 可用 `env` 通过 API Key 认证 |
 | `ENV_FILE` | 否 | Docker Compose env_file 路径；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
-| `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量，连接普通网络 |
+| `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量 |
 
-`AUTH=env` 用于 Claude Code / OpenCode / Hermes Agent API key 场景：
-
-```bash
-coderfleet account add claude-api TYPE=claude --auth env
-coderfleet account add opencode-api TYPE=opencode --auth env
-coderfleet account add hermes-api TYPE=hermes --auth env
-# 然后编辑对应的 ~/.coderfleet/accounts/<账号名>/env
-```
-
-示例 env 文件：
+`AUTH=env` 示例 env 文件：
 
 ```env
+# Claude Code
 ANTHROPIC_API_KEY=sk-ant-...
-# ANTHROPIC_BASE_URL=https://api.anthropic.com
+
+# Grok Build
+XAI_API_KEY=xai-...
 ```
 
-> 注意：Claude Code 会优先使用 `ANTHROPIC_API_KEY`；OpenCode 会读取环境变量和项目 `.env` 中的 provider API key；Hermes Agent 需要配置 provider API key 并执行 `hermes config set model.provider <provider>`；`login all` 会自动跳过 `AUTH=env` 账号。
+> `login all` 会自动跳过所有 `AUTH=env` 账号。Grok Build 仅支持 `AUTH=env`，无需执行 `login`。
 
 ### projects.conf
 
@@ -355,15 +440,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 # 格式：NAME=<名称>  ACCOUNT=<账号名>  PATH=<项目路径>
 NAME=my-app      ACCOUNT=alice  PATH=~/projects/my-app
 NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
+NAME=grok-app    ACCOUNT=eve    PATH=~/projects/grok-app
 ```
-
-字段说明：
-
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `NAME` | 是 | 项目名，只允许字母/数字/连字符 |
-| `ACCOUNT` | 是 | 使用的账号名 |
-| `PATH` | 是 | 挂载进容器 `/workspace` 的宿主机目录，支持 `~` |
 
 ---
 
@@ -373,8 +451,8 @@ NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 [codex-alice]  ──┐
 [claude-bob]   ──┤── intnet（internal=true，无公网路由）
 [opencode-carol] ─┤
-[hermes-dave]  ──┘         │
-                            ▼
+[hermes-dave]  ──┤         │
+[grok-eve]     ──┘         ▼
                     [coderfleet-proxy-relay]（gost）
                             │  HTTP → 宿主机代理
                             ▼
@@ -395,37 +473,17 @@ NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 coderfleet check-proxy
 ```
 
-正常输出：
-
-```
-── 代理连通性（应全部通）
-  claude-bob   → proxy-relay: 通
-  codex-alice  → proxy-relay: 通
-
-── 直连公网封锁（应全部封锁）
-  claude-bob   → 8.8.8.8:443: 已封锁
-  codex-alice  → 8.8.8.8:443: 已封锁
-
-── 代理出口 IP
-  claude-bob   出口 IP: x.x.x.x
-  codex-alice  出口 IP: x.x.x.x
-```
-
 ---
 
 ## 认证机制
 
-四种 CLI 的认证目录挂载方式：
-
-| CLI | 认证目录（容器内） | 本地存储 |
-|-----|--------------------|----------|
-| Codex | `/home/byclaw/.codex` | `accounts/<名称>/` |
-| Claude Code | `/home/byclaw/.claude` | `accounts/<名称>/` |
-| Claude Code API key | 同上 | `ENV_FILE` 指定文件 |
-| OpenCode | `/home/byclaw/.opencode`（内部设置 XDG data/config/state/cache） | `accounts/<名称>/` |
-| OpenCode API key | 环境变量 | `ENV_FILE` 指定文件 |
-| Hermes Agent | `/home/byclaw/.hermes` | `accounts/<名称>/` |
-| Hermes Agent API key | 环境变量和 Hermes provider 配置 | `ENV_FILE` 指定文件 |
+| CLI | 容器内认证目录 | 认证方式 |
+|-----|---------------|---------|
+| Codex | `/home/byclaw/.codex` | `login`（OAuth） |
+| Claude Code | `/home/byclaw/.claude` | `login`（OAuth）或 `env`（`ANTHROPIC_API_KEY`） |
+| OpenCode | `/home/byclaw/.opencode` | `login` 或 `env`（provider API key） |
+| Hermes Agent | `/home/byclaw/.hermes` | `login` 或 `env`（provider API key） |
+| Grok Build | `/home/byclaw/.grok` | `env` 仅（`XAI_API_KEY`） |
 
 每个账号的认证数据独立存储，容器删除重建后无需重新登录。
 
@@ -437,12 +495,15 @@ coderfleet check-proxy
 coderfleet/                      # Python 包
 ├── cli.py                 # Click 命令组入口
 ├── config.py              # 工作区路径解析、.conf 文件读写
+├── server_daemon.py       # server 守护进程管理（PID 文件、启停）
+├── tray.py                # macOS 系统托盘（rumps）+ LaunchAgent 管理
 ├── config_cmds.py         # account / project 子命令
 ├── compose.py             # docker-compose.yml 生成器（pyyaml）
 ├── docker_ops.py          # build / apply / up / down / enter 等命令
 ├── login_cmd.py           # coderfleet login（TTY 直通，os.execvp）
 ├── task_cmds.py           # coderfleet task 子命令（HTTP 调用 server）
 ├── init_wizard.py         # coderfleet init 交互式向导
+├── account_type_registry.py # 账号类型注册表（新增账号类型只需编辑此文件）
 ├── data/                  # 打包进 wheel 的资源文件
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -457,13 +518,22 @@ coderfleet/                      # Python 包
 pyproject.toml             # pip/pipx 打包配置
 ```
 
+### 新增账号类型
+
+账号类型集中在 `account_type_registry.py`，添加新类型只需：
+1. 编写 `_build_<type>()` 函数（构建容器内 CLI 命令）
+2. 编写 `_extract_<type>()` 函数（从日志提取 session ID）
+3. 在 `ACCOUNT_TYPES` 末尾注册一条 `AccountTypeSpec`
+
+其余组件（compose、login、scheduler、前端）全部自动适配。
+
 ---
 
 ## 常见问题
 
 **Q: 构建镜像时速度很慢怎么办？**
 
-镜像需要下载 Node.js、Python、AI CLI 包和 Hermes provider SDK，确保宿主机代理正常且 Docker Desktop 已配置代理即可。
+镜像需要下载 Node.js、Python、AI CLI 包，确保宿主机代理正常且 Docker Desktop 已配置代理即可。
 
 **Q: 登录时浏览器无法弹出？**
 
@@ -481,11 +551,40 @@ pyproject.toml             # pip/pipx 打包配置
 rm -rf ~/.coderfleet/accounts/<名称>
 ```
 
-**Q: 如何更新 CLI 版本？**
+**Q: Grok Build 如何配置？**
 
-修改包内镜像定义或自定义镜像流程中的 CLI 安装命令，然后重新构建：
+Grok Build 只支持 API Key 认证：
 
 ```bash
+coderfleet account add my-grok TYPE=grok --auth env
+coderfleet project add my-project my-grok ~/projects/my-project
+coderfleet apply
+```
+
+编辑 `~/.coderfleet/accounts/my-grok/env`：
+
+```env
+XAI_API_KEY=xai-...
+```
+
+API Key 在 [console.x.ai](https://console.x.ai/) 获取。
+
+**Q: macOS tray 安装后没有显示图标？**
+
+运行 `coderfleet tray status` 确认 LaunchAgent 是否已加载。如果未显示，可能是 macOS 通知权限问题，在「系统设置 → 通知」中确认 Python 或 Script Editor 的通知权限已开启。
+
+**Q: 关闭 tray 后任务会中断吗？**
+
+不会。Tray 和 server 是两个独立进程。从托盘菜单点击 Quit 只退出 tray 进程，server 继续运行，正在执行的任务不受影响。下次登录时 launchd 会自动重启 tray。
+
+**Q: 如何更新 CLI 版本？**
+
+```bash
+# 更新 coderfleet 本身
+pip install --upgrade coderfleet
+# 或通过 tray 菜单 "Check for Updates" 查看提示
+
+# 重新构建容器镜像（更新容器内的 AI CLI 版本）
 coderfleet build
 coderfleet restart
 ```

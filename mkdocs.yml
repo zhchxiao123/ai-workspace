@@ -48,6 +48,7 @@ nav:
       - Web 控制台: server.md
       - 异步任务: tasks.md
       - 网络与代理: network.md
+      - macOS 系统托盘: tray.md
   - 参考:
       - 命令速查: commands.md
       - 配置文件: configuration.md
