@@ -40,6 +40,10 @@ let chatPinnedProjectNames = (function() {
 })();
 let chatProjectSortOrder = localStorage.getItem('coderfleet.chatProjectSort') || 'default';
 let chatSearchQuery = '';
+let chatSearchTimer = null;
+let chatSearchResults = [];
+let chatSearchLoading = false;
+let chatSearchDeep = false;
 let tasksCache = [];
 let terminalContext = {
   projectName: '',

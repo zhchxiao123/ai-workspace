@@ -59,6 +59,11 @@ async function loadConversations(renderWorkspace = true) {
 // 以项目大标题分组渲染会话列表
 function renderConversations(convs, projects, tasks) {
   const list = document.getElementById('chat-history-list');
+  const activeQuery = chatSearchQuery.trim();
+  if (activeQuery) {
+    renderChatSearchResults(chatSearchResults, activeQuery, chatSearchDeep);
+    return;
+  }
   if (!projects.length) {
     list.innerHTML = `<div class="empty" style="padding: 20px 0;">暂无项目配置</div>`;
     return;
@@ -206,11 +211,140 @@ function renderConversations(convs, projects, tasks) {
 }
 
 function rerenderChatProjectList() {
+  if (chatSearchQuery.trim()) {
+    renderChatSearchResults(chatSearchResults, chatSearchQuery.trim(), chatSearchDeep);
+    return;
+  }
   renderConversations(
     chatConversationsList,
     projectsCache,
     tasksCache,
   );
+}
+
+function chatSearchTypeLabel(type) {
+  return {
+    project: '项目',
+    conversation: '对话',
+    task: '任务',
+    content: '内容',
+  }[type] || type;
+}
+
+function chatSearchTargetId(result) {
+  if (result.type === 'project') return result.project_name || result.id;
+  if (result.type === 'conversation') return result.conversation_id || result.id;
+  if (result.type === 'task' || result.type === 'content') {
+    return result.conversation_id || (result.task_id ? `task-${result.task_id}` : result.id);
+  }
+  return result.id;
+}
+
+function renderChatSearchResults(results, query, deep = false, error = '') {
+  const list = document.getElementById('chat-history-list');
+  const q = String(query || '').trim();
+  if (!q) {
+    rerenderChatProjectList();
+    return;
+  }
+
+  if (chatSearchLoading) {
+    list.innerHTML = `<div class="chat-search-state">搜索中...</div>`;
+    return;
+  }
+
+  if (error) {
+    list.innerHTML = `<div class="chat-search-state error">搜索失败：${esc(error)}</div>`;
+    return;
+  }
+
+  const header = `
+    <div class="chat-search-summary">
+      <span>${results.length ? `${results.length} 个结果` : '无匹配结果'}</span>
+      ${deep ? '<span>已搜索内容</span>' : '<button type="button" onclick="runChatDeepSearch()">搜索内容</button>'}
+    </div>`;
+
+  if (!results.length) {
+    list.innerHTML = `${header}<div class="chat-search-state">没有找到「${esc(q)}」</div>`;
+    return;
+  }
+
+  const rows = results.map(result => {
+    const target = encodeURIComponent(chatSearchTargetId(result));
+    const projectName = encodeURIComponent(result.project_name || '');
+    const match = (result.matches || [])[0];
+    const snippet = match ? `<div class="chat-search-match">${esc(match.field)}：${esc(match.snippet)}</div>` : '';
+    const status = result.status ? `<span class="chat-search-status">${esc(result.status)}</span>` : '';
+    return `
+      <div class="chat-search-result" onclick="openChatSearchResult('${esc(result.type)}', '${target}', '${projectName}')">
+        <div class="chat-search-result-main">
+          <div class="chat-search-title-row">
+            <span class="chat-search-type">${esc(chatSearchTypeLabel(result.type))}</span>
+            <span class="chat-search-title">${esc(result.title || result.id)}</span>
+            ${status}
+          </div>
+          <div class="chat-search-subtitle">${esc(result.subtitle || '')}</div>
+          ${snippet}
+        </div>
+      </div>`;
+  }).join('');
+
+  list.innerHTML = `${header}${rows}`;
+}
+
+async function performChatSearch(query, deep = false) {
+  const q = String(query || '').trim();
+  if (!q) return;
+  chatSearchLoading = true;
+  chatSearchDeep = deep;
+  renderChatSearchResults(chatSearchResults, q, deep);
+  try {
+    const params = new URLSearchParams({ q, scope: 'all', limit: '80' });
+    if (deep) params.set('deep', 'true');
+    const r = await fetch(`${API}/api/search?${params.toString()}`);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || '搜索请求失败');
+    if (q !== chatSearchQuery.trim()) return;
+    chatSearchResults = data.results || [];
+    chatSearchLoading = false;
+    renderChatSearchResults(chatSearchResults, q, deep);
+  } catch (e) {
+    if (q !== chatSearchQuery.trim()) return;
+    chatSearchLoading = false;
+    renderChatSearchResults([], q, deep, e.message || String(e));
+  }
+}
+
+function runChatDeepSearch() {
+  const q = chatSearchQuery.trim();
+  if (q) performChatSearch(q, true);
+}
+
+function clearChatSearchInput() {
+  chatSearchQuery = '';
+  chatSearchResults = [];
+  chatSearchLoading = false;
+  chatSearchDeep = false;
+  const input = document.getElementById('chat-search-input');
+  if (input) input.value = '';
+}
+
+function openChatSearchResult(type, encodedTarget, encodedProjectName) {
+  const target = decodeURIComponent(encodedTarget || '');
+  const projectName = decodeURIComponent(encodedProjectName || '');
+  clearChatSearchInput();
+
+  if (type === 'project') {
+    if (projectName) {
+      chatCollapsedProjectNames.delete(projectName);
+      saveChatCollapsedState();
+    }
+    rerenderChatProjectList();
+    return;
+  }
+
+  rerenderChatProjectList();
+  if (target) selectConversation(target);
 }
 
 function saveChatCollapsedState() {
@@ -245,7 +379,18 @@ function toggleChatProjectPin(encodedProjectName) {
 
 function handleChatSearch(value) {
   chatSearchQuery = value;
-  rerenderChatProjectList();
+  chatSearchResults = [];
+  chatSearchDeep = false;
+  clearTimeout(chatSearchTimer);
+  const q = chatSearchQuery.trim();
+  if (!q) {
+    chatSearchLoading = false;
+    rerenderChatProjectList();
+    return;
+  }
+  chatSearchLoading = true;
+  renderChatSearchResults([], q);
+  chatSearchTimer = setTimeout(() => performChatSearch(q), 220);
 }
 
 // ── 全局浮动 context menu ─────────────────────────────────

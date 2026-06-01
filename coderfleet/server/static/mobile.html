@@ -623,6 +623,59 @@
     .mobile-sort-btn:active { border-color: var(--accent-dk); color: var(--accent); }
     .mobile-sort-btn svg { width: 13px; height: 13px; stroke-width: 2; }
     .mobile-sort-btn.active { border-color: rgba(45,212,191,.45); color: var(--accent); }
+    .mobile-search {
+      padding: 0 12px 10px;
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    .mobile-search input {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 16px;
+      outline: none;
+    }
+    .mobile-search input:focus { border-color: var(--accent-dk); }
+    .mobile-search-summary {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 8px 14px;
+      color: var(--text3); font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mobile-search-summary button {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font: inherit;
+    }
+    .mobile-search-type {
+      flex-shrink: 0;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--text3);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .mobile-search-state {
+      padding: 28px 16px;
+      color: var(--text3);
+      text-align: center;
+      font-size: 14px;
+    }
+    .mobile-search-match {
+      margin-top: 3px;
+      color: var(--text3);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   </style>
 </head>
 <body>
@@ -649,6 +702,11 @@
         <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
       </svg>
     </button>
+  </div>
+
+  <div class="mobile-search">
+    <input id="mobile-search-input" type="search" placeholder="搜索项目、对话、任务或内容..."
+      oninput="handleMobileSearch(this.value)" autocomplete="off" autocorrect="off">
   </div>
 
   <div class="list-scroll" id="conv-list">
@@ -809,6 +867,11 @@ let stableAppHeight = 0;
 let mobileSortOrder = localStorage.getItem('coderfleet.mobileSortOrder') || 'default';
 const MOBILE_SORT_CYCLE  = ['default', 'activity', 'name', 'running'];
 const MOBILE_SORT_LABELS = { default: '默认', activity: '活跃', name: '名称', running: '运行中' };
+let mobileSearchQuery = '';
+let mobileSearchTimer = null;
+let mobileSearchResults = [];
+let mobileSearchLoading = false;
+let mobileSearchDeep = false;
 let pendingImages = [];
 let uploadingImages = 0;
 let actionTarget = null;
@@ -953,6 +1016,11 @@ function setLbl(t, ok) {
 // ── Conversation list ─────────────────────────────────────
 function renderList() {
   const el = document.getElementById('conv-list');
+  const activeQuery = mobileSearchQuery.trim();
+  if (activeQuery) {
+    renderMobileSearchResults(mobileSearchResults, activeQuery, mobileSearchDeep);
+    return;
+  }
   if (!projects.length) {
     el.innerHTML = '<div class="empty-hint"><div class="ei">💬</div><div>暂无项目配置</div></div>';
     return;
@@ -1012,10 +1080,134 @@ function renderList() {
       </div>
       ${body}
     `;
+	  }).join('');
+	}
+
+function mobileSearchTypeLabel(type) {
+  return {
+    project: '项目',
+    conversation: '对话',
+    task: '任务',
+    content: '内容',
+  }[type] || type;
+}
+
+function mobileSearchTargetId(result) {
+  if (result.type === 'project') return result.project_name || result.id;
+  if (result.type === 'conversation') return result.conversation_id || result.id;
+  if (result.type === 'task' || result.type === 'content') {
+    return result.conversation_id || (result.task_id ? `task-${result.task_id}` : result.id);
+  }
+  return result.id;
+}
+
+function renderMobileSearchResults(results, query, deep = false, error = '') {
+  const el = document.getElementById('conv-list');
+  const q = String(query || '').trim();
+  if (!q) {
+    renderList();
+    return;
+  }
+
+  if (mobileSearchLoading) {
+    el.innerHTML = '<div class="mobile-search-state">搜索中...</div>';
+    return;
+  }
+  if (error) {
+    el.innerHTML = `<div class="mobile-search-state">搜索失败：${x(error)}</div>`;
+    return;
+  }
+
+  const header = `<div class="mobile-search-summary">
+    <span>${results.length ? `${results.length} 个结果` : '无匹配结果'}</span>
+    ${deep ? '<span>已搜索内容</span>' : '<button onclick="runMobileDeepSearch()">搜索内容</button>'}
+  </div>`;
+  if (!results.length) {
+    el.innerHTML = `${header}<div class="mobile-search-state">没有找到「${x(q)}」</div>`;
+    return;
+  }
+
+  el.innerHTML = header + results.map(result => {
+    const target = encodeURIComponent(mobileSearchTargetId(result));
+    const projectName = encodeURIComponent(result.project_name || '');
+    const match = (result.matches || [])[0];
+    const snippet = match ? `<div class="mobile-search-match">${x(match.field)}：${x(match.snippet)}</div>` : '';
+    return `<div class="conv-row" onclick="openMobileSearchResult('${x(result.type)}','${target}','${projectName}')">
+      <span class="mobile-search-type">${x(mobileSearchTypeLabel(result.type))}</span>
+      <div class="conv-info">
+        <div class="conv-name">${x(result.title || result.id)}</div>
+        <div class="conv-meta">${x(result.subtitle || '')}</div>
+        ${snippet}
+      </div>
+    </div>`;
   }).join('');
 }
 
-function projectDevItems(proj) {
+async function performMobileSearch(query, deep = false) {
+  const q = String(query || '').trim();
+  if (!q) return;
+  mobileSearchLoading = true;
+  mobileSearchDeep = deep;
+  renderMobileSearchResults(mobileSearchResults, q, deep);
+  try {
+    const params = new URLSearchParams({ q, scope: 'all', limit: '80' });
+    if (deep) params.set('deep', 'true');
+    const data = await api(`/api/search?${params.toString()}`);
+    if (q !== mobileSearchQuery.trim()) return;
+    mobileSearchResults = data.results || [];
+    mobileSearchLoading = false;
+    renderMobileSearchResults(mobileSearchResults, q, deep);
+  } catch (err) {
+    if (q !== mobileSearchQuery.trim()) return;
+    mobileSearchLoading = false;
+    renderMobileSearchResults([], q, deep, err.message || String(err));
+  }
+}
+
+function runMobileDeepSearch() {
+  const q = mobileSearchQuery.trim();
+  if (q) performMobileSearch(q, true);
+}
+
+function clearMobileSearch() {
+  mobileSearchQuery = '';
+  mobileSearchResults = [];
+  mobileSearchLoading = false;
+  mobileSearchDeep = false;
+  const input = document.getElementById('mobile-search-input');
+  if (input) input.value = '';
+}
+
+function handleMobileSearch(value) {
+  mobileSearchQuery = value;
+  mobileSearchResults = [];
+  mobileSearchDeep = false;
+  clearTimeout(mobileSearchTimer);
+  const q = mobileSearchQuery.trim();
+  if (!q) {
+    mobileSearchLoading = false;
+    renderList();
+    return;
+  }
+  mobileSearchLoading = true;
+  renderMobileSearchResults([], q);
+  mobileSearchTimer = setTimeout(() => performMobileSearch(q), 220);
+}
+
+function openMobileSearchResult(type, encodedTarget, encodedProjectName) {
+  const target = decodeURIComponent(encodedTarget || '');
+  const projectName = decodeURIComponent(encodedProjectName || '');
+  clearMobileSearch();
+  if (type === 'project') {
+    if (projectName) collapsedProjects.delete(projectName);
+    renderList();
+    return;
+  }
+  if (target.startsWith('task-')) openOneOff(target.slice(5));
+  else if (target) openConv(target);
+}
+
+	function projectDevItems(proj) {
   const convItems = convs
     .filter(c => (window.conversationBelongsToProject || conversationBelongsToProject)(c, proj))
     .map(c => ({

@@ -9,6 +9,7 @@ STATIC_DIR = ROOT / "coderfleet" / "server" / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 MOBILE_HTML = STATIC_DIR / "mobile.html"
 PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
+MAIN_PY = ROOT / "coderfleet" / "server" / "main.py"
 
 
 def read_index() -> str:
@@ -21,6 +22,10 @@ def read_mobile() -> str:
 
 def read_projects_js() -> str:
     return PROJECTS_JS.read_text(encoding="utf-8")
+
+
+def read_main_py() -> str:
+    return MAIN_PY.read_text(encoding="utf-8")
 
 
 def read_ui_source() -> str:
@@ -264,10 +269,25 @@ def test_chat_project_history_collapses_after_five_items() -> None:
 
     assert "CHAT_PROJECT_VISIBLE_LIMIT = 5" in source
     assert "chatExpandedProjectNames" in source
-    assert "items.slice(0, CHAT_PROJECT_VISIBLE_LIMIT)" in source
+    assert "filteredItems.slice(0, CHAT_PROJECT_VISIBLE_LIMIT)" in source
     assert "function toggleChatProjectItems" in source
     assert "chat-project-expand-btn" in source
     assert "展开显示" in source
+
+
+def test_chat_search_uses_global_search_results_not_tree_filter_only() -> None:
+    html = read_index()
+    source = read_ui_source()
+    main_py = read_main_py()
+
+    assert 'placeholder="搜索项目、对话、任务或内容..."' in html
+    assert '@app.get("/api/search", response_model=SearchResponse)' in main_py
+    assert "class SearchResult" in main_py
+    assert "fetch(`${API}/api/search?${params.toString()}`)" in source
+    assert "function renderChatSearchResults" in source
+    assert "function openChatSearchResult" in source
+    assert "runChatDeepSearch" in source
+    assert "chatSearchResults" in source
 
 
 def test_mobile_project_history_collapses_after_five_items_and_sorts_newest_first() -> None:
@@ -282,6 +302,17 @@ def test_mobile_project_history_collapses_after_five_items_and_sorts_newest_firs
     assert "function toggleProjectGroup" in source
     assert "function toggleProjectItems" in source
     assert "展开显示" in source
+
+
+def test_mobile_exposes_global_chat_search() -> None:
+    source = read_mobile()
+
+    assert 'id="mobile-search-input"' in source
+    assert "function performMobileSearch" in source
+    assert "function renderMobileSearchResults" in source
+    assert "function openMobileSearchResult" in source
+    assert "api(`/api/search?${params.toString()}`)" in source
+    assert "runMobileDeepSearch" in source
 
 
 def test_mobile_development_controls_cover_task_lifecycle() -> None:
