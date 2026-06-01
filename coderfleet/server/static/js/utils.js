@@ -42,6 +42,14 @@ function sseUrl(url) {
   return `${url}${sep}token=${encodeURIComponent(key)}`;
 }
 
+// 普通链接 / 图片 / 下载不会经过 fetch 包装，需用查询参数携带 token。
+function authedUrl(url) {
+  const key = getApiKey();
+  if (!key) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(key)}`;
+}
+
 function showLoginOverlay() {
   const el = document.getElementById('auth-overlay');
   if (el) el.style.display = 'flex';
@@ -282,4 +290,3 @@ function relTime(iso) {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
   return `${Math.floor(diff / 86400000)} 天前`;
 }
-

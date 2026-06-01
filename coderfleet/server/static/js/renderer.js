@@ -556,7 +556,8 @@ class ChatLogRenderer {
     return text.replace(/<!--\s*CF_SEND:\s*([^>]+?)\s*-->/g, (_, rawPath) => {
       const filePath = rawPath.trim();
       const filename = filePath.split('/').pop() || filePath;
-      const url = `/api/projects/${encodeURIComponent(this.projectName)}/download?path=${encodeURIComponent(filePath)}`;
+      const rawUrl = `/api/projects/${encodeURIComponent(this.projectName)}/download?path=${encodeURIComponent(filePath)}`;
+      const url = typeof authedUrl === 'function' ? authedUrl(rawUrl) : rawUrl;
       return (
         `\n<div class="cf-download-card">` +
           `<div class="cf-dl-icon">` +
