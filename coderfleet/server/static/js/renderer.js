@@ -2,7 +2,7 @@
 //  ChatLogRenderer — 把 JSONL 日志渲染成对话
 // ══════════════════════════════════════════════════════════════
 class ChatLogRenderer {
-  constructor(container, isRunning = false, foldProcess = false) {
+  constructor(container, isRunning = false, foldProcess = false, projectName = null) {
     this.container = container;   // #log-content div
     this.inner = null;        // .chat-log div
     this.toolMap = {};          // tool_use_id → { headerEl, badgeEl, outputEl, exitEl, toolName, input, wrap }
@@ -10,6 +10,7 @@ class ChatLogRenderer {
     this._footerRendered = false;
     this.isRunning = isRunning;   // 是否正在运行
     this.foldProcess = foldProcess; // 是否折叠最新步骤
+    this.projectName = projectName; // 所属项目名，用于 CF_SEND 文件下载链接
 
     // 折叠辅助字段
     this.processWrapper = null;
@@ -549,11 +550,36 @@ class ChatLogRenderer {
     }
   }
 
+  // ── 文件下载标记检测：<!-- CF_SEND: path --> ─────────────
+  _injectDownloadCards(text) {
+    if (!this.projectName) return text;
+    return text.replace(/<!--\s*CF_SEND:\s*([^>]+?)\s*-->/g, (_, rawPath) => {
+      const filePath = rawPath.trim();
+      const filename = filePath.split('/').pop() || filePath;
+      const url = `/api/projects/${encodeURIComponent(this.projectName)}/download?path=${encodeURIComponent(filePath)}`;
+      return (
+        `\n<div class="cf-download-card">` +
+          `<div class="cf-dl-icon">` +
+            `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+              `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9,15 12,18 15,15"/>` +
+            `</svg>` +
+          `</div>` +
+          `<div class="cf-dl-info">` +
+            `<span class="cf-dl-name">${esc(filename)}</span>` +
+            `<span class="cf-dl-path">${esc(filePath)}</span>` +
+          `</div>` +
+          `<a class="cf-dl-btn" href="${esc(url)}" download="${esc(filename)}">下载</a>` +
+        `</div>\n`
+      );
+    });
+  }
+
   // ── AI 文字气泡 ───────────────────────────────────────────
   _bubble(text, model) {
     const label = model
       ? model.replace(/^claude-/, '').split('-').slice(0, 2).join('-')
       : 'AI';
+    const displayText = this._injectDownloadCards(text);
     const el = document.createElement('div');
     el.className = 'chat-bubble-wrap';
     el.classList.add('timeline-node');
@@ -565,7 +591,7 @@ class ChatLogRenderer {
         <div class="bubble-label">${esc(label)}</div>
         <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
       </div>
-      <div class="bubble-content">${renderMd(text)}</div>
+      <div class="bubble-content">${renderMd(displayText)}</div>
     </div>
   </div>`;
 

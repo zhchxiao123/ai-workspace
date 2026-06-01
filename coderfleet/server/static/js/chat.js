@@ -14,12 +14,15 @@ async function loadConversations(renderWorkspace = true) {
 
     conversationsCache = {};
     convs.forEach(c => { conversationsCache[c.id] = c.name; });
+    syncConversationTabLabels();
+    renderTopbarTabs();
 
     renderConversations(convs, projects, tasks);
 
     if (renderWorkspace) {
       if (!activeConversationId) {
         renderEmptyChatState();
+        syncBottomTerminalProjectFromContext();
       } else if (activeConversationId.startsWith('task-')) {
         const taskId = activeConversationId.replace('task-', '');
         const task = tasks.find(t => t.id === taskId);
@@ -34,6 +37,7 @@ async function loadConversations(renderWorkspace = true) {
             isOneOff: true
           };
           renderChatWorkspace(virtualConv);
+          syncBottomTerminalProjectFromContext();
         } else {
           startNewChat();
         }
@@ -41,6 +45,7 @@ async function loadConversations(renderWorkspace = true) {
         const active = convs.find(c => c.id === activeConversationId);
         if (active) {
           renderChatWorkspace(active);
+          syncBottomTerminalProjectFromContext();
         } else {
           startNewChat();
         }
@@ -95,11 +100,15 @@ function renderConversations(convs, projects, tasks) {
 
     const items = [];
     projConvs.forEach(c => {
+      const convTasks = tasks.filter(t => t.conversation_id === c.id)
+        .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+      const latestStatus = convTasks[0]?.status || 'done';
       items.push({
         type: 'conversation',
         id: c.id,
         name: c.name || c.id,
-        time: c.updated || c.created || 0
+        time: c.updated || c.created || 0,
+        status: latestStatus,
       });
     });
     projTasks.forEach(t => {
@@ -107,7 +116,8 @@ function renderConversations(convs, projects, tasks) {
         type: 'one-off',
         id: `task-${t.id}`,
         name: t.prompt,
-        time: t.created || 0
+        time: t.created || 0,
+        status: t.status || 'done',
       });
     });
 
@@ -161,10 +171,17 @@ function renderConversations(convs, projects, tasks) {
       html += visibleItems.map(item => {
         const isActive = item.id === activeConversationId;
         const displayTime = fmtTimeFriendly(item.time);
+        const isRunning = item.status === 'running';
+        const isPending = item.status === 'pending' || item.status === 'scheduled';
+        const statusBadge = isRunning
+          ? `<span class="session-status-dot running" title="运行中"></span>`
+          : isPending
+          ? `<span class="session-status-dot pending" title="${item.status === 'scheduled' ? '已定时' : '排队中'}"></span>`
+          : `<span class="session-time">${esc(displayTime)}</span>`;
         return `
       <div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
         <span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
-        <span class="session-time">${esc(displayTime)}</span>
+        ${statusBadge}
         <button class="session-dots-btn" onclick="event.stopPropagation(); openSessionMenu(event, '${esc(item.id)}', '${item.type}')" title="更多操作" aria-label="更多操作">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
         </button>
@@ -427,6 +444,8 @@ function toggleChatProjectItems(encodedProjectName) {
 async function selectConversation(convId) {
   stopChatFollow();
   activeConversationId = convId;
+  activeTabId = upsertConversationTab(convId);
+  renderTopbarTabs();
   await loadConversations();
 }
 
@@ -435,6 +454,7 @@ function startNewChat(options = {}) {
   stopChatFollow();
   activeConversationId = null;
   currentChatTaskId = null;
+  activeTabId = 'chat';
   chatNewSessionProject = options.projectName || '';
   showPage('chat');
   loadConversations();
@@ -517,7 +537,7 @@ async function renderChatWorkspace(conv) {
     </div>
   </div>
   <div style="display: flex; gap: 8px;" id="chat-header-actions">
-    <!-- 动态渲染终止和刷新按钮 -->
+    <!-- 动态渲染当前任务动作 -->
   </div>
 </div>
 
@@ -568,7 +588,6 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
 
     headerActions.innerHTML = `
       ${actionBtnHtml}
-      <button class="btn" onclick="selectConversation('${conv.id}')">刷新</button>
     `;
 
     const runningCount = convTasks.filter(t => t.status === 'running').length;
@@ -630,7 +649,7 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
 
       // 3. 构建局部的 ChatLogRenderer 并进行渲染
       // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
-      const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true);
+      const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null);
       if (task.status === 'pending') {
         localRenderer.renderPending();
       } else if (task.status === 'scheduled') {
@@ -732,6 +751,8 @@ async function sendChatMessage() {
       }
 
       activeConversationId = taskData.conversation_id;
+      activeTabId = upsertConversationTab(activeConversationId);
+      renderTopbarTabs();
       textarea.value = '';
       textarea.style.height = 'auto';
       pendingImages = [];
@@ -781,6 +802,8 @@ async function sendChatMessage() {
 
       convId = convData.id;
       activeConversationId = convId;
+      activeTabId = upsertConversationTab(convId);
+      renderTopbarTabs();
     } catch (e) {
       alert('升级任务链失败: ' + e.message);
       sendBtn.disabled = false;
@@ -949,33 +972,35 @@ async function deleteOneOff(itemId) {
 // ── 图片上传 ──────────────────────────────────────────────
 
 function buildChatInputHTML(placeholder, hint) {
-  const imgIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+  const attachIcon = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`;
   return `
 <div class="chat-input-container">
-  <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
-  <div class="chat-input-row">
-    <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
-    <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片，或直接粘贴截图">${imgIcon}</button>
+  <div class="chat-input-composer">
+    <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
     <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>
-    <button class="btn primary" id="chat-send-btn" onclick="sendChatMessage()" style="min-height: 40px;">发送</button>
-  </div>
-  <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>
-  <div class="chat-input-actions">
-    <div class="chat-input-options">
-      <label class="toggle-row" style="cursor: pointer;">
-        <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
-      </label>
-      <span style="color: var(--border-md);">|</span>
-      <label class="toggle-row" style="cursor: pointer;">
-        <input type="checkbox" id="chat-schedule-checkbox" onchange="toggleSchedTimeInput(this.checked)"> 定时发送 ⏰
-      </label>
-      <span id="chat-sched-time-wrap" style="display: none; align-items: center; gap: 4px;">
-        <input type="datetime-local" id="chat-sched-time" style="background: var(--surface-2); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); font-size: 11px; padding: 2px 4px; outline: none; min-height: 24px; width: auto;">
-      </span>
-      <span style="color: var(--border-md);">|</span>
-      <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
+    <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>
+    <div class="chat-input-actions">
+      <div class="chat-input-options">
+        <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
+        <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片，或直接粘贴截图">${attachIcon}</button>
+        <label class="toggle-row" style="cursor: pointer;">
+          <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
+        </label>
+        <span style="color: var(--border-md);">|</span>
+        <label class="toggle-row" style="cursor: pointer;">
+          <input type="checkbox" id="chat-schedule-checkbox" onchange="toggleSchedTimeInput(this.checked)"> 定时发送 ⏰
+        </label>
+        <span id="chat-sched-time-wrap" style="display: none; align-items: center; gap: 4px;">
+          <input type="datetime-local" id="chat-sched-time" style="background: var(--surface-2); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); font-size: 11px; padding: 2px 4px; outline: none; min-height: 24px; width: auto;">
+        </span>
+        <span style="color: var(--border-md);">|</span>
+        <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
+      </div>
+      <div class="chat-input-side">
+        <div class="chat-input-hint">${hint}</div>
+        <button class="btn primary chat-send-btn" id="chat-send-btn" onclick="sendChatMessage()">发送</button>
+      </div>
     </div>
-    <div style="font-size: 11px; color: var(--text-3);">${hint}</div>
   </div>
 </div>`;
 }

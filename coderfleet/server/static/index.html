@@ -3,6 +3,9 @@
 
 <head>
   <meta charset="UTF-8">
+  <script>
+    (function(){var s=localStorage.getItem('cf-theme');if(s){document.documentElement.setAttribute('data-theme',s);}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.documentElement.setAttribute('data-theme','dark');}else{document.documentElement.setAttribute('data-theme','light');}})();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CoderFleet</title>
   <link rel="manifest" href="/static/manifest.json">
@@ -80,8 +83,8 @@
         <div class="flex gap-8 text-sm text-muted">
           <span class="health-dot" id="health-dot"></span>
           <span class="health-text" id="health-text">连接中...</span>
+          <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" aria-label="切换主题"></button>
         </div>
-        <button class="btn" onclick="logoutApiKey()" title="退出登录" style="font-size:11px;padding:3px 8px;margin-top:6px;opacity:.7">退出</button>
       </div>
     </aside>
 
@@ -89,13 +92,16 @@
     <div class="main">
       <div class="topbar">
         <span class="page-title" id="page-title" style="cursor: pointer;" onclick="switchTab('chat')">任务开发</span>
+        <button class="tab-scroll-btn" type="button" onclick="scrollTabStrip('topbar-tabs', -1)" title="向左滚动任务 Tab">‹</button>
         <div class="topbar-tabs" id="topbar-tabs"></div>
-        <button class="add-tab-btn" id="add-tab-btn" onclick="showAddTabMenu(event)" title="连接项目终端">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 5v14M5 12h14" />
+        <button class="tab-scroll-btn" type="button" onclick="scrollTabStrip('topbar-tabs', 1)" title="向右滚动任务 Tab">›</button>
+        <button class="btn top-terminal-btn" id="top-terminal-btn" onclick="toggleBottomTerminal()" title="打开/收起当前项目终端" aria-label="打开/收起当前项目终端">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 17l6-6-6-6" />
+            <path d="M12 19h8" />
           </svg>
+          <span>终端</span>
         </button>
-        <span class="spacer"></span>
         <button class="btn" onclick="refreshCurrent()">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M23 4v6h-6" />
@@ -103,6 +109,14 @@
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
           </svg>
           <span>刷新</span>
+        </button>
+        <button class="btn top-logout-btn" onclick="logoutApiKey()" title="退出登录" aria-label="退出登录">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <path d="M16 17l5-5-5-5" />
+            <path d="M21 12H9" />
+          </svg>
+          <span>退出</span>
         </button>
       </div>
 
@@ -129,15 +143,25 @@
             <button class="chat-sidebar-toggle" id="chat-sidebar-toggle" onclick="toggleChatSidebar()" aria-label="隐藏对话侧边栏" aria-expanded="true" title="隐藏对话侧边栏">
               <span id="chat-sidebar-toggle-icon">&lt;</span>
             </button>
-            <div class="chat-main" id="chat-workspace">
-              <!-- 右侧对话详情区由 JS 动态渲染 -->
+            <div class="chat-main-column">
+              <div class="chat-main" id="chat-workspace">
+                <!-- 右侧对话详情区由 JS 动态渲染 -->
+              </div>
+
+              <!-- 底部项目终端面板 -->
+              <div class="bottom-terminal-drawer" id="bottom-terminal-drawer" style="display:none">
+                <div class="bottom-terminal-resize" id="bottom-terminal-resize" title="拖拽调整终端高度"></div>
+                <div class="bottom-terminal-tabbar">
+                  <button class="bottom-terminal-tab-scroll" type="button" onclick="scrollTabStrip('bottom-terminal-tabs', -1)" title="向左滚动终端 Tab">‹</button>
+                  <div class="bottom-terminal-tabs" id="bottom-terminal-tabs"></div>
+                  <button class="bottom-terminal-tab-scroll" type="button" onclick="scrollTabStrip('bottom-terminal-tabs', 1)" title="向右滚动终端 Tab">›</button>
+                  <button class="bottom-terminal-tab-add" type="button" onclick="addBottomTerminalTab()" title="新增终端 Tab">+</button>
+                  <button class="bottom-terminal-close" type="button" onclick="closeBottomTerminal(true)" title="关闭终端面板">×</button>
+                </div>
+                <div class="bottom-terminal-mount" id="bottom-terminal"></div>
+              </div>
             </div>
           </div>
-        </div>
-
-        <!-- 多终端独立页面 -->
-        <div class="page" id="page-tab-terminal">
-          <!-- 动态创建的多个终端容器将被挂载到这里 -->
         </div>
 
         <!-- 任务列表页 -->
@@ -445,6 +469,7 @@
         </div>
 
       </div>
+
     </div>
   </div>
 

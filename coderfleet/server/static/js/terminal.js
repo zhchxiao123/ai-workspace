@@ -1,12 +1,79 @@
-// ── 顶部多 Tab 终端系统 JS 实现 ──
+// ── 顶部多任务链 Tab 系统 ─────────────────────────────────
 // taskBelongsToProject 来自 shared/project-utils.js（全局）
-let topbarTabs = [{ id: 'chat', label: '📁 AI 对话', closable: false }];
+let topbarTabs = [{ id: 'chat', kind: 'chat-home', label: 'AI 对话', closable: false }];
 let activeTabId = 'chat';
-let multiTerminalContexts = {}; // projectName -> { terminal, fitAddon, socket, connected }
+let bottomTerminalTabs = [];
+let activeBottomTerminalTabId = '';
+let bottomTerminalTabSeq = 0;
+let bottomTerminalContext = {
+  projectName: '',
+  socket: null,
+  terminal: null,
+  fitAddon: null,
+  connected: false,
+  resizeTimer: null,
+  lastState: 'closed',
+  initialized: false,
+};
 
 // 初始化 Tab 系统
 function initTopbarTabs() {
   renderTopbarTabs();
+}
+
+function scrollTabStrip(elementId, direction) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  el.scrollBy({ left: direction * 220, behavior: 'smooth' });
+}
+
+function conversationTabId(convId) {
+  return `conversation-${convId}`;
+}
+
+function conversationIdFromTabId(tabId) {
+  return tabId.slice('conversation-'.length);
+}
+
+function compactTabLabel(text) {
+  const value = String(text || '').trim() || '未命名任务链';
+  return value.length > 18 ? value.slice(0, 17) + '…' : value;
+}
+
+function getConversationTabLabel(convId) {
+  if (convId.startsWith('task-')) {
+    const taskId = convId.replace('task-', '');
+    const task = (tasksCache || []).find(t => t.id === taskId);
+    return compactTabLabel(task?.prompt || '一次性任务');
+  }
+  const conv = (chatConversationsList || []).find(c => c.id === convId);
+  return compactTabLabel(conv?.name || conversationsCache?.[convId] || convId);
+}
+
+function upsertConversationTab(convId) {
+  const tabId = conversationTabId(convId);
+  const label = getConversationTabLabel(convId);
+  const existing = topbarTabs.find(t => t.id === tabId);
+  if (existing) {
+    existing.label = label;
+    return tabId;
+  }
+  topbarTabs.push({
+    id: tabId,
+    kind: 'conversation',
+    conversationId: convId,
+    label,
+    closable: true,
+  });
+  return tabId;
+}
+
+function syncConversationTabLabels() {
+  topbarTabs.forEach(tab => {
+    if (tab.kind === 'conversation' && tab.conversationId) {
+      tab.label = getConversationTabLabel(tab.conversationId);
+    }
+  });
 }
 
 // 渲染 Tabs
@@ -21,6 +88,7 @@ function renderTopbarTabs() {
     btn.type = 'button';
     btn.onclick = () => switchTab(tab.id);
 
+    btn.title = tab.kind === 'conversation' ? tab.label : '';
     btn.innerHTML = `<span>${esc(tab.label)}</span>`;
 
     if (tab.closable) {
@@ -42,35 +110,32 @@ function switchTab(tabId) {
   activeTabId = tabId;
   renderTopbarTabs();
 
-  // 先隐藏所有 page 和多终端容器
+  // 先隐藏所有 page
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.multi-term-container').forEach(c => c.classList.remove('active'));
 
-  // 显示顶级 Tab 状态下的 topbar-tabs 和 + 按钮
+  // 顶部 Tab 切换只负责任务开发区。
   const tabsEl = document.getElementById('topbar-tabs');
-  const addBtn = document.getElementById('add-tab-btn');
   if (tabsEl) tabsEl.style.display = '';
-  if (addBtn) addBtn.style.display = '';
 
   if (tabId === 'chat') {
+    stopChatFollow();
+    activeConversationId = null;
+    currentChatTaskId = null;
     currentPage = 'chat';
     document.getElementById('page-chat').classList.add('active');
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.querySelector('[data-page="chat"]').classList.add('active');
     document.getElementById('page-title').textContent = '任务开发';
-  } else if (tabId.startsWith('terminal-')) {
-    currentPage = 'terminal';
-    const projectName = tabId.replace('terminal-', '');
-    document.getElementById('page-tab-terminal').classList.add('active');
-
-    // 激活对应的终端容器
-    const termContainer = document.getElementById(`term-container-${projectName}`);
-    if (termContainer) {
-      termContainer.classList.add('active');
-    }
-
-    // 连接或重置该项目的终端
-    openMultiTerminal(projectName);
+    loadConversations();
+  } else if (tabId.startsWith('conversation-')) {
+    stopChatFollow();
+    activeConversationId = conversationIdFromTabId(tabId);
+    currentPage = 'chat';
+    document.getElementById('page-chat').classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelector('[data-page="chat"]').classList.add('active');
+    document.getElementById('page-title').textContent = '任务开发';
+    loadConversations();
   }
 }
 
@@ -79,18 +144,11 @@ function closeTab(tabId) {
   const idx = topbarTabs.findIndex(t => t.id === tabId);
   if (idx === -1) return;
 
-  const projectName = tabId.replace('terminal-', '');
-  // 断开该终端的 websocket
-  disconnectMultiTerminal(projectName);
-
-  // 移除 DOM 容器
-  const termContainer = document.getElementById(`term-container-${projectName}`);
-  if (termContainer) termContainer.remove();
-
   topbarTabs.splice(idx, 1);
 
   // 如果关闭的是当前激活的 Tab，则自动切回前一个 Tab 或者是 'chat'
   if (activeTabId === tabId) {
+    stopChatFollow();
     const nextActiveId = topbarTabs[idx - 1] ? topbarTabs[idx - 1].id : 'chat';
     switchTab(nextActiveId);
   } else {
@@ -98,240 +156,324 @@ function closeTab(tabId) {
   }
 }
 
-// 显示添加 Tab 的项目弹出菜单
-function showAddTabMenu(event) {
-  event.stopPropagation();
-  // 移除可能存在的旧菜单
-  const oldMenu = document.querySelector('.add-tab-menu');
-  if (oldMenu) oldMenu.remove();
+// ── 底部项目终端抽屉 ─────────────────────────────────────
+function initBottomTerminalDrawer() {
+  if (bottomTerminalContext.initialized) return;
+  bottomTerminalContext.initialized = true;
 
-  const menu = document.createElement('div');
-  menu.className = 'add-tab-menu';
+  const handle = document.getElementById('bottom-terminal-resize');
+  const drawer = document.getElementById('bottom-terminal-drawer');
+  if (!handle || !drawer) return;
 
-  // 计算定位
-  const rect = event.currentTarget.getBoundingClientRect();
-  menu.style.left = `${rect.left}px`;
-  menu.style.top = `${rect.bottom + window.scrollY + 6}px`;
-
-  // 获取当前所有的项目，展示为菜单项
-  const projects = projectDashboardData?.projects || [];
-  if (projects.length === 0) {
-    menu.innerHTML = `<div class="add-tab-menu-header">暂无项目</div>`;
-  } else {
-    menu.innerHTML = `<div class="add-tab-menu-header">连接项目容器终端</div>`;
-    projects.forEach(p => {
-      const btn = document.createElement('button');
-      btn.className = 'add-tab-menu-item';
-      btn.innerHTML = `💻 终端: ${esc(p.name)}`;
-      btn.onclick = () => {
-        addTerminalTab(p.name);
-        menu.remove();
-      };
-      menu.appendChild(btn);
-    });
-  }
-
-  document.body.appendChild(menu);
-
-  // 点击外部时关闭菜单
-  const closeMenu = (e) => {
-    if (!menu.contains(e.target) && e.target !== event.currentTarget) {
-      menu.remove();
-      document.removeEventListener('click', closeMenu);
-    }
-  };
-  setTimeout(() => document.addEventListener('click', closeMenu), 0);
-}
-
-// 新增终端 Tab
-function addTerminalTab(projectName) {
-  const tabId = `terminal-${projectName}`;
-  const exists = topbarTabs.some(t => t.id === tabId);
-
-  if (!exists) {
-    topbarTabs.push({
-      id: tabId,
-      label: `💻 终端: ${projectName}`,
-      closable: true
-    });
-
-    // 创建对应的终端容器
-    const pageContainer = document.getElementById('page-tab-terminal');
-    const termContainer = document.createElement('div');
-    termContainer.className = 'multi-term-container';
-    termContainer.id = `term-container-${projectName}`;
-    termContainer.innerHTML = `
-      <div class="terminal-card" style="height: 100%; border: none;">
-        <div class="terminal-toolbar">
-          <div class="terminal-status">
-            <span class="status-dot killed" id="term-dot-${projectName}">未连接</span>
-            <span class="terminal-status-text" id="term-status-${projectName}">点击或切换到此 Tab 后连接项目容器</span>
-          </div>
-          <button class="btn" type="button" onclick="reconnectMultiTerminal('${projectName}')">重新连接</button>
-        </div>
-        <div class="terminal-warning" id="term-warning-${projectName}"></div>
-        <div class="terminal-mount" id="term-mount-${projectName}" style="flex: 1; height: calc(100% - 50px);"></div>
-      </div>
-    `;
-    pageContainer.appendChild(termContainer);
-  }
-
-  switchTab(tabId);
-}
-
-// ── 多终端实例化和 WebSocket 连接逻辑 ──
-function openMultiTerminal(projectName) {
-  updateMultiTerminalWarning(projectName);
-  let ctx = multiTerminalContexts[projectName];
-  if (!ctx) {
-    ctx = {
-      terminal: null,
-      fitAddon: null,
-      socket: null,
-      connected: false
-    };
-    multiTerminalContexts[projectName] = ctx;
-  }
-
-  if (!ctx.socket || ctx.socket.readyState === WebSocket.CLOSED) {
-    connectMultiTerminal(projectName);
-  } else {
-    resizeMultiTerminal(projectName);
-  }
-}
-
-function ensureMultiTerminalMounted(projectName) {
-  const mount = document.getElementById(`term-mount-${projectName}`);
-  if (!mount || !window.Terminal || !window.FitAddon) return false;
-
-  let ctx = multiTerminalContexts[projectName];
-  if (ctx && ctx.terminal && mount.childElementCount) return true;
-
-  mount.innerHTML = '';
-  const { terminal, fitAddon } = createEnhancedTerminal(mount);
-  ctx.terminal = terminal;
-  ctx.fitAddon  = fitAddon;
-
-  ctx.terminal.onData(data => {
-    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-      ctx.socket.send(JSON.stringify({ type: 'input', data }));
-    }
+  let dragging = false;
+  handle.addEventListener('pointerdown', e => {
+    dragging = true;
+    handle.setPointerCapture?.(e.pointerId);
+    document.body.style.userSelect = 'none';
   });
-
-  // 窗口大小变化时自适应
-  window.removeEventListener('resize', ctx.resizeHandler);
-  ctx.resizeHandler = () => resizeMultiTerminal(projectName);
-  window.addEventListener('resize', ctx.resizeHandler);
-
-  resizeMultiTerminal(projectName);
-  return true;
+  handle.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const next = Math.min(window.innerHeight * 0.72, Math.max(220, window.innerHeight - e.clientY));
+    drawer.style.height = `${Math.round(next)}px`;
+    resizeBottomTerminal();
+  });
+  handle.addEventListener('pointerup', e => {
+    dragging = false;
+    handle.releasePointerCapture?.(e.pointerId);
+    document.body.style.userSelect = '';
+  });
 }
 
-function connectMultiTerminal(projectName) {
-  disconnectMultiTerminal(projectName);
+function resolveCurrentTerminalProject() {
+  if (currentPage === 'projects' && projectContext?.name) return projectContext.name;
+  if (currentChatProjectName) return currentChatProjectName;
+  if (chatNewSessionProject) return chatNewSessionProject;
 
-  let ctx = multiTerminalContexts[projectName];
-  if (!ctx) {
-    ctx = { terminal: null, fitAddon: null, socket: null, connected: false };
-    multiTerminalContexts[projectName] = ctx;
+  if (activeConversationId?.startsWith('task-')) {
+    const taskId = activeConversationId.replace('task-', '');
+    const task = (tasksCache || []).find(t => t.id === taskId);
+    if (task?.project_name) return task.project_name;
+    const project = (projectsCache || []).find(p => task && taskBelongsToProject(task, p));
+    if (project) return project.name;
+  } else if (activeConversationId) {
+    const conv = (chatConversationsList || []).find(c => c.id === activeConversationId);
+    if (conv?.project_name) return conv.project_name;
+    if (conv?.project) return conv.project.split('/').pop();
   }
+  return '';
+}
 
-  if (!ensureMultiTerminalMounted(projectName)) {
-    setMultiTerminalStatus(projectName, 'error', '终端资源未加载，请刷新页面后重试');
+async function refreshBottomTerminalProjects(preferredProject = '') {
+  let projects = projectsCache || [];
+  if (!projects.length) {
+    projects = await fetch(`${API}/api/projects`).then(r => r.json()).catch(() => []);
+    projectsCache = projects;
+  }
+}
+
+function bottomTerminalTabLabel(projectName) {
+  return projectName || '未选择项目';
+}
+
+function renderBottomTerminalTabs() {
+  const el = document.getElementById('bottom-terminal-tabs');
+  if (!el) return;
+  el.innerHTML = bottomTerminalTabs.map(tab => `
+    <button class="bottom-terminal-tab ${tab.id === activeBottomTerminalTabId ? 'active' : ''}" type="button" onclick="switchBottomTerminalTab('${tab.id}')" title="${esc(tab.projectName || '未选择项目')}">
+      <span>▸</span>
+      <span class="bottom-terminal-tab-label">${esc(tab.label)}</span>
+      <span class="bottom-terminal-tab-close" onclick="event.stopPropagation(); closeBottomTerminalTab('${tab.id}')" title="关闭">×</span>
+    </button>
+  `).join('');
+}
+
+function createBottomTerminalTab(projectName = '') {
+  const id = `term-${++bottomTerminalTabSeq}`;
+  const tab = { id, projectName, label: bottomTerminalTabLabel(projectName) };
+  bottomTerminalTabs.push(tab);
+  activeBottomTerminalTabId = id;
+  renderBottomTerminalTabs();
+  return tab;
+}
+
+function getActiveBottomTerminalTab() {
+  return bottomTerminalTabs.find(t => t.id === activeBottomTerminalTabId) || null;
+}
+
+function ensureBottomTerminalTab(projectName = '') {
+  let tab = bottomTerminalTabs.find(t => t.projectName === projectName);
+  if (!tab) tab = createBottomTerminalTab(projectName);
+  activeBottomTerminalTabId = tab.id;
+  renderBottomTerminalTabs();
+  return tab;
+}
+
+function updateActiveBottomTerminalTabProject(projectName) {
+  let tab = getActiveBottomTerminalTab();
+  if (!tab) tab = createBottomTerminalTab(projectName);
+  tab.projectName = projectName;
+  tab.label = bottomTerminalTabLabel(projectName);
+  renderBottomTerminalTabs();
+}
+
+function addBottomTerminalTab() {
+  const projectName = resolveCurrentTerminalProject() || '';
+  createBottomTerminalTab(projectName);
+  refreshBottomTerminalProjects(projectName);
+  if (projectName) connectBottomTerminal(projectName);
+  else {
+    disconnectBottomTerminal();
+    bottomTerminalContext.projectName = '';
+    setBottomTerminalStatus('closed', '请选择项目后连接终端');
+  }
+}
+
+function switchBottomTerminalTab(tabId) {
+  const tab = bottomTerminalTabs.find(t => t.id === tabId);
+  if (!tab) return;
+  activeBottomTerminalTabId = tabId;
+  renderBottomTerminalTabs();
+  refreshBottomTerminalProjects(tab.projectName);
+  if (tab.projectName) connectBottomTerminal(tab.projectName);
+  else {
+    disconnectBottomTerminal();
+    bottomTerminalContext.projectName = '';
+    setBottomTerminalStatus('closed', '请选择项目后连接终端');
+  }
+}
+
+function closeBottomTerminalTab(tabId) {
+  const idx = bottomTerminalTabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  const wasActive = activeBottomTerminalTabId === tabId;
+  bottomTerminalTabs.splice(idx, 1);
+  if (!bottomTerminalTabs.length) {
+    activeBottomTerminalTabId = '';
+    disconnectBottomTerminal();
+    setBottomTerminalStatus('closed', '请选择项目后连接终端');
+    renderBottomTerminalTabs();
+    return;
+  }
+  if (wasActive) {
+    activeBottomTerminalTabId = bottomTerminalTabs[Math.max(0, idx - 1)].id;
+    switchBottomTerminalTab(activeBottomTerminalTabId);
+  } else {
+    renderBottomTerminalTabs();
+  }
+}
+
+function setBottomTerminalStatus(state, message) {
+  bottomTerminalContext.lastState = state;
+}
+
+function setBottomTerminalOpen(open) {
+  const drawer = document.getElementById('bottom-terminal-drawer');
+  const btn = document.getElementById('top-terminal-btn');
+  if (drawer) drawer.style.display = open ? 'flex' : 'none';
+  if (btn) btn.classList.toggle('active', open);
+}
+
+function isBottomTerminalOpen() {
+  const drawer = document.getElementById('bottom-terminal-drawer');
+  return !!drawer && drawer.style.display !== 'none';
+}
+
+async function syncBottomTerminalProjectFromContext() {
+  if (!isBottomTerminalOpen()) return;
+  const projectName = resolveCurrentTerminalProject();
+  await refreshBottomTerminalProjects(projectName);
+  if (projectName && projectName !== bottomTerminalContext.projectName) {
+    connectBottomTerminal(projectName);
+  }
+}
+
+async function toggleBottomTerminal() {
+  const drawer = document.getElementById('bottom-terminal-drawer');
+  const isOpen = drawer && drawer.style.display !== 'none';
+  if (isOpen) {
+    closeBottomTerminal();
     return;
   }
 
-  updateMultiTerminalWarning(projectName);
-  setMultiTerminalStatus(projectName, 'closed', '正在连接项目容器...');
-  ctx.terminal.clear();
-  ctx.terminal.writeln(`Connecting to terminal of project container [${projectName}]...`);
+  initBottomTerminalDrawer();
+  setBottomTerminalOpen(true);
+  const projectName = resolveCurrentTerminalProject();
+  await refreshBottomTerminalProjects(projectName);
+  ensureBottomTerminalTab(projectName);
+  if (projectName) {
+    connectBottomTerminal(projectName);
+  } else {
+    setBottomTerminalStatus('closed', '请选择项目后连接终端');
+  }
+  setTimeout(resizeBottomTerminal, 60);
+}
+
+function closeBottomTerminal(disconnect = false) {
+  setBottomTerminalOpen(false);
+  if (disconnect) {
+    disconnectBottomTerminal();
+    bottomTerminalContext.projectName = '';
+    bottomTerminalTabs = [];
+    activeBottomTerminalTabId = '';
+    renderBottomTerminalTabs();
+    setBottomTerminalStatus('closed', '终端连接已关闭');
+  }
+}
+
+function ensureBottomTerminalMounted() {
+  const mount = document.getElementById('bottom-terminal');
+  if (!mount || !window.Terminal || !window.FitAddon) return false;
+  if (bottomTerminalContext.terminal && mount.childElementCount) return true;
+
+  mount.innerHTML = '';
+  const { terminal, fitAddon } = createEnhancedTerminal(mount);
+  bottomTerminalContext.terminal = terminal;
+  bottomTerminalContext.fitAddon = fitAddon;
+  bottomTerminalContext.terminal.onData(data => {
+    const socket = bottomTerminalContext.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+  resizeBottomTerminal();
+  return true;
+}
+
+function connectBottomTerminal(projectName) {
+  if (!projectName) {
+    disconnectBottomTerminal();
+    bottomTerminalContext.projectName = '';
+    setBottomTerminalStatus('closed', '请选择项目后连接终端');
+    return;
+  }
+  setBottomTerminalOpen(true);
+  initBottomTerminalDrawer();
+  disconnectBottomTerminal({ dispose: false });
+  bottomTerminalContext.projectName = projectName;
+  updateActiveBottomTerminalTabProject(projectName);
+
+  if (!ensureBottomTerminalMounted()) {
+    setBottomTerminalStatus('error', '终端资源未加载，请刷新页面后重试');
+    return;
+  }
+
+  setBottomTerminalStatus('closed', '正在连接项目容器...');
+  bottomTerminalContext.terminal.clear();
+  bottomTerminalContext.terminal.writeln(`Connecting to ${projectName}...`);
 
   const socket = new WebSocket(terminalWsUrl(projectName));
-  ctx.socket = socket;
-
+  bottomTerminalContext.socket = socket;
   socket.addEventListener('open', () => {
-    ctx.connected = true;
-    resizeMultiTerminal(projectName);
+    if (bottomTerminalContext.socket !== socket) return;
+    bottomTerminalContext.connected = true;
+    resizeBottomTerminal();
   });
-
-  socket.addEventListener('message', (e) => {
-    const d = JSON.parse(e.data);
-    if (d.type === 'output') {
-      ctx.terminal.write(d.data);
-    } else if (d.type === 'status') {
-      setMultiTerminalStatus(projectName, d.status, d.message);
+  socket.addEventListener('message', event => {
+    if (bottomTerminalContext.socket !== socket) return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === 'output') {
+      bottomTerminalContext.terminal.write(String(message.data || ''));
+    } else if (message.type === 'status') {
+      bottomTerminalContext.connected = message.state === 'connected';
+      setBottomTerminalStatus(message.state, message.message || '');
+      if (message.state === 'error') {
+        bottomTerminalContext.terminal.writeln(`\r\n${message.message || '连接失败'}`);
+      }
     }
   });
-
   socket.addEventListener('close', () => {
-    ctx.connected = false;
-    setMultiTerminalStatus(projectName, 'closed', '连接已断开');
+    if (bottomTerminalContext.socket !== socket) return;
+    bottomTerminalContext.connected = false;
+    if (bottomTerminalContext.lastState !== 'error') {
+      setBottomTerminalStatus('closed', '终端连接已关闭');
+    }
   });
-
   socket.addEventListener('error', () => {
-    ctx.connected = false;
-    setMultiTerminalStatus(projectName, 'error', '连接出错');
+    if (bottomTerminalContext.socket !== socket) return;
+    bottomTerminalContext.connected = false;
+    setBottomTerminalStatus('error', '终端连接失败');
   });
 }
 
-function disconnectMultiTerminal(projectName) {
-  const ctx = multiTerminalContexts[projectName];
-  if (!ctx) return;
-  if (ctx.socket) {
-    ctx.socket.close();
-    ctx.socket = null;
-  }
-  ctx.connected = false;
-  setMultiTerminalStatus(projectName, 'closed', '未连接');
+function reconnectBottomTerminal() {
+  const projectName = bottomTerminalContext.projectName
+    || resolveCurrentTerminalProject();
+  connectBottomTerminal(projectName);
 }
 
-function reconnectMultiTerminal(projectName) {
-  connectMultiTerminal(projectName);
-}
-
-function resizeMultiTerminal(projectName) {
-  const ctx = multiTerminalContexts[projectName];
-  if (!ctx || !ctx.terminal || !ctx.fitAddon) return;
-
-  // 延迟确保 DOM 已经完全渲染
-  setTimeout(() => {
+function resizeBottomTerminal() {
+  if (!bottomTerminalContext.terminal || !bottomTerminalContext.fitAddon) return;
+  clearTimeout(bottomTerminalContext.resizeTimer);
+  bottomTerminalContext.resizeTimer = setTimeout(() => {
     try {
-      ctx.fitAddon.fit();
-      const dims = ctx.fitAddon.proposeDimensions();
-      if (dims && ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
-        ctx.socket.send(JSON.stringify({
+      bottomTerminalContext.fitAddon.fit();
+      const socket = bottomTerminalContext.socket;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
           type: 'resize',
-          cols: dims.cols,
-          rows: dims.rows
+          cols: bottomTerminalContext.terminal.cols,
+          rows: bottomTerminalContext.terminal.rows,
         }));
       }
-    } catch (e) {
-      console.warn('fit xterm error', e);
-    }
-  }, 50);
+    } catch {}
+  }, 30);
 }
 
-function setMultiTerminalStatus(projectName, status, message) {
-  const dot = document.getElementById(`term-dot-${projectName}`);
-  const txt = document.getElementById(`term-status-${projectName}`);
-  if (!dot || !txt) return;
-
-  dot.className = 'status-dot ' + (status === 'connected' ? 'running' : 'killed');
-  dot.textContent = status === 'connected' ? '已连接' : (status === 'error' ? '错误' : '未连接');
-  txt.textContent = message;
-}
-
-function updateMultiTerminalWarning(projectName) {
-  const warning = document.getElementById(`term-warning-${projectName}`);
-  if (!warning) return;
-
-  // 可以获取当前项目下是否有正在运行的任务
-  const running = projectDashboardData?.tasks?.some(t => taskBelongsToProject(t, { name: projectName }) && t.status === 'running');
-  if (running) {
-    warning.textContent = '警告：当前项目有后台任务正在运行，在终端手动执行命令可能会干扰其运行。';
-    warning.classList.add('active');
-  } else {
-    warning.textContent = '';
-    warning.classList.remove('active');
+function disconnectBottomTerminal(options = {}) {
+  const { dispose = true } = options;
+  const socket = bottomTerminalContext.socket;
+  bottomTerminalContext.socket = null;
+  bottomTerminalContext.connected = false;
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    socket.close();
   }
+  if (dispose && bottomTerminalContext.terminal) {
+    bottomTerminalContext.terminal.dispose();
+    bottomTerminalContext.terminal = null;
+    bottomTerminalContext.fitAddon = null;
+    const mount = document.getElementById('bottom-terminal');
+    if (mount) mount.innerHTML = '';
+  }
+  clearTimeout(bottomTerminalContext.resizeTimer);
 }

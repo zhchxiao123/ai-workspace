@@ -520,6 +520,50 @@ async def serve_upload(project_name: str, filename: str):
     return FileResponse(file_path)
 
 
+def _serve_project_file(project_path: str, rel_path: str) -> FileResponse:
+    """公共实现：安全校验并返回项目目录下的文件。"""
+    base_dir = Path(project_path).resolve()
+    target = (base_dir / rel_path).resolve()
+    try:
+        target.relative_to(base_dir)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="路径不合法")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在或不是普通文件")
+    return FileResponse(
+        target,
+        filename=target.name,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
+    )
+
+
+@app.get("/api/projects/{project_name}/download")
+async def download_project_file(
+    project_name: str,
+    path: str = Query(..., description="相对于项目目录的文件路径"),
+):
+    """从项目目录下载任意文件（CF_SEND 标记主要入口）。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return _serve_project_file(project.path, path)
+
+
+@app.get("/api/tasks/{task_id}/download")
+async def download_task_file(
+    task_id: str,
+    path: str = Query(..., description="相对于项目目录的文件路径"),
+):
+    """从任务所在项目目录下载文件（兼容旧标记）。"""
+    task = scheduler.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    project = scheduler.find_project_by_name(task.project_name) if task.project_name else None
+    proj_path = project.path if project else task.project
+    return _serve_project_file(proj_path, path)
+
+
 # ── 项目终端 ──────────────────────────────────────────────
 
 def _is_allowed_terminal_origin(origin: str | None, host: str | None) -> bool:

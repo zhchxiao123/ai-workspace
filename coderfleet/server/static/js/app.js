@@ -3,23 +3,20 @@
 if (!getApiKey()) showLoginOverlay();
 
 // ── 初始化 ────────────────────────────────────────────────
+updateThemeIcon();
 initSidebarState();
 initChatSidebarState();
 initTopbarTabs();
+initBottomTerminalDrawer();
 try { initChatSortBtn(); } catch {}
 checkHealth();
 refreshGlobalCaches();
 loadConversations();
 loadAccountOptions();
 window.addEventListener('resize', resizeProjectTerminal);
+window.addEventListener('resize', resizeBottomTerminal);
 window.addEventListener('beforeunload', disconnectProjectTerminal);
-window.addEventListener('beforeunload', () => {
-  if (typeof disconnectAllMultiTerminals === 'function') {
-    disconnectAllMultiTerminals();
-  } else {
-    Object.keys(multiTerminalContexts || {}).forEach(disconnectMultiTerminal);
-  }
-});
+window.addEventListener('beforeunload', disconnectBottomTerminal);
 
 // 高频刷新：任务状态（5s，仅当前页）
 setInterval(() => {

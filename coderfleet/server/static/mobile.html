@@ -2,6 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <script>
+    (function(){var s=localStorage.getItem('cf-theme');if(s){document.documentElement.setAttribute('data-theme',s);}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){document.documentElement.setAttribute('data-theme','dark');}else{document.documentElement.setAttribute('data-theme','light');}})();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>CoderFleet</title>
   <meta name="theme-color" content="#0d9488">
@@ -60,9 +63,53 @@
       --keyboard-offset: 0px;
     }
 
+    html[data-theme="light"] {
+      --bg:       #eef7f5;
+      --surface:  #ffffff;
+      --surface2: #f7fbfa;
+      --border:   rgba(19,78,74,.12);
+      --text:     #102a27;
+      --text2:    #45615d;
+      --text3:    #718783;
+      --accent:   #0d9488;
+      --accent-dk:#0f766e;
+      --accent-bg:#ccfbf1;
+      --red:      #dc2626;
+      --green:    #15803d;
+      --amber:    #b45309;
+      --surface-2:  #f7fbfa;
+      --text-2:     #45615d;
+      --text-3:     #718783;
+      --border-md:  rgba(19,78,74,.24);
+      --log-bg:       #f0f4f8;
+      --log-card:     #e4edf5;
+      --log-card-soft:#e9f0f7;
+      --log-line:     rgba(19,78,74,.14);
+      --bubble-bg:         #ffffff;
+      --bubble-color:      #102a27;
+      --bubble-border:     rgba(19,78,74,.12);
+      --bubble-think-bg:   #f7fbfa;
+      --bubble-think-color:#718783;
+      --bubble-code-bg:    rgba(13,148,136,.06);
+      --bubble-code-color: #0d9488;
+      --bubble-pre-bg:     #f7fbfa;
+      --bubble-pre-color:  #102a27;
+    }
+
     html {
       height: -webkit-fill-available;
     }
+
+    /* ── 自定义滚动条（主题适配）─── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.14); }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.26); }
+    html[data-theme="light"] { scrollbar-color: rgba(0,0,0,0.14) transparent; scrollbar-width: thin; }
+    html[data-theme="dark"]  { scrollbar-color: rgba(255,255,255,0.16) transparent; scrollbar-width: thin; }
 
     html, body {
       height: 100%;
@@ -543,6 +590,25 @@
     .sheet-sub  { font-size: 12px; color: var(--text3); margin-top: 2px; }
     #notif-btn.subscribed svg { stroke: var(--accent); fill: rgba(45,212,191,.15); }
 
+    /* ── Project pin & dots ─────────────────────────────── */
+    .proj-dots-btn {
+      background: none; border: none; color: var(--text3);
+      font-size: 16px; font-weight: 700; letter-spacing: .08em;
+      padding: 4px 6px; border-radius: 6px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      flex-shrink: 0; line-height: 1;
+    }
+    .proj-dots-btn:active { background: var(--surface); color: var(--accent); }
+    .proj-label.pinned {
+      border-left: 3px solid var(--amber);
+      padding-left: 11px;
+    }
+    .proj-pin-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--amber);
+      flex-shrink: 0;
+    }
+
     /* ── Sort button ────────────────────────────────────── */
     .mobile-sort-btn {
       display: flex; align-items: center; gap: 4px;
@@ -576,6 +642,7 @@
       </svg>
       <span id="mobile-sort-label">默认</span>
     </button>
+    <button class="icon-btn" id="mobile-theme-btn" onclick="toggleTheme()" title="切换主题" aria-label="切换主题"></button>
     <button class="icon-btn" id="notif-btn" onclick="togglePushSubscription()" title="开启推送通知" style="display:none">
       <svg id="notif-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -706,6 +773,18 @@
   </div>
 </div>
 
+<!-- ── 项目操作底部弹层 ────────────────────────────── -->
+<div class="backdrop" id="proj-action-sheet" onclick="closeProjActionSheet()">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <div class="sheet-ttl" id="proj-action-title">项目操作</div>
+    <div class="sheet-actions">
+      <button class="sheet-action-btn" id="proj-pin-btn" onclick="toggleMobileProjPin()">置顶</button>
+      <button class="sheet-action-btn" onclick="closeProjActionSheet()">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- 依赖脚本必须在主逻辑 script 之前加载（移动端 giant inline script 在此之后），否则 renderPendingPreviews 等共享函数未定义会导致发送/上传时崩溃 -->
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/js/utils.js?v=20260525-auth"></script>
@@ -733,6 +812,13 @@ const MOBILE_SORT_LABELS = { default: '默认', activity: '活跃', name: '名�
 let pendingImages = [];
 let uploadingImages = 0;
 let actionTarget = null;
+let projActionTarget = null;   // 当前打开操作表的项目名
+const mobilePinnedProjects = (function() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('coderfleet.chatPinnedProjects') || '[]');
+    return new Set(Array.isArray(saved) ? saved : []);
+  } catch { return new Set(); }
+})();
 let mobileTerminal = {
   projectName: '',
   socket: null,
@@ -781,8 +867,38 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', setViewportVars);
 }
 
+// ── 主题切换 ──────────────────────────────────────────────
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('cf-theme', next);
+  updateMobileThemeIcon();
+}
+
+function updateMobileThemeIcon() {
+  const btn = document.getElementById('mobile-theme-btn');
+  if (!btn) return;
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.title = isDark ? '切换到浅色模式' : '切换到深色模式';
+  btn.setAttribute('aria-label', btn.title);
+  btn.innerHTML = isDark
+    ? `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`
+    : `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+}
+
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+    if (!localStorage.getItem('cf-theme')) {
+      document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+      updateMobileThemeIcon();
+    }
+  });
+}
+
 // ── Bootstrap（由 utils.js 加载后触发，见页尾 script）────
 async function initApp() {
+  updateMobileThemeIcon();
   _updateMobileSortLabel();
   await refresh();
   setInterval(checkHealth, 12000);
@@ -860,8 +976,11 @@ function renderList() {
     const runCount = proj => tasks.filter(t => belongsToTask(t, proj) && t.status === 'running').length;
     sortedProjects.sort((a, b) => runCount(b) - runCount(a));
   }
+  // Pinned projects always float to top (stable secondary sort)
+  sortedProjects.sort((a, b) => (mobilePinnedProjects.has(b.name) ? 1 : 0) - (mobilePinnedProjects.has(a.name) ? 1 : 0));
 
   el.innerHTML = sortedProjects.map(proj => {
+    const isPinned = mobilePinnedProjects.has(proj.name);
     const list = projectDevItems(proj);
     const isCollapsed = collapsedProjects.has(proj.name);
     const isExpanded = expandedProjects.has(proj.name);
@@ -878,11 +997,14 @@ function renderList() {
       </button>` : ''}`
         : '<div class="proj-empty">暂无对话</div>';
     return `
-      <div class="proj-label" onclick="toggleProjectGroup('${encodedName}')">
+      <div class="proj-label${isPinned ? ' pinned' : ''}" onclick="toggleProjectGroup('${encodedName}')">
         <div class="proj-title">
           <span class="proj-toggle">${isCollapsed ? '+' : '-'}</span>
+          ${isPinned ? '<span class="proj-pin-dot"></span>' : ''}
           <span>${x(proj.name)}</span>
         </div>
+        <button class="proj-dots-btn" title="项目操作"
+          onclick="event.stopPropagation();showProjActions('${encodedName}')">···</button>
         <button class="proj-term-btn" title="打开终端"
           onclick="event.stopPropagation();openMobileTerminal('${encodedName}')">&gt;_</button>
         <button class="proj-new-btn" title="新建对话"
@@ -1567,6 +1689,34 @@ async function deleteActionTarget() {
   } catch (err) {
     alert('删除失败：' + (err.message || err));
   }
+}
+
+// ── Project action sheet (pin / unpin) ───────────────────
+function showProjActions(encodedName) {
+  projActionTarget = decodeURIComponent(encodedName);
+  const isPinned = mobilePinnedProjects.has(projActionTarget);
+  const title  = document.getElementById('proj-action-title');
+  const pinBtn = document.getElementById('proj-pin-btn');
+  if (title)  title.textContent  = `项目 · ${projActionTarget}`;
+  if (pinBtn) pinBtn.textContent = isPinned ? '取消置顶' : '置顶';
+  document.getElementById('proj-action-sheet').classList.add('open');
+}
+
+function closeProjActionSheet() {
+  document.getElementById('proj-action-sheet').classList.remove('open');
+  projActionTarget = null;
+}
+
+function toggleMobileProjPin() {
+  if (!projActionTarget) return;
+  const name = projActionTarget;
+  if (mobilePinnedProjects.has(name)) mobilePinnedProjects.delete(name);
+  else mobilePinnedProjects.add(name);
+  try {
+    localStorage.setItem('coderfleet.chatPinnedProjects', JSON.stringify([...mobilePinnedProjects]));
+  } catch {}
+  closeProjActionSheet();
+  renderList();
 }
 
 // ── Navigation ────────────────────────────────────────────

@@ -38,15 +38,31 @@ ExtractFn  = Callable[[str], str]
 
 # ── per-type inner command builders ──────────────────────────
 
+_CF_SEND_SYSTEM_HINT = (
+    "When the user asks you to send, share, or provide a file for download, "
+    "output a download marker on its own line in this exact format: "
+    "<!-- CF_SEND: relative/path/to/file.ext --> "
+    "The path must be relative to /workspace (the project root). "
+    "Examples: "
+    "if the file is /workspace/report.html → output <!-- CF_SEND: report.html --> ; "
+    "if the file is /tmp/output.pdf → first copy it to /workspace/ with: cp /tmp/output.pdf /workspace/ "
+    "then output <!-- CF_SEND: output.pdf --> . "
+    "Only output this marker after confirming the file exists at the given path. "
+    "Do not mention scp, IDE downloads, or other manual methods — use this marker instead."
+)
+
+
 def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images):
     p  = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep = shlex.quote(p)
     perm   = "--dangerously-skip-permissions" if auto else "--permission-mode acceptEdits"
     resume = f" --resume {shlex.quote(session_id)}" if session_id else ""
+    sys_hint = shlex.quote(_CF_SEND_SYSTEM_HINT)
     return (
         f"printf '%s\\n' {ep} | "
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-        f"claude -p {perm} --output-format stream-json --verbose{resume}"
+        f"claude -p {perm} --output-format stream-json --verbose"
+        f" --append-system-prompt {sys_hint}{resume}"
     )
 
 
