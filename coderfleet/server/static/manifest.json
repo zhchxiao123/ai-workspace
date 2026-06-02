@@ -2,7 +2,7 @@
   "name": "CoderFleet",
   "short_name": "CoderFleet",
   "description": "AI coding fleet manager",
-  "start_url": "/m",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",

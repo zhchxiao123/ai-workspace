@@ -37,6 +37,12 @@ function renderProjectCards(projects, tasks, accounts) {
     const accountBadge = account
       ? `<span class="badge ${account.type}">${account.type}</span><span class="badge proxy-${account.proxy || 'relay'}">proxy: ${esc(account.proxy || 'relay')}</span>`
       : `<span class="badge offline">账号缺失</span>`;
+    const ideBadge = project.ide_enabled
+      ? `<span class="badge running">IDE ${esc(project.ide_port || '')}</span>`
+      : '';
+    const activeBadge = project.active === false
+      ? `<span class="badge offline">容器停用</span>`
+      : '';
     let latestText = '还没有任务记录';
     if (latest && latest.prompt) {
       const cleanPrompt = String(latest.prompt || '').replace(/\s+/g, ' ');
@@ -51,7 +57,7 @@ function renderProjectCards(projects, tasks, accounts) {
       <div class="project-path" title="${esc(project.path)}">${esc(project.path)}</div>
     </div>
   </div>
-  <div class="account-badges" style="margin-top:10px">${accountBadge}<span class="chip">${esc(project.account)}</span></div>
+  <div class="account-badges" style="margin-top:10px">${accountBadge}${ideBadge}${activeBadge}<span class="chip">${esc(project.account)}</span></div>
   <div class="project-stats">
     <div class="project-stat"><div class="account-stat-label">总任务</div><div class="account-stat-value">${projectTasks.length}</div></div>
     <div class="project-stat"><div class="account-stat-label">运行中</div><div class="account-stat-value">${running}</div></div>
@@ -78,7 +84,8 @@ async function openProject(name) {
 }
 
 function backToProjects() {
-  disconnectProjectTerminal();
+  const frame = document.getElementById('project-ide-frame');
+  if (frame) frame.src = 'about:blank';
   projectContext = null;
   document.getElementById('project-detail-view').style.display = 'none';
   document.getElementById('project-list-view').style.display = '';
@@ -99,6 +106,7 @@ function renderProjectDetail(project) {
 <div class="account-badges" style="margin-top:12px">
   <span class="chip">账号 ${esc(project.account)}</span>
   ${account ? `<span class="badge ${account.type}">${account.type}</span><span class="badge proxy-${account.proxy || 'relay'}">proxy: ${esc(account.proxy || 'relay')}</span>` : `<span class="badge offline">账号缺失</span>`}
+  ${project.ide_enabled ? `<span class="badge running">IDE ${esc(project.ide_port || '')}</span>` : ''}
 </div>
 <div class="project-stats" style="margin-top:16px">
   <div class="project-stat"><div class="account-stat-label">总任务</div><div class="account-stat-value">${projectTasks.length}</div></div>
@@ -107,42 +115,55 @@ function renderProjectDetail(project) {
   <div class="project-stat"><div class="account-stat-label">失败</div><div class="account-stat-value" style="${failed > 0 ? 'color:var(--red)' : ''}">${failed}</div></div>
 </div>`;
 
-  updateTerminalWarning();
+  renderProjectIde(project);
+}
+
+function projectIdeUrl(project) {
+  if (!project?.ide_enabled || !project.ide_port) return '';
+  if (project.ide_url) return project.ide_url;
+  let host = window.location.hostname || '127.0.0.1';
+  if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
+  return `http://${host}:${project.ide_port}`;
+}
+
+function renderProjectIde(project) {
+  const frame = document.getElementById('project-ide-frame');
+  const dot = document.getElementById('project-ide-dot');
+  const status = document.getElementById('project-ide-status');
+  const openBtn = document.getElementById('project-ide-open');
+  if (!frame || !dot || !status || !openBtn) return;
+
+  const url = projectIdeUrl(project);
+  if (!url) {
+    dot.className = 'status-dot killed';
+    dot.textContent = '未启用';
+    status.textContent = '在项目配置中启用 IDE 后可浏览代码';
+    openBtn.style.display = 'none';
+    frame.dataset.projectName = '';
+    frame.dataset.ideUrl = '';
+    frame.src = 'about:blank';
+    return;
+  }
+
+  dot.className = 'status-dot running';
+  dot.textContent = 'IDE';
+  status.textContent = url;
+  openBtn.style.display = '';
+  if (frame.dataset.ideUrl !== url || frame.dataset.projectName !== project.name) {
+    frame.dataset.projectName = project.name;
+    frame.dataset.ideUrl = url;
+    frame.src = url;
+  }
+}
+
+function openProjectIdeWindow() {
+  const url = projectIdeUrl(projectContext);
+  if (url) window.open(url, '_blank', 'noopener');
 }
 
 function submitForCurrentProject() {
   if (!projectContext) return;
   startNewChat({ projectName: projectContext.name });
-}
-
-// ── 项目终端 ──────────────────────────────────────────────
-function terminalWsUrl(projectName) {
-  return wsUrl(`${API}/api/projects/${encodeURIComponent(projectName)}/terminal`);
-}
-
-function setTerminalStatus(state, message) {
-  terminalContext.lastState = state;
-  const dot    = document.getElementById('project-terminal-dot');
-  const status = document.getElementById('project-terminal-status');
-  if (dot) {
-    const cls = state === 'connected' ? 'running' : state === 'error' ? 'failed' : 'killed';
-    dot.className = `status-dot ${cls}`;
-    dot.textContent = state === 'connected' ? '已连接' : state === 'error' ? '错误' : '未连接';
-  }
-  if (status) status.textContent = message || '';
-}
-
-function updateTerminalWarning() {
-  const warning = document.getElementById('project-terminal-warning');
-  if (!warning || !projectContext) return;
-  const account = projectDashboardData.accounts.find(a => a.name === projectContext.account);
-  if (account?.busy) {
-    warning.textContent = `账号 ${account.name} 当前有运行中的调度任务，终端仍可使用。`;
-    warning.classList.add('active');
-  } else {
-    warning.textContent = '';
-    warning.classList.remove('active');
-  }
 }
 
 // ── 项目 CRUD ─────────────────────────────────────────────
@@ -169,12 +190,19 @@ async function openProjectFormModal(name) {
       nameInput.value = project.name;
       sel.value = project.account;
       document.getElementById('project-form-path').value = project.path;
+      document.getElementById('project-form-active').checked = project.active !== false;
+      document.getElementById('project-form-ide-enabled').checked = !!project.ide_enabled;
+      document.getElementById('project-form-ide-port').value = project.ide_port || '';
     }
   } else {
     nameInput.value = '';
     sel.value = accounts[0]?.name || '';
     document.getElementById('project-form-path').value = '';
+    document.getElementById('project-form-active').checked = true;
+    document.getElementById('project-form-ide-enabled').checked = false;
+    document.getElementById('project-form-ide-port').value = '';
   }
+  toggleProjectIdePort();
 
   document.getElementById('project-form-modal').style.display = '';
 }
@@ -188,9 +216,17 @@ async function saveProjectForm() {
   const name    = _editingProjectName || document.getElementById('project-form-name').value.trim();
   const account = document.getElementById('project-form-account').value;
   const path    = document.getElementById('project-form-path').value.trim();
+  const active  = document.getElementById('project-form-active').checked;
+  const ideEnabled = document.getElementById('project-form-ide-enabled').checked;
+  const idePortRaw = document.getElementById('project-form-ide-port').value.trim();
+  const idePort = idePortRaw ? Number(idePortRaw) : null;
   if (!name)    { showProjectFormMsg('请填写项目名', 'error'); return; }
   if (!account) { showProjectFormMsg('请选择账号',   'error'); return; }
   if (!path)    { showProjectFormMsg('请填写路径',   'error'); return; }
+  if (ideEnabled && idePort !== null && (!Number.isInteger(idePort) || idePort < 1024 || idePort > 65535)) {
+    showProjectFormMsg('IDE 端口需为 1024-65535 之间的整数，或留空自动分配', 'error');
+    return;
+  }
 
   const btn = document.getElementById('project-form-btn');
   btn.disabled = true;
@@ -200,7 +236,9 @@ async function saveProjectForm() {
     const r = await fetch(url, {
       method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(isEdit ? { account, path } : { name, account, path }),
+      body: JSON.stringify(isEdit
+        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort }
+        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) { showProjectFormMsg(data.detail || '保存失败', 'error'); return; }
@@ -211,6 +249,12 @@ async function saveProjectForm() {
   } finally {
     btn.disabled = false;
   }
+}
+
+function toggleProjectIdePort() {
+  const enabled = document.getElementById('project-form-ide-enabled')?.checked;
+  const wrap = document.getElementById('project-form-ide-port-wrap');
+  if (wrap) wrap.style.display = enabled ? '' : 'none';
 }
 
 async function deleteProjectConfirm(name) {
@@ -236,115 +280,3 @@ function showProjectFormMsg(text, type) {
   el.style.display = '';
 }
 
-function openProjectTerminal() {
-  if (!projectContext) return;
-  updateTerminalWarning();
-  if (terminalContext.projectName !== projectContext.name) {
-    disconnectProjectTerminal();
-  }
-  terminalContext.projectName = projectContext.name;
-  if (!terminalContext.socket || terminalContext.socket.readyState === WebSocket.CLOSED) {
-    connectProjectTerminal();
-  } else {
-    resizeProjectTerminal();
-  }
-}
-
-function ensureTerminalMounted() {
-  const mount = document.getElementById('project-terminal');
-  if (!mount || !window.Terminal || !window.FitAddon) return false;
-  if (terminalContext.terminal && mount.childElementCount) return true;
-
-  mount.innerHTML = '';
-  const { terminal, fitAddon } = createEnhancedTerminal(mount);
-  terminalContext.terminal = terminal;
-  terminalContext.fitAddon = fitAddon;
-
-  terminalContext.terminal.onData(data => {
-    const socket = terminalContext.socket;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'input', data }));
-    }
-  });
-  resizeProjectTerminal();
-  return true;
-}
-
-function connectProjectTerminal() {
-  if (!projectContext) return;
-  disconnectProjectTerminal();
-  terminalContext.projectName = projectContext.name;
-  if (!ensureTerminalMounted()) {
-    setTerminalStatus('error', '终端资源未加载，请刷新页面后重试');
-    return;
-  }
-  updateTerminalWarning();
-  setTerminalStatus('closed', '正在连接项目容器...');
-  terminalContext.terminal.clear();
-  terminalContext.terminal.writeln(`Connecting to ${projectContext.name}...`);
-
-  const socket = new WebSocket(terminalWsUrl(projectContext.name));
-  terminalContext.socket = socket;
-
-  socket.addEventListener('open', () => {
-    terminalContext.connected = true;
-    resizeProjectTerminal();
-  });
-  socket.addEventListener('message', event => {
-    let message;
-    try { message = JSON.parse(event.data); } catch { return; }
-    if (message.type === 'output') {
-      terminalContext.terminal.write(String(message.data || ''));
-    } else if (message.type === 'status') {
-      terminalContext.connected = message.state === 'connected';
-      setTerminalStatus(message.state, message.message || '');
-      if (message.state === 'error') terminalContext.terminal.writeln(`\r\n${message.message || '连接失败'}`);
-    }
-  });
-  socket.addEventListener('close', () => {
-    terminalContext.connected = false;
-    if (terminalContext.lastState !== 'error') {
-      setTerminalStatus('closed', '终端连接已关闭');
-    }
-  });
-  socket.addEventListener('error', () => {
-    terminalContext.connected = false;
-    setTerminalStatus('error', '终端连接失败');
-  });
-}
-
-function resizeProjectTerminal() {
-  if (!terminalContext.terminal || !terminalContext.fitAddon) return;
-  clearTimeout(terminalContext.resizeTimer);
-  terminalContext.resizeTimer = setTimeout(() => {
-    try {
-      terminalContext.fitAddon.fit();
-      const socket = terminalContext.socket;
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'resize',
-          cols: terminalContext.terminal.cols,
-          rows: terminalContext.terminal.rows,
-        }));
-      }
-    } catch { }
-  }, 30);
-}
-
-function disconnectProjectTerminal() {
-  const socket = terminalContext.socket;
-  terminalContext.socket    = null;
-  terminalContext.connected = false;
-  if (socket && socket.readyState !== WebSocket.CLOSED) {
-    socket.close();
-  }
-  if (terminalContext.terminal) {
-    terminalContext.terminal.dispose();
-  }
-  terminalContext.terminal   = null;
-  terminalContext.fitAddon   = null;
-  terminalContext.projectName = '';
-  terminalContext.lastState   = 'closed';
-  clearTimeout(terminalContext.resizeTimer);
-  setTerminalStatus('closed', '终端连接已关闭');
-}

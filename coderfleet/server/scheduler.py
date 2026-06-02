@@ -21,6 +21,7 @@ from typing import Optional
 
 from coderfleet.server import docker_mgr
 from coderfleet.account_type_registry import env_auth_type_ids as _env_auth_ids
+from coderfleet.ports import allocate_ide_port
 from coderfleet.server.models import (
     Account,
     AccountAuth,
@@ -41,6 +42,17 @@ from coderfleet.server.models import (
 )
 
 
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_optional_int(value: str) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class Scheduler:
     def __init__(self, workspace_dir: Path):
         self.workspace_dir  = workspace_dir
@@ -50,10 +62,12 @@ class Scheduler:
         self.conversations_dir = workspace_dir / "conversations"
         self.pipelines_dir  = workspace_dir / "pipelines"
         self.templates_dir  = workspace_dir / "workflow_templates"
+        self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
         self._push_manager = None  # set by main.py after both are initialized
+        self.workflow_engine = None  # Phase 1 后由 main.py 注入 WorkflowEngine(self.workspace_dir, self)
 
     async def _notify(self, task: Task) -> None:
         if self._push_manager is None:
@@ -187,6 +201,9 @@ class Scheduler:
                     name=parts["NAME"],
                     account=parts["ACCOUNT"],
                     path=path,
+                    active=_truthy(parts.get("ACTIVE", "on")),
+                    ide_enabled=_truthy(parts.get("IDE", "off")),
+                    ide_port=_parse_optional_int(parts.get("IDE_PORT", "")),
                 ))
 
         return projects
@@ -304,11 +321,42 @@ class Scheduler:
         except OSError:
             pass
 
-    def save_project(self, name: str, account: str, path: str) -> Project:
+    def save_project(
+        self,
+        name: str,
+        account: str,
+        path: str,
+        active: bool = True,
+        ide_enabled: bool = False,
+        ide_port: Optional[int] = None,
+    ) -> Project:
         """新增或修改 projects.conf 中的项目行。"""
         path_norm = str(Path(path).expanduser())
-        self._rewrite_conf(self.projects_conf, name, f"NAME={name} ACCOUNT={account} PATH={path_norm}")
-        return Project(name=name, account=account, path=path_norm)
+        if not ide_enabled:
+            ide_port = None
+        elif ide_port is None:
+            used_ports = [
+                p.ide_port
+                for p in self.get_projects()
+                if p.name != name
+            ]
+            ide_port = allocate_ide_port(used_ports)
+        parts = [f"NAME={name}", f"ACCOUNT={account}", f"PATH={path_norm}"]
+        if not active:
+            parts.append("ACTIVE=off")
+        if ide_enabled:
+            parts.append("IDE=on")
+            if ide_port is not None:
+                parts.append(f"IDE_PORT={ide_port}")
+        self._rewrite_conf(self.projects_conf, name, " ".join(parts))
+        return Project(
+            name=name,
+            account=account,
+            path=path_norm,
+            active=active,
+            ide_enabled=ide_enabled,
+            ide_port=ide_port,
+        )
 
     def delete_project(self, name: str) -> None:
         """从 projects.conf 删除项目行。"""

@@ -87,14 +87,20 @@ class EnvVarsRequest(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
-    name:    str
-    account: str
-    path:    str
+    name:        str
+    account:     str
+    path:        str
+    active:      bool = True
+    ide_enabled: bool = False
+    ide_port:    Optional[int] = None
 
 
 class ProjectUpdateRequest(BaseModel):
-    account: Optional[str] = None
-    path:    Optional[str] = None
+    account:     Optional[str]  = None
+    path:        Optional[str]  = None
+    active:      Optional[bool] = None
+    ide_enabled: Optional[bool] = None
+    ide_port:    Optional[int]  = None
 
 
 class SearchMatch(BaseModel):
@@ -398,6 +404,15 @@ async def get_vapid_public_key():
     return {"publicKey": key}
 
 
+@app.get("/api/push/status")
+async def push_status():
+    return {
+        "enabled": push_manager.enabled,
+        "publicKey": bool(push_manager.public_key_b64),
+        "subscriptions": push_manager.subscription_count,
+    }
+
+
 @app.post("/api/push/subscribe", status_code=204)
 async def push_subscribe(req: PushSubscribeRequest):
     push_manager.add_subscription(req.subscription)
@@ -406,6 +421,15 @@ async def push_subscribe(req: PushSubscribeRequest):
 @app.post("/api/push/unsubscribe", status_code=204)
 async def push_unsubscribe(req: PushUnsubscribeRequest):
     push_manager.remove_subscription(req.endpoint)
+
+
+@app.post("/api/push/test", status_code=204)
+async def push_test():
+    if not push_manager.enabled:
+        raise HTTPException(503, "Web Push 不可用（pywebpush 未安装）")
+    if push_manager.subscription_count == 0:
+        raise HTTPException(404, "没有已订阅设备")
+    await push_manager.send_all("CoderFleet 测试通知", "如果看到这条，手机 Web Push 链路已打通。")
 
 
 # ── 健康检查 ──────────────────────────────────────────────
@@ -446,6 +470,13 @@ import re as _re
 def _validate_identifier(name: str, label: str) -> None:
     if not _re.match(r'^[a-zA-Z0-9_-]+$', name):
         raise HTTPException(status_code=422, detail=f"{label}名只能包含字母、数字、横线和下划线")
+
+
+def _validate_ide_port(enabled: bool, port: Optional[int]) -> None:
+    if not enabled or port is None:
+        return
+    if port < 1024 or port > 65535:
+        raise HTTPException(status_code=422, detail="IDE 端口必须在 1024-65535 之间")
 
 
 
@@ -620,11 +651,15 @@ async def list_projects():
 @app.post("/api/projects", status_code=201)
 async def create_project(req: ProjectCreateRequest):
     _validate_identifier(req.name, "项目")
+    _validate_ide_port(req.ide_enabled, req.ide_port)
     if any(p.name == req.name for p in scheduler.get_projects()):
         raise HTTPException(status_code=409, detail=f"项目 '{req.name}' 已存在")
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
-    project = scheduler.save_project(req.name, req.account, req.path)
+    try:
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
 
 
@@ -635,9 +670,18 @@ async def update_project(name: str, req: ProjectUpdateRequest):
         raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
     new_account = req.account or existing.account
     new_path    = req.path    or existing.path
+    new_active  = existing.active if req.active is None else req.active
+    new_ide_enabled = existing.ide_enabled if req.ide_enabled is None else req.ide_enabled
+    new_ide_port = existing.ide_port if req.ide_port is None else req.ide_port
+    if not new_ide_enabled:
+        new_ide_port = None
+    _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
-    project = scheduler.save_project(name, new_account, new_path)
+    try:
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
 
 
@@ -673,9 +717,9 @@ async def system_apply():
                 yield line.decode("utf-8", errors="replace")
             await proc.wait()
 
-            yield "\n>>> 启动容器 (up -d)...\n"
+            yield "\n>>> 启动容器 (up -d --force-recreate)...\n"
             proc = await asyncio.create_subprocess_exec(
-                *dc, "up", "-d",
+                *dc, "up", "-d", "--force-recreate",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )

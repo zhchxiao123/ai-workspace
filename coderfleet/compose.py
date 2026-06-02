@@ -14,6 +14,21 @@ import yaml
 
 from coderfleet.config import load_config, parse_conf
 from coderfleet.account_type_registry import ACCOUNT_TYPES
+from coderfleet.ports import allocate_ide_port
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_port(value: str, project_name: str) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise click.ClickException(f"项目 {project_name} 启用 IDE 时必须设置有效 IDE_PORT")
+    if port < 1024 or port > 65535:
+        raise click.ClickException(f"项目 {project_name} 的 IDE_PORT 必须在 1024-65535 之间")
+    return port
 
 
 def _make_dumper() -> type[yaml.Dumper]:
@@ -51,6 +66,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     proxy_host     = cfg.get("PROXY_HOST", "host.docker.internal")
     http_port      = cfg.get("PROXY_HTTP_PORT", "7890")
     relay_image    = cfg.get("RELAY_IMAGE", "gogost/gost:3")
+    ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
 
     proxy_url = f"http://{relay_ip}:{relay_port}"
@@ -78,10 +94,16 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     }
 
     count = 0
+    used_ide_ports: set[int] = set()
     for p in projects:
         pname    = p["NAME"]
         paccount = p["ACCOUNT"]
         ppath    = str(Path(p["PATH"]).expanduser())
+        ide_enabled = _truthy(p.get("IDE", "off"))
+
+        if not _truthy(p.get("ACTIVE", "on")):
+            click.secho(f"  跳过项目 {pname}（ACTIVE=off）", fg="yellow")
+            continue
 
         acc = accounts.get(paccount)
         if not acc:
@@ -144,6 +166,26 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             "working_dir": "/workspace",
         }
 
+        if ide_enabled:
+            ide_port = (
+                _parse_port(p["IDE_PORT"], pname)
+                if p.get("IDE_PORT")
+                else None
+            )
+            if ide_port is None:
+                try:
+                    ide_port = allocate_ide_port(used_ide_ports)
+                except RuntimeError as e:
+                    raise click.ClickException(str(e))
+            if ide_port in used_ide_ports:
+                raise click.ClickException(f"IDE_PORT {ide_port} 被多个项目重复使用")
+            used_ide_ports.add(ide_port)
+            environment.update({
+                "CODERFLEET_IDE": "on",
+                "CODERFLEET_IDE_PORT": "8080",
+                "CODERFLEET_IDE_AUTH": "none",
+            })
+
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
             svc["env_file"] = [acc_env_file]
 
@@ -151,6 +193,28 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             svc["depends_on"] = {"proxy-relay": {"condition": "service_healthy"}}
 
         services[svc_name] = svc
+
+        if ide_enabled:
+            ide_svc_name = f"ide-project-{pname}"
+            ide_ctr_name = f"coderfleet-ide-{pname}"
+            ide_networks = {"extnet": {}}
+            if acc_proxy != "off":
+                ide_networks["intnet"] = {}
+            services[ide_svc_name] = {
+                "image": ide_proxy_image,
+                "container_name": ide_ctr_name,
+                "restart": "unless-stopped",
+                "networks": ide_networks,
+                "ports": [f"127.0.0.1:{ide_port}:8080"],
+                "entrypoint": ["socat"],
+                "command": [
+                    "TCP-LISTEN:8080,fork,reuseaddr",
+                    f"TCP:{svc_name}:8080",
+                ],
+                "depends_on": {
+                    svc_name: {"condition": "service_started"},
+                },
+            }
         count += 1
         click.secho(f"  [{acc_type}] {pname}（账号：{paccount}，代理：{acc_proxy}）", fg="cyan")
 

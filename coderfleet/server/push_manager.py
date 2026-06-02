@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -82,6 +83,14 @@ class PushManager:
     def public_key_b64(self) -> Optional[str]:
         return self._public_key_b64
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def subscription_count(self) -> int:
+        return len(self._subscriptions)
+
     # ── 订阅管理 ─────────────────────────────────────────────
 
     def add_subscription(self, subscription: dict) -> None:
@@ -124,7 +133,12 @@ class PushManager:
                     subscription_info=sub,
                     data=payload,
                     vapid_private_key=self._private_key_pem,
-                    vapid_claims={"sub": "mailto:coderfleet@localhost"},
+                    vapid_claims={
+                        "sub": os.environ.get(
+                            "CODERFLEET_VAPID_SUBJECT",
+                            "mailto:coderfleet@example.com",
+                        )
+                    },
                 )
             except WebPushException as exc:
                 if exc.response is not None and exc.response.status_code in (404, 410):

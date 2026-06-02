@@ -3,6 +3,11 @@
 #  修改后执行 coderfleet apply 生效
 # ============================================================
 
+# ── Server 配置 ───────────────────────────────────────────
+# Web UI / API 监听端口（默认 8765）
+# 也可通过 coderfleet server --port <N>  或  CODERFLEET_PORT 环境变量覆盖
+#CODERFLEET_PORT=8765
+
 # ── 镜像配置 ──────────────────────────────────────────────
 IMAGE_NAME=coderfleet
 IMAGE_TAG=latest

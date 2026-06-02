@@ -50,9 +50,12 @@ class Account(BaseModel):
 
 
 class Project(BaseModel):
-    name:    str
-    account: str
-    path:    str
+    name:        str
+    account:     str
+    path:        str
+    active:      bool = True
+    ide_enabled: bool = False
+    ide_port:    Optional[int] = None
 
     @property
     def mount_path(self) -> str:
@@ -275,13 +278,26 @@ class ConversationResponse(BaseModel):
 
 
 class ProjectResponse(BaseModel):
-    name:    str
-    account: str
-    path:    str
+    name:        str
+    account:     str
+    path:        str
+    active:      bool = True
+    ide_enabled: bool = False
+    ide_port:    Optional[int] = None
+    ide_url:     str = ""
 
     @classmethod
     def from_project(cls, p: Project) -> "ProjectResponse":
-        return cls(name=p.name, account=p.account, path=p.path)
+        ide_url = f"http://127.0.0.1:{p.ide_port}" if p.ide_enabled and p.ide_port else ""
+        return cls(
+            name=p.name,
+            account=p.account,
+            path=p.path,
+            active=p.active,
+            ide_enabled=p.ide_enabled,
+            ide_port=p.ide_port,
+            ide_url=ide_url,
+        )
 
 
 class AccountResponse(BaseModel):
@@ -577,3 +593,86 @@ class SkillUpsertRequest(BaseModel):
 class MarketplaceInstallRequest(BaseModel):
     plugin: dict   # full entry dict from MarketplaceManager.search()
     slug:   str    # target slug for the installed skill
+
+
+# ══════════════════════════════════════════════════════════════
+#  工作流 v2 模型（完整修改计划 - Phase 1 引入）
+#  目标：引入真正的一等公民 WorkflowRun + 节点状态机
+#  原则：完全 additive，旧 Pipeline / WorkflowTemplate / TemplateNode 保持 100% 不变
+#  迁移策略（默认）：惰性按需升级（读取旧数据时自动转换为新结构 shim）
+# ══════════════════════════════════════════════════════════════
+
+class WorkflowNodeState(str, Enum):
+    """工作流节点执行状态机"""
+    pending      = "pending"
+    waiting_deps = "waiting_deps"
+    running      = "running"
+    succeeded    = "succeeded"
+    failed       = "failed"
+    skipped      = "skipped"
+    cancelled    = "cancelled"
+
+
+class NodeExecution(BaseModel):
+    """单次 WorkflowRun 中一个节点的执行记录（带独立状态与尝试历史）"""
+    node_id:           str
+    name:              str = ""
+    state:             WorkflowNodeState = WorkflowNodeState.pending
+    task_id:           str = ""           # 当前（或最后一次）关联的 Task id
+    attempt_count:     int = 0
+    resolved_project:  str = ""
+    actual_prompt:     str = ""
+    outputs:           dict = Field(default_factory=dict)  # 未来 Phase 3 用于 {{steps.*.outputs}}
+    started_at:        str = ""
+    finished_at:       str = ""
+    error_message:     str = ""
+    # 历史尝试（重试时追加，当前 task_id 总是最后一次）
+    attempts:          list[dict] = Field(default_factory=list)
+
+
+class WorkflowRun(BaseModel):
+    """
+    工作流的一次执行实例（新核心实体，逐步替代 Pipeline 的“运行记录”语义）。
+    每次从模板 run 产生一个 WorkflowRun，拥有完整节点状态机。
+    """
+    id:                 str
+    template_id:        str = ""
+    template_version:   int = 1
+    name:               str = ""
+    trigger_input:      str = ""
+    status:             str = "running"   # running | succeeded | failed | cancelled | partial
+    node_executions:    list[NodeExecution] = Field(default_factory=list)
+    created:            str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:            str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    # 兼容/审计
+    legacy_pipeline_id: str = ""          # 若由旧 Pipeline 迁移而来
+    project_map:        dict[str, str] = Field(default_factory=dict)  # 运行时角色->项目快照
+
+    def save(self, runs_dir: Path) -> None:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        path = runs_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "WorkflowRun":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(**data)
+
+    @classmethod
+    def load_all(cls, runs_dir: Path) -> list["WorkflowRun"]:
+        if not runs_dir.exists():
+            return []
+        runs = []
+        for p in sorted(runs_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                runs.append(cls.load(p))
+            except Exception:
+                pass
+        return runs
+
+    def touch(self, runs_dir: Path) -> None:
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(runs_dir)

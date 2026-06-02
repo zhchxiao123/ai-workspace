@@ -70,7 +70,7 @@ function renderConversations(convs, projects, tasks) {
   }
 
   const folderSvg = `<svg class="proj-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
-  let html = '';
+  let html = renderRecentSection(convs, projects, tasks);
 
   const sortedProjects = [...projects];
   if (chatProjectSortOrder === 'name') {
@@ -1234,4 +1234,222 @@ function renderImagePreviews() {
 // 它们会自动回退调用 renderImagePreviews（window 上已存在）
 
 // renderTaskImageAttachments 由 shared/image-upload.js 提供（全局可用）
+
+// ── 最近访问区 ────────────────────────────────────────────
+
+function renderRecentSection(convs, projects, tasks) {
+  const allItems = [];
+
+  convs.forEach(c => {
+    const convTasks = tasks.filter(t => t.conversation_id === c.id)
+      .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+    const latestStatus = convTasks[0]?.status || 'done';
+    const proj = projects.find(p => conversationBelongsToProject(c, p));
+    allItems.push({
+      type: 'conversation',
+      id: c.id,
+      name: c.name || c.id,
+      projectName: proj?.name || c.project_name || '',
+      time: c.updated || c.created || 0,
+      status: latestStatus,
+    });
+  });
+
+  tasks.filter(t => !t.conversation_id && !t.archived).forEach(t => {
+    const proj = projects.find(p => taskBelongsToProject(t, p));
+    allItems.push({
+      type: 'one-off',
+      id: `task-${t.id}`,
+      name: t.prompt,
+      projectName: proj?.name || t.project_name || '',
+      time: t.created || 0,
+      status: t.status || 'done',
+    });
+  });
+
+  allItems.sort((a, b) => new Date(b.time) - new Date(a.time));
+  const recentItems = allItems.slice(0, 5);
+  if (!recentItems.length) return '';
+
+  const isCollapsed = localStorage.getItem('coderfleet.recentSectionCollapsed') === 'true';
+
+  let html = `<div class="recent-section${isCollapsed ? ' collapsed' : ''}">
+    <div class="recent-header" onclick="toggleRecentSection()">
+      <span class="recent-header-label">最近访问</span>
+      <span class="recent-collapse-icon">${isCollapsed ? '▸' : '▾'}</span>
+    </div>
+    <div class="recent-items">`;
+
+  recentItems.forEach(item => {
+    const isActive = item.id === activeConversationId;
+    const isRunning = item.status === 'running';
+    const isPending = item.status === 'pending' || item.status === 'scheduled';
+    const displayTime = fmtTimeFriendly(item.time);
+    const statusBadge = isRunning
+      ? `<span class="session-status-dot running" title="运行中"></span>`
+      : isPending
+      ? `<span class="session-status-dot pending"></span>`
+      : `<span class="session-time">${esc(displayTime)}</span>`;
+    html += `<div class="chat-session-item recent-item${isActive ? ' active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
+        <div class="recent-item-body">
+          <span class="recent-project-chip">${esc(item.projectName)}</span>
+          <span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
+        </div>
+        ${statusBadge}
+      </div>`;
+  });
+
+  html += `</div></div><div class="recent-divider"></div>`;
+  return html;
+}
+
+function toggleRecentSection() {
+  const collapsed = localStorage.getItem('coderfleet.recentSectionCollapsed') === 'true';
+  localStorage.setItem('coderfleet.recentSectionCollapsed', collapsed ? 'false' : 'true');
+  rerenderChatProjectList();
+}
+
+// ── Ctrl+K 快速跳转 ───────────────────────────────────────
+
+let quickJumpItems = [];
+let quickJumpQuery = '';
+let quickJumpSelectedIdx = 0;
+
+function openQuickJump() {
+  _buildQuickJumpItems();
+  quickJumpQuery = '';
+  quickJumpSelectedIdx = 0;
+  const overlay = document.getElementById('quick-jump-overlay');
+  const input = document.getElementById('quick-jump-input');
+  if (!overlay || !input) return;
+  overlay.style.display = 'flex';
+  input.value = '';
+  _renderQuickJumpResults();
+  requestAnimationFrame(() => input.focus());
+}
+
+function closeQuickJump() {
+  const overlay = document.getElementById('quick-jump-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function _buildQuickJumpItems() {
+  const convs = chatConversationsList;
+  const tasks = tasksCache;
+  const projects = projectsCache;
+  quickJumpItems = [];
+
+  convs.forEach(c => {
+    const convTasks = tasks.filter(t => t.conversation_id === c.id)
+      .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+    const latestStatus = convTasks[0]?.status || 'done';
+    const proj = projects.find(p => conversationBelongsToProject(c, p));
+    quickJumpItems.push({
+      type: 'conversation',
+      id: c.id,
+      name: c.name || c.id,
+      projectName: proj?.name || c.project_name || '',
+      time: c.updated || c.created || 0,
+      status: latestStatus,
+      searchText: ((c.name || '') + ' ' + (proj?.name || c.project_name || '')).toLowerCase(),
+    });
+  });
+
+  tasks.filter(t => !t.conversation_id && !t.archived).forEach(t => {
+    const proj = projects.find(p => taskBelongsToProject(t, p));
+    quickJumpItems.push({
+      type: 'one-off',
+      id: `task-${t.id}`,
+      name: t.prompt,
+      projectName: proj?.name || t.project_name || '',
+      time: t.created || 0,
+      status: t.status || 'done',
+      searchText: ((t.prompt || '') + ' ' + (proj?.name || t.project_name || '')).toLowerCase(),
+    });
+  });
+
+  quickJumpItems.sort((a, b) => new Date(b.time) - new Date(a.time));
+}
+
+function filterQuickJump(value) {
+  quickJumpQuery = value;
+  quickJumpSelectedIdx = 0;
+  _renderQuickJumpResults();
+}
+
+function _getQuickJumpFiltered() {
+  const q = quickJumpQuery.trim().toLowerCase();
+  return q
+    ? quickJumpItems.filter(item => item.searchText.includes(q)).slice(0, 20)
+    : quickJumpItems.slice(0, 20);
+}
+
+function _renderQuickJumpResults() {
+  const container = document.getElementById('quick-jump-results');
+  if (!container) return;
+  const filtered = _getQuickJumpFiltered();
+
+  if (!filtered.length) {
+    container.innerHTML = `<div class="quick-jump-empty">无匹配结果</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map((item, i) => {
+    const isSelected = i === quickJumpSelectedIdx;
+    const isRunning = item.status === 'running';
+    const dot = isRunning ? `<span class="session-status-dot running"></span>` : '';
+    return `<div class="quick-jump-item${isSelected ? ' selected' : ''}" data-idx="${i}" onmouseenter="quickJumpSelectedIdx=${i}; document.querySelectorAll('#quick-jump-results .quick-jump-item').forEach((el,j)=>el.classList.toggle('selected',j===${i}))" onclick="selectQuickJumpItem(${i})">
+        <span class="quick-jump-project-chip">${esc(item.projectName)}</span>
+        <span class="quick-jump-item-name">${esc(item.name)}</span>
+        ${dot}
+      </div>`;
+  }).join('');
+
+  const selectedEl = container.querySelector('.quick-jump-item.selected');
+  if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest' });
+}
+
+function selectQuickJumpItem(idx) {
+  const filtered = _getQuickJumpFiltered();
+  const item = filtered[idx];
+  if (!item) return;
+  closeQuickJump();
+  if (currentPage !== 'chat') showPage('chat');
+  selectConversation(item.id);
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    const tag = document.activeElement?.tagName?.toUpperCase();
+    const activeId = document.activeElement?.id;
+    if (activeId === 'quick-jump-input') return;
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+    e.preventDefault();
+    const overlay = document.getElementById('quick-jump-overlay');
+    if (overlay && overlay.style.display !== 'none') {
+      closeQuickJump();
+    } else {
+      openQuickJump();
+    }
+    return;
+  }
+
+  const overlay = document.getElementById('quick-jump-overlay');
+  if (!overlay || overlay.style.display === 'none') return;
+
+  if (e.key === 'Escape') { e.preventDefault(); closeQuickJump(); return; }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    quickJumpSelectedIdx = Math.min(quickJumpSelectedIdx + 1, _getQuickJumpFiltered().length - 1);
+    _renderQuickJumpResults();
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    quickJumpSelectedIdx = Math.max(quickJumpSelectedIdx - 1, 0);
+    _renderQuickJumpResults();
+    return;
+  }
+  if (e.key === 'Enter') { e.preventDefault(); selectQuickJumpItem(quickJumpSelectedIdx); return; }
+});
 // 直接调用即可，此处无需再定义包装函数（否则会覆盖 window.renderTaskImageAttachments，导致无限递归）

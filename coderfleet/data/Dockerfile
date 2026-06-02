@@ -3,10 +3,10 @@
 #  包含：Python 3.12 / Node.js 20 / Rust
 #        Codex CLI / Claude Code / OpenCode / Hermes / Grok
 #        FFmpeg / LibreOffice (headless) / Playwright + Chromium
-#  平台：linux/amd64（Apple Silicon 通过 Docker 模拟运行）
+#  平台：linux/amd64 + linux/arm64（多平台镜像）
 # ============================================================
 
-FROM --platform=linux/amd64 ubuntu:24.04
+FROM ubuntu:24.04
 
 # 避免交互式安装询问
 ENV DEBIAN_FRONTEND=noninteractive
@@ -60,6 +60,9 @@ RUN npm install -g @anthropic-ai/claude-code
 # ── OpenCode CLI ──────────────────────────────────────────
 RUN npm install -g opencode-ai@latest
 
+# ── code-server（浏览器内 VS Code）────────────────────────
+RUN curl -fsSL https://code-server.dev/install.sh | sh
+
 # ── Hermes Agent ──────────────────────────────────────────
 # ripgrep is required by hermes code-search tools
 RUN apt-get update && apt-get install -y --no-install-recommends ripgrep \
@@ -77,16 +80,26 @@ RUN python3 -m venv /opt/hermes-venv \
 
 # ── Grok Build CLI (xAI) ─────────────────────────────────
 # install.sh 把真正的二进制下载到 ~/.grok/downloads/，然后在 ~/.grok/bin/ 建 symlink。
-# GROK_BIN_DIR 只是加第三层 symlink，不改变二进制实际位置。
-# 以 root 安装后 /root/.grok/ 权限为 700，byclaw 无法穿越 symlink 链访问二进制。
-# 解决方案：用 cp -L 把实体二进制复制到 /usr/local/bin/，然后删掉整个 /root/.grok/。
-RUN curl -fsSL https://x.ai/cli/install.sh | bash \
-    && rm -f /usr/local/bin/grok /usr/local/bin/agent \
-    && cp -L /root/.grok/bin/grok /usr/local/bin/grok \
-    && chmod 755 /usr/local/bin/grok \
-    && (cp -L /root/.grok/bin/agent /usr/local/bin/grok-agent && chmod 755 /usr/local/bin/grok-agent || true) \
-    && rm -rf /root/.grok \
-    && grok --version
+# 新版安装器还会尝试把 grok/agent symlink 到 /usr/local/bin/；这里用临时 HOME
+# 执行安装，再复制 symlink 指向的实体二进制，避免最终镜像依赖 root 的 ~/.grok。
+# arm64 上如果 x.ai 尚未提供对应二进制，安装步骤会被跳过而不中断构建。
+RUN set -eux; \
+    grok_home="$(mktemp -d)"; \
+    curl -fsSL https://x.ai/cli/install.sh -o /tmp/grok-install.sh; \
+    if HOME="$grok_home" GROK_BIN_DIR="$grok_home/.grok/bin" bash /tmp/grok-install.sh; then \
+        rm -f /usr/local/bin/grok /usr/local/bin/agent /usr/local/bin/grok-agent; \
+        cp -L "$grok_home/.grok/bin/grok" /usr/local/bin/grok; \
+        chmod 755 /usr/local/bin/grok; \
+        if [ -e "$grok_home/.grok/bin/agent" ]; then \
+            cp -L "$grok_home/.grok/bin/agent" /usr/local/bin/grok-agent; \
+            chmod 755 /usr/local/bin/grok-agent; \
+        fi; \
+        GROK_HOME=/tmp/grok-home grok --version; \
+        rm -rf /tmp/grok-home; \
+    else \
+        echo "WARNING: Grok CLI installation skipped (unsupported on $(uname -m))"; \
+    fi; \
+    rm -rf "$grok_home" /tmp/grok-install.sh
 
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \

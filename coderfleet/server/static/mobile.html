@@ -167,6 +167,8 @@
       flex-shrink: 0; -webkit-tap-highlight-color: transparent;
     }
     .icon-btn:active { background: var(--surface2); }
+    .icon-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .icon-btn:disabled:active { background: none; }
     .icon-btn svg { width: 22px; height: 22px; stroke-width: 1.8; }
 
     /* ── Conversation list ──────────────────────────────── */
@@ -964,6 +966,7 @@ async function initApp() {
   updateMobileThemeIcon();
   _updateMobileSortLabel();
   await refresh();
+  initPush();
   setInterval(checkHealth, 12000);
   setInterval(bgRefresh, 7000);
   const textarea = document.getElementById('ta');
@@ -2067,23 +2070,50 @@ if (window.innerWidth > 768) {
 let _vapidPublicKey = null;
 let _pushSubscription = null;
 
-async function initPush() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+function setPushUnavailable(reason) {
   const btn = document.getElementById('notif-btn');
+  if (!btn) return;
+  btn.style.display = '';
+  btn.disabled = true;
+  btn.classList.remove('subscribed');
+  btn.title = reason;
+}
+
+async function initPush() {
+  const btn = document.getElementById('notif-btn');
+  if (!btn) return;
+  btn.style.display = '';
+
+  if (!window.isSecureContext) {
+    setPushUnavailable('推送通知需要 HTTPS，或通过 localhost 访问。');
+    return;
+  }
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    setPushUnavailable('当前浏览器不支持 Web Push 通知。');
+    return;
+  }
+
   try {
+    await navigator.serviceWorker.register('/sw.js');
     const res = await fetch('/api/push/vapid-public-key');
-    if (!res.ok) return;
+    if (!res.ok) {
+      setPushUnavailable('Web Push 暂不可用，请确认服务端已安装 pywebpush。');
+      return;
+    }
     const { publicKey } = await res.json();
     _vapidPublicKey = publicKey;
-    btn.style.display = '';
+    btn.disabled = false;
     const reg = await navigator.serviceWorker.ready;
     _pushSubscription = await reg.pushManager.getSubscription();
     updateNotifBtn();
-  } catch {}
+  } catch (e) {
+    setPushUnavailable(`推送初始化失败：${e.message || e}`);
+  }
 }
 
 function updateNotifBtn() {
   const btn = document.getElementById('notif-btn');
+  if (!btn || btn.disabled) return;
   if (_pushSubscription) {
     btn.classList.add('subscribed');
     btn.title = '已开启推送通知（点击关闭）';
@@ -2102,6 +2132,8 @@ function urlBase64ToUint8Array(base64String) {
 
 async function togglePushSubscription() {
   if (!_vapidPublicKey) return;
+  const btn = document.getElementById('notif-btn');
+  if (btn?.disabled) return;
   const reg = await navigator.serviceWorker.ready;
   if (_pushSubscription) {
     await _pushSubscription.unsubscribe();
@@ -2133,12 +2165,6 @@ async function togglePushSubscription() {
   } catch (e) {
     alert('订阅推送失败：' + e.message);
   }
-}
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js')
-    .then(() => initPush())
-    .catch(() => {});
 }
 </script>
 <!-- API Key 登录遮罩：必须在 script 加载之前插入 DOM -->

@@ -67,3 +67,64 @@ def load_config(ws: Path) -> dict[str, str]:
     for record in parse_conf(ws / "config.conf"):
         result.update(record)
     return result
+
+
+def update_conf_field(path: Path, name: str, key: str, value: str) -> bool:
+    """
+    In the line where NAME=<name> appears, set KEY=value (replace or append).
+    Returns True if the entry was found and updated, False if not found.
+    """
+    key = key.upper()
+    name_pat = re.compile(rf"\bNAME={re.escape(name)}(\s|$)")
+    key_pat = re.compile(rf"\b{re.escape(key)}=\S*")
+
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    updated = False
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            new_lines.append(line)
+            continue
+        if name_pat.search(line):
+            if key_pat.search(line):
+                new_line = key_pat.sub(f"{key}={value}", line)
+            else:
+                new_line = line.rstrip("\n").rstrip("\r") + f"  {key}={value}\n"
+            new_lines.append(new_line)
+            updated = True
+        else:
+            new_lines.append(line)
+    if updated:
+        path.write_text("".join(new_lines), encoding="utf-8")
+    return updated
+
+
+def set_config(ws: Path, key: str, value: str) -> None:
+    """Set or update a single KEY=value entry in config.conf."""
+    key = key.upper()
+    conf = ws / "config.conf"
+    if conf.exists():
+        lines = conf.read_text(encoding="utf-8").splitlines(keepends=True)
+        pattern = re.compile(rf"(^|\s){re.escape(key)}=\S*")
+        updated = False
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") or not stripped:
+                new_lines.append(line)
+                continue
+            if pattern.search(line):
+                # Replace just the token in-place, preserving surrounding tokens
+                new_line = pattern.sub(lambda m: m.group(1) + f"{key}={value}", line)
+                new_lines.append(new_line)
+                updated = True
+            else:
+                new_lines.append(line)
+        if updated:
+            conf.write_text("".join(new_lines), encoding="utf-8")
+            return
+    # Key not found — append it
+    ensure_workspace(ws)
+    with conf.open("a", encoding="utf-8") as f:
+        f.write(f"{key}={value}\n")

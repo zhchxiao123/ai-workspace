@@ -23,7 +23,7 @@ def main(ctx: click.Context) -> None:
 
 
 from coderfleet.task_cmds import task_group
-from coderfleet.config_cmds import account_group, project_group
+from coderfleet.config_cmds import account_group, config_group, project_group
 from coderfleet.docker_ops import (
     cmd_build, cmd_apply, cmd_up, cmd_down,
     cmd_restart, cmd_status, cmd_logs, cmd_enter, cmd_check_proxy,
@@ -33,6 +33,7 @@ from coderfleet.login_cmd import cmd_login
 main.add_command(task_group)
 main.add_command(account_group)
 main.add_command(project_group)
+main.add_command(config_group)
 main.add_command(cmd_build)
 main.add_command(cmd_apply)
 main.add_command(cmd_up)
@@ -133,15 +134,16 @@ def cmd_server(
 @main.group("tray", invoke_without_command=True)
 @click.pass_context
 def cmd_tray(ctx: click.Context) -> None:
-    """macOS menu-bar tray — manages server lifecycle and sends task notifications.
+    """System-tray app — manages server lifecycle and sends task notifications.
+
+    macOS: menu-bar (rumps).  Windows/Linux: system tray (pystray).
 
     \b
-    coderfleet tray install    # install LaunchAgent (auto-start at login) + start now
-    coderfleet tray uninstall  # remove LaunchAgent + stop tray
-    coderfleet tray start      # start tray (if LaunchAgent is installed)
-    coderfleet tray stop       # stop tray (server keeps running)
-    coderfleet tray status     # show tray + server status
-    coderfleet tray            # run tray in foreground (debug / first run)
+    coderfleet tray            # run tray in foreground
+    coderfleet tray install    # (macOS) install LaunchAgent (auto-start at login)
+    coderfleet tray uninstall  # (macOS) remove LaunchAgent + stop tray
+    coderfleet tray start      # (macOS) start tray via launchctl
+    coderfleet tray stop       # (macOS) stop tray (server keeps running)
     """
     if ctx.invoked_subcommand is None:
         from coderfleet.tray import run_tray

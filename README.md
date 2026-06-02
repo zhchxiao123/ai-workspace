@@ -336,7 +336,7 @@ coderfleet server --stop
 
 | 命令 | 说明 |
 |------|------|
-| `coderfleet project add <名称> <账号名> <项目路径>` | 添加项目 |
+| `coderfleet project add <名称> <账号名> <项目路径> [--ide --ide-port 18080]` | 添加项目，可选启用浏览器 IDE；端口省略时随机分配空闲端口 |
 | `coderfleet project remove <名称>` | 删除项目 |
 | `coderfleet project list` | 列出所有项目 |
 
@@ -437,8 +437,10 @@ XAI_API_KEY=xai-...
 ### projects.conf
 
 ```conf
-# 格式：NAME=<名称>  ACCOUNT=<账号名>  PATH=<项目路径>
+# 格式：NAME=<名称>  ACCOUNT=<账号名>  PATH=<项目路径>  [IDE=on IDE_PORT=<端口>]
+# IDE_PORT 可省略，由 CoderFleet 随机选择一个本机空闲端口。
 NAME=my-app      ACCOUNT=alice  PATH=~/projects/my-app
+NAME=my-app-ide  ACCOUNT=alice  PATH=~/projects/my-app  IDE=on IDE_PORT=18080
 NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 NAME=grok-app    ACCOUNT=eve    PATH=~/projects/grok-app
 ```

@@ -45,15 +45,6 @@ let chatSearchResults = [];
 let chatSearchLoading = false;
 let chatSearchDeep = false;
 let tasksCache = [];
-let terminalContext = {
-  projectName: '',
-  socket: null,
-  terminal: null,
-  fitAddon: null,
-  connected: false,
-  resizeTimer: null,
-  lastState: 'closed',
-};
 let submitContext = { surface: 'task', projectName: '' };
 let taskRowsCache = [];
 let taskPage = 1;

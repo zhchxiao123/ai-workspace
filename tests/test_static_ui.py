@@ -149,6 +149,19 @@ def test_project_workspace_exposes_embedded_terminal() -> None:
     assert "disconnectProjectTerminal();" in source
 
 
+def test_bottom_terminal_tabs_keep_independent_sessions() -> None:
+    source = read_ui_source()
+
+    assert "function createBottomTerminalContext" in source
+    assert "context: createBottomTerminalContext(id, projectName)" in source
+    assert "function activateBottomTerminalTab" in source
+    assert "bottomTerminalContext = tab.context" in source
+    assert "className = 'bottom-terminal-pane'" in source
+    assert "tab.context.socket || tab.context.terminal" in source
+    assert "disconnectAllBottomTerminals" in source
+    assert "window.addEventListener('beforeunload', disconnectAllBottomTerminals)" in source
+
+
 def test_sidebar_can_collapse_with_persisted_state() -> None:
     html = read_index()
     source = read_ui_source()
@@ -358,6 +371,17 @@ def test_mobile_conversation_actions_and_terminal_entry_exist() -> None:
     assert "function connectMobileTerminal" in source
     assert "function sendTerminalKey" in source
     assert "/api/projects/${encodeURIComponent(projectName)}/terminal" in source
+
+
+def test_project_page_embeds_ide_iframe() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    assert 'id="project-ide-frame"' in html
+    assert "function renderProjectIde" in source
+    assert "function openProjectIdeWindow" in source
+    assert "ide_enabled" in source
+    assert "ide_port" in source
 
 
 def test_mobile_shell_uses_dynamic_viewport_height() -> None:

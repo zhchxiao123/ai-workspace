@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 import subprocess
 from pathlib import Path
 
@@ -90,6 +92,63 @@ def test_apply_mounts_opencode_auth_dir(tmp_path: Path) -> None:
     assert "XDG_STATE_HOME: /home/byclaw/.opencode/state" in compose
     assert "XDG_CACHE_HOME: /home/byclaw/.opencode/cache" in compose
     assert "- ./accounts/api-opencode/env" in compose
+
+
+def test_apply_enables_project_ide(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-codex PATH={workspace / 'repo'} IDE=on IDE_PORT=18080\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "CODERFLEET_IDE: \"on\"" in compose
+    assert "CODERFLEET_IDE_PORT: '8080'" in compose
+    assert "CODERFLEET_IDE_AUTH: none" in compose
+    assert "ide-project-repo:" in compose
+    assert "container_name: coderfleet-ide-repo" in compose
+    assert "entrypoint:" in compose
+    assert "- socat" in compose
+    assert "- TCP:codex-project-repo:8080" in compose
+    assert "ports:" in compose
+    assert "- 127.0.0.1:18080:8080" in compose
+
+
+def test_apply_auto_assigns_project_ide_port(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-codex PATH={workspace / 'repo'} IDE=on\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert re.search(r"- 127\.0\.0\.1:\d+:8080", compose)
+
+
+def test_auto_ide_port_skips_occupied_port(tmp_path: Path) -> None:
+    from coderfleet.ports import allocate_ide_port
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        occupied_port = sock.getsockname()[1]
+
+        port = allocate_ide_port([], min_port=occupied_port, max_port=occupied_port + 1)
+
+    assert port == occupied_port + 1
 
 
 def test_apply_disables_proxy_for_account_proxy_off(tmp_path: Path) -> None:

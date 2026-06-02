@@ -71,6 +71,17 @@ case "$ACCOUNT_TYPE" in
         ;;
 esac
 
+# ── 可选启动 code-server（浏览器内 VS Code）────────────────
+if [ "${CODERFLEET_IDE:-off}" = "on" ]; then
+    IDE_PORT="${CODERFLEET_IDE_PORT:-8080}"
+    IDE_AUTH="${CODERFLEET_IDE_AUTH:-password}"
+    echo "启动 code-server：0.0.0.0:${IDE_PORT} -> /workspace（auth=${IDE_AUTH}）"
+    code-server /workspace \
+        --bind-addr "0.0.0.0:${IDE_PORT}" \
+        --auth "${IDE_AUTH}" \
+        > /tmp/coderfleet-code-server.log 2>&1 &
+fi
+
 # ── 执行传入的命令（默认 sleep infinity）─────────────────
 echo "容器启动完成，执行：$*"
 exec "$@"

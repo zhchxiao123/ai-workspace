@@ -15,7 +15,7 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('push', e => {
-  let payload = { title: 'CoderFleet', body: '', url: '/m' };
+  let payload = { title: 'CoderFleet', body: '', url: '/' };
   try { payload = { ...payload, ...e.data.json() }; } catch {}
   e.waitUntil(
     self.registration.showNotification(payload.title, {

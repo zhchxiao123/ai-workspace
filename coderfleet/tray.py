@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 """
-macOS menu-bar tray for CoderFleet.
+System-tray / menu-bar app for CoderFleet.
+
+  macOS   — rumps  (native menu-bar, AppKit notifications)
+  Windows — pystray + pillow + plyer (system tray, Toast notifications)
+  Linux   — pystray + pillow + notify-send (system tray, libnotify)
 
 Architecture
 ────────────
@@ -10,13 +14,14 @@ Server lifecycle is managed via PID file (server_daemon module),
 same as `coderfleet server --daemon`.  Quitting the tray leaves
 the server running.
 
-LaunchAgent (installed via `coderfleet tray install`) starts this
+On macOS, LaunchAgent (installed via `coderfleet tray install`) starts this
 process at login.  launchd handles crash-restart.
 """
 
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -43,14 +48,16 @@ _ICON_PATH = Path(__file__).parent / "server" / "static" / "icons" / "logo-mark.
 
 
 def _notify(title: str, message: str) -> None:
-    """Send a native macOS notification.
+    """Send a native desktop notification (cross-platform)."""
+    if sys.platform == "darwin":
+        _notify_macos(title, message)
+    elif sys.platform == "win32":
+        _notify_windows(title, message)
+    else:
+        _notify_linux(title, message)
 
-    osascript is the most reliable method across macOS versions and is tried
-    first.  NSUserNotification (deprecated but still present) is attempted
-    afterwards purely to attach a contentImage; if it fails the osascript
-    notification already delivered is sufficient.
-    """
-    # ── primary: osascript (works on all macOS versions) ──────────────
+
+def _notify_macos(title: str, message: str) -> None:
     _title = title.replace('"', '\\"')
     _msg   = message.replace('"', '\\"')
     script = (
@@ -58,30 +65,50 @@ def _notify(title: str, message: str) -> None:
         f'sound name "default"'
     )
     try:
-        subprocess.run(["osascript", "-e", script],
-                       capture_output=True, timeout=3)
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=3)
     except Exception:
         pass
 
-    # ── bonus: also try NSUserNotification with contentImage ──────────
-    # macOS 14+ silently drops these, so this is best-effort only;
-    # the osascript notification above already appeared.
     try:
         from Foundation import NSUserNotification, NSUserNotificationCenter
         import AppKit
-
         n = NSUserNotification.alloc().init()
         n.setTitle_(title)
         n.setInformativeText_(message)
-
         if _ICON_PATH.exists():
             img = AppKit.NSImage.alloc().initWithContentsOfFile_(str(_ICON_PATH))
             if img:
                 n.setContentImage_(img)
-
         NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(n)
     except Exception:
         pass
+
+
+def _notify_windows(title: str, message: str) -> None:
+    try:
+        from plyer import notification as plyer_notif
+        plyer_notif.notify(
+            title=title, message=message,
+            app_name="CoderFleet",
+            app_icon=str(_ICON_PATH) if _ICON_PATH.exists() else None,
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _notify_linux(title: str, message: str) -> None:
+    try:
+        subprocess.run(
+            ["notify-send", "--app-name=CoderFleet", title, message],
+            capture_output=True, timeout=3,
+        )
+    except Exception:
+        try:
+            from plyer import notification as plyer_notif
+            plyer_notif.notify(title=title, message=message, app_name="CoderFleet", timeout=5)
+        except Exception:
+            pass
 
 
 # ── LaunchAgent management ─────────────────────────────────────────────────────
@@ -172,6 +199,9 @@ def _run_macos(ws, port: int) -> None:
     _api_key = _load_api_key(ws)
     _headers = {"Authorization": f"Bearer {_api_key}"} if _api_key else {}
 
+    def _current_port() -> int:
+        return int(load_config(ws).get("CODERFLEET_PORT", port))
+
     class _App(rumps.App):
         def __init__(self_inner) -> None:
             self_inner._seen: set[str] = set()
@@ -201,14 +231,14 @@ def _run_macos(ws, port: int) -> None:
         # ── actions ──────────────────────────────────────────────
 
         def _open_ui(self_inner, _) -> None:
-            webbrowser.open(f"http://localhost:{port}")
+            webbrowser.open(f"http://localhost:{_current_port()}")
 
         def _start_server(self_inner, _) -> None:
             threading.Thread(target=self_inner._do_start, daemon=True).start()
 
         def _do_start(self_inner) -> None:
             try:
-                new_pid = sd.start_daemon(ws, port)
+                new_pid = sd.start_daemon(ws, _current_port())
                 self_inner._status_item.title = f"Server: Running  (PID {new_pid})"
                 _notify("CoderFleet", f"Server started (PID {new_pid})")
             except Exception as exc:
@@ -262,7 +292,7 @@ def _run_macos(ws, port: int) -> None:
                 self_inner._status_item.title = "Server: Stopped"
                 # Auto-restart: bring it back up silently.
                 try:
-                    new_pid = sd.start_daemon(ws, port)
+                    new_pid = sd.start_daemon(ws, _current_port())
                     self_inner._status_item.title = f"Server: Running  (PID {new_pid})"
                     _notify("CoderFleet", f"Server restarted (PID {new_pid})")
                 except Exception:
@@ -275,7 +305,7 @@ def _run_macos(ws, port: int) -> None:
             try:
                 import httpx
                 resp = httpx.get(
-                    f"http://localhost:{port}/api/tasks",
+                    f"http://localhost:{_current_port()}/api/tasks",
                     headers=_headers,
                     timeout=2,
                 )
@@ -307,7 +337,7 @@ def _run_macos(ws, port: int) -> None:
         app._status_item.title = f"Server: Running  (PID {pid})"
     else:
         try:
-            new_pid = sd.start_daemon(ws, port)
+            new_pid = sd.start_daemon(ws, _current_port())
             app._status_item.title = f"Server: Running  (PID {new_pid})"
         except Exception as exc:
             app._status_item.title = "Server: Failed to start"
@@ -319,7 +349,7 @@ def _run_macos(ws, port: int) -> None:
         import httpx, time
         time.sleep(1.5)  # give server a moment to be ready
         resp = httpx.get(
-            f"http://localhost:{port}/api/tasks",
+            f"http://localhost:{_current_port()}/api/tasks",
             headers=_headers,
             timeout=3,
         )
@@ -351,12 +381,176 @@ def _run_macos(ws, port: int) -> None:
     app.run()
 
 
+# ── pystray tray app (Windows / Linux) ────────────────────────────────────────
+
+def _run_pystray(ws: Path, port: int) -> None:
+    import pystray
+    from PIL import Image as _Image
+
+    _api_key = _load_api_key(ws)
+    _headers = {"Authorization": f"Bearer {_api_key}"} if _api_key else {}
+
+    _status = {"label": "Server: …"}
+    _seen: set[str] = set()
+
+    def _current_port() -> int:
+        return int(load_config(ws).get("CODERFLEET_PORT", port))
+
+    try:
+        _img = _Image.open(_ICON_PATH)
+    except Exception:
+        _img = _Image.new("RGBA", (64, 64), (13, 148, 136, 255))
+
+    # ── actions ──────────────────────────────────────────────────────
+
+    def _open_ui(icon, item) -> None:
+        webbrowser.open(f"http://localhost:{_current_port()}")
+
+    def _start_server(icon, item) -> None:
+        threading.Thread(target=_do_start, args=(icon,), daemon=True).start()
+
+    def _do_start(icon) -> None:
+        try:
+            new_pid = sd.start_daemon(ws, _current_port())
+            _status["label"] = f"Server: Running  (PID {new_pid})"
+            icon.update_menu()
+            _notify("CoderFleet", f"Server started (PID {new_pid})")
+        except Exception as exc:
+            _notify("CoderFleet", f"Failed to start server: {exc}")
+
+    def _stop_server(icon, item) -> None:
+        threading.Thread(target=_do_stop, args=(icon,), daemon=True).start()
+
+    def _do_stop(icon) -> None:
+        stopped = sd.stop_daemon(ws)
+        _status["label"] = "Server: Stopped" if stopped else "Server: Not running"
+        icon.update_menu()
+        if stopped:
+            _notify("CoderFleet", "Server stopped")
+
+    def _check_update(icon, item) -> None:
+        threading.Thread(target=_do_check_update, daemon=True).start()
+
+    def _do_check_update() -> None:
+        try:
+            import httpx
+            from importlib.metadata import version as pkg_version
+            current = pkg_version("coderfleet")
+            resp = httpx.get("https://pypi.org/pypi/coderfleet/json", timeout=8)
+            latest = resp.json()["info"]["version"]
+            if latest != current:
+                _notify("CoderFleet Update Available",
+                        f"{current} → {latest}  |  pip install --upgrade coderfleet")
+            else:
+                _notify("CoderFleet", f"Already up to date ({current})")
+        except Exception as exc:
+            _notify("CoderFleet", f"Update check failed: {exc}")
+
+    def _quit(icon, item) -> None:
+        icon.stop()
+
+    # ── watchdog ─────────────────────────────────────────────────────
+
+    def _watchdog(icon) -> None:
+        while True:
+            time.sleep(_POLL_INTERVAL)
+            pid = sd.read_pid(ws)
+            if pid and sd.is_running(pid):
+                _status["label"] = f"Server: Running  (PID {pid})"
+            else:
+                sd.pid_file(ws).unlink(missing_ok=True)
+                _status["label"] = "Server: Stopped"
+                try:
+                    new_pid = sd.start_daemon(ws, _current_port())
+                    _status["label"] = f"Server: Running  (PID {new_pid})"
+                    _notify("CoderFleet", f"Server restarted (PID {new_pid})")
+                except Exception:
+                    pass
+            icon.update_menu()
+            _poll_tasks_pystray(icon)
+
+    def _poll_tasks_pystray(icon) -> None:
+        try:
+            import httpx
+            resp = httpx.get(
+                f"http://localhost:{_current_port()}/api/tasks",
+                headers=_headers,
+                timeout=2,
+            )
+            if resp.status_code != 200:
+                return
+            tasks = resp.json()
+        except Exception:
+            return
+
+        for task in tasks:
+            tid    = task.get("id", "")
+            status = task.get("status", "")
+            if status not in {"done", "failed", "killed"} or tid in _seen:
+                continue
+            _seen.add(tid)
+            label = task.get("project_name") or task.get("project", "?")
+            if status == "done":
+                _notify("CoderFleet: Task Done", f"{label} — completed")
+            else:
+                _notify(f"CoderFleet: Task {status.capitalize()}", label)
+
+    def _setup(icon) -> None:
+        icon.visible = True
+        # Pre-populate _seen so the first watchdog tick skips historical tasks.
+        try:
+            import httpx
+            time.sleep(1.5)
+            resp = httpx.get(
+                f"http://localhost:{_current_port()}/api/tasks",
+                headers=_headers,
+                timeout=3,
+            )
+            if resp.status_code == 200:
+                for t in resp.json():
+                    if t.get("status") in {"done", "failed", "killed"}:
+                        _seen.add(t.get("id", ""))
+        except Exception:
+            pass
+        threading.Thread(target=_watchdog, args=(icon,), daemon=True).start()
+
+    # ── startup ───────────────────────────────────────────────────────
+
+    if sd.server_is_running(ws):
+        pid = sd.read_pid(ws)
+        _status["label"] = f"Server: Running  (PID {pid})"
+    else:
+        try:
+            new_pid = sd.start_daemon(ws, _current_port())
+            _status["label"] = f"Server: Running  (PID {new_pid})"
+        except Exception as exc:
+            _status["label"] = "Server: Failed to start"
+            _notify("CoderFleet", f"Could not start server: {exc}")
+
+    menu = pystray.Menu(
+        pystray.MenuItem(lambda item: _status["label"], lambda icon, item: None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Open Web UI", _open_ui),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Start Server", _start_server),
+        pystray.MenuItem("Stop Server", _stop_server),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Check for Updates", _check_update),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quit", _quit),
+    )
+
+    icon = pystray.Icon("CoderFleet", _img, "CoderFleet", menu)
+    icon.run(setup=_setup)
+
+
 # ── entry points ───────────────────────────────────────────────────────────────
 
 def run_tray() -> None:
-    if sys.platform != "darwin":
-        raise SystemExit("coderfleet tray is currently macOS-only.")
     ws = get_workspace()
     cfg = load_config(ws)
     port = int(cfg.get("CODERFLEET_PORT", 8765))
-    _run_macos(ws, port)
+    if sys.platform == "darwin":
+        _run_macos(ws, port)
+    else:
+        _run_pystray(ws, port)

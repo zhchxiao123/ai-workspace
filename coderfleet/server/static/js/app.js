@@ -13,10 +13,8 @@ checkHealth();
 refreshGlobalCaches();
 loadConversations();
 loadAccountOptions();
-window.addEventListener('resize', resizeProjectTerminal);
 window.addEventListener('resize', resizeBottomTerminal);
-window.addEventListener('beforeunload', disconnectProjectTerminal);
-window.addEventListener('beforeunload', disconnectBottomTerminal);
+window.addEventListener('beforeunload', disconnectAllBottomTerminals);
 
 // 高频刷新：任务状态（5s，仅当前页）
 setInterval(() => {

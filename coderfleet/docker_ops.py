@@ -135,7 +135,7 @@ def cmd_apply(ctx: click.Context) -> None:
     click.echo("重启容器以应用新配置...")
     dc = _dc(ws)
     subprocess.run(dc + ["down", "--remove-orphans"])
-    result = subprocess.run(dc + ["up", "-d"])
+    result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
 
     if result.returncode != 0:
         raise click.ClickException("容器启动失败")
@@ -157,7 +157,7 @@ def cmd_up(ctx: click.Context) -> None:
         click.echo()
 
     click.echo("启动所有容器...")
-    result = subprocess.run(_dc(ws) + ["up", "-d"])
+    result = subprocess.run(_dc(ws) + ["up", "-d", "--force-recreate"])
     if result.returncode == 0:
         click.secho("✓ 启动完成", fg="green")
     else:
@@ -182,7 +182,7 @@ def cmd_restart(ctx: click.Context) -> None:
     click.echo("重启...")
     dc = _dc(ws)
     subprocess.run(dc + ["down"])
-    result = subprocess.run(dc + ["up", "-d"])
+    result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
     if result.returncode == 0:
         click.secho("✓ 重启完成", fg="green")
     else:

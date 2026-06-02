@@ -10,14 +10,27 @@ from typing import Optional
 
 import click
 
-from coderfleet.config import ensure_workspace, parse_conf, remove_conf_entry, write_conf_line
+from coderfleet.config import ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
 from coderfleet.account_type_registry import ACCOUNT_TYPES, env_auth_type_ids
+from coderfleet.ports import allocate_ide_port
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9-]+$")
 
 
 def _container_name(project_name: str, acc_type: str) -> str:
     return f"{acc_type}-{project_name}"
+
+
+def _existing_ide_ports(projects: list[dict[str, str]], current_name: str) -> list[int]:
+    used: set[int] = set()
+    for project in projects:
+        if project.get("NAME") == current_name:
+            continue
+        try:
+            used.add(int(project.get("IDE_PORT", "")))
+        except ValueError:
+            pass
+    return list(used)
 
 
 def _is_running(container: str) -> bool:
@@ -184,12 +197,18 @@ def project_group() -> None:
 @click.argument("name")
 @click.argument("account")
 @click.argument("path")
+@click.option("--ide", is_flag=True, help="Enable browser IDE (code-server) for this project")
+@click.option("--ide-port", type=int, default=None, help="Host port for browser IDE, auto-assigned when omitted")
+@click.option("--disabled", is_flag=True, help="Add project in disabled state (no container on apply)")
 @click.pass_context
 def cmd_project_add(
     ctx: click.Context,
     name: str,
     account: str,
     path: str,
+    ide: bool,
+    ide_port: int | None,
+    disabled: bool,
 ) -> None:
     """Add a new project."""
     ws: Path = ctx.obj["workspace"]
@@ -201,17 +220,65 @@ def cmd_project_add(
     accounts = {r["NAME"] for r in parse_conf(accounts_conf) if "NAME" in r}
     if account not in accounts:
         raise click.ClickException(f"账号 '{account}' 不存在")
+    if ide and ide_port is not None:
+        if ide_port < 1024 or ide_port > 65535:
+            raise click.ClickException("IDE 端口必须在 1024-65535 之间")
 
     projects_conf = ws / "projects.conf"
-    for p in parse_conf(projects_conf):
+    existing_projects = parse_conf(projects_conf)
+    for p in existing_projects:
         if p.get("NAME") == name:
             raise click.ClickException(f"项目 '{name}' 已存在，若要修改请先 remove 再 add")
 
     ensure_workspace(ws)
-    write_conf_line(projects_conf, {"NAME": name, "ACCOUNT": account, "PATH": path})
+    tokens = {"NAME": name, "ACCOUNT": account, "PATH": path}
+    if ide:
+        if ide_port is None:
+            try:
+                ide_port = allocate_ide_port(_existing_ide_ports(existing_projects, name))
+            except RuntimeError as e:
+                raise click.ClickException(str(e))
+        tokens["IDE"] = "on"
+        tokens["IDE_PORT"] = str(ide_port)
+    if disabled:
+        tokens["ACTIVE"] = "off"
+    write_conf_line(projects_conf, tokens)
 
     expanded = str(Path(path).expanduser())
-    click.secho(f"✓ 项目 '{name}' 已添加（账号：{account}  路径：{expanded}）", fg="green")
+    state_label = "（已禁用）" if disabled else ""
+    click.secho(f"✓ 项目 '{name}' 已添加{state_label}（账号：{account}  路径：{expanded}）", fg="green")
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+@project_group.command("enable")
+@click.argument("name")
+@click.pass_context
+def cmd_project_enable(ctx: click.Context, name: str) -> None:
+    """Enable a project (container will start on next apply)."""
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+
+    if not any(p.get("NAME") == name for p in parse_conf(projects_conf)):
+        raise click.ClickException(f"项目 '{name}' 不存在")
+
+    update_conf_field(projects_conf, name, "ACTIVE", "on")
+    click.secho(f"✓ 项目 '{name}' 已启用", fg="green")
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+@project_group.command("disable")
+@click.argument("name")
+@click.pass_context
+def cmd_project_disable(ctx: click.Context, name: str) -> None:
+    """Disable a project (container will not start on next apply)."""
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+
+    if not any(p.get("NAME") == name for p in parse_conf(projects_conf)):
+        raise click.ClickException(f"项目 '{name}' 不存在")
+
+    update_conf_field(projects_conf, name, "ACTIVE", "off")
+    click.secho(f"✓ 项目 '{name}' 已禁用", fg="green")
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 
@@ -240,8 +307,8 @@ def cmd_project_list(ctx: click.Context) -> None:
 
     click.echo()
     click.echo("  ── 项目列表 " + "─" * 62)
-    click.echo(f"  {'名称':<20} {'账号':<20}  路径")
-    click.echo("  " + "─" * 74)
+    click.echo(f"  {'名称':<20} {'账号':<20} {'状态':<8} {'IDE':<12} 路径")
+    click.echo("  " + "─" * 82)
 
     if not projects:
         click.secho("  暂无项目，使用 coderfleet project add 添加", fg="yellow")
@@ -252,6 +319,72 @@ def cmd_project_list(ctx: click.Context) -> None:
         name = p.get("NAME", "")
         account = p.get("ACCOUNT", "")
         path = p.get("PATH", "")
-        click.echo(f"  {name:<20} {account:<20}  {path}")
+        ide = f":{p.get('IDE_PORT', '')}" if p.get("IDE", "").lower() == "on" else "-"
+        active_raw = p.get("ACTIVE", "on").strip().lower()
+        active = active_raw in {"1", "true", "yes", "on"}
+        status = click.style("● 启用", fg="green") if active else click.style("○ 停用", fg="yellow")
+        click.echo(f"  {name:<20} {account:<20} {status:<8} {ide:<12} {path}")
 
     click.echo()
+
+
+# ── config ────────────────────────────────────────────────────
+
+
+@click.group("config")
+def config_group() -> None:
+    """Global configuration management (config.conf)."""
+    pass
+
+
+@config_group.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.pass_context
+def cmd_config_set(ctx: click.Context, key: str, value: str) -> None:
+    """Set a config value (creates or updates config.conf).
+
+    \b
+    Examples:
+      coderfleet config set PORT 9000
+      coderfleet config set CODERFLEET_PORT 9000
+    """
+    ws: Path = ctx.obj["workspace"]
+    # Accept bare "PORT" as alias for "CODERFLEET_PORT"
+    normalized = key.upper()
+    if normalized == "PORT":
+        normalized = "CODERFLEET_PORT"
+    set_config(ws, normalized, value)
+    click.secho(f"✓ {normalized}={value}  已写入 config.conf", fg="green")
+    if normalized == "CODERFLEET_PORT":
+        click.secho("  重启 server 后生效：coderfleet server --stop && coderfleet server --daemon", dim=True)
+
+
+@config_group.command("get")
+@click.argument("key", required=False)
+@click.pass_context
+def cmd_config_get(ctx: click.Context, key: str | None) -> None:
+    """Show one or all config values.
+
+    \b
+    Examples:
+      coderfleet config get           # 显示全部
+      coderfleet config get PORT
+    """
+    ws: Path = ctx.obj["workspace"]
+    cfg = load_config(ws)
+    if key:
+        normalized = key.upper()
+        if normalized == "PORT":
+            normalized = "CODERFLEET_PORT"
+        val = cfg.get(normalized)
+        if val is None:
+            click.secho(f"{normalized} 未设置（默认值生效）", fg="yellow")
+        else:
+            click.echo(f"{normalized}={val}")
+    else:
+        if not cfg:
+            click.secho("config.conf 为空或不存在", fg="yellow")
+            return
+        for k, v in sorted(cfg.items()):
+            click.echo(f"{k}={v}")
