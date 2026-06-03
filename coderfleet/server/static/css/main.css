@@ -24,11 +24,11 @@
       --red-bg: #fee2e2;
       --amber: #b45309;
       --amber-bg: #ffedd5;
-      --log-bg: #111827;
-      --log-panel: #0f1720;
-      --log-card: #17202b;
-      --log-card-soft: #141c27;
-      --log-line: rgba(148, 163, 184, .22);
+      --log-bg: #ffffff;
+      --log-panel: #f7fbfa;
+      --log-card: #ffffff;
+      --log-card-soft: #eef7f5;
+      --log-line: rgba(13, 148, 136, .24);
       --radius: 8px;
       --radius-lg: 12px;
       --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
@@ -64,6 +64,11 @@
       --red-bg: #7f1d1d22;
       --amber: #fbbf24;
       --amber-bg: #78350f22;
+      --log-bg: #111827;
+      --log-panel: #0f1720;
+      --log-card: #17202b;
+      --log-card-soft: #141c27;
+      --log-line: rgba(148, 163, 184, .22);
 
       /* 聊天气泡自适应变量 (Dark) */
       --bubble-bg: #1e293b;
@@ -142,6 +147,232 @@
       min-height: 0;
       overflow: auto;
       padding: 22px;
+    }
+
+    /* ── 开发看板 ───────────────────────────────────────── */
+    .board-shell {
+      min-height: 0;
+    }
+
+    .board-page-head {
+      gap: 16px;
+      align-items: flex-start;
+    }
+
+    .board-toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      margin-left: auto;
+    }
+
+    .board-toolbar select {
+      min-width: 150px;
+      height: 34px;
+      font-size: 12px;
+    }
+
+    .board-toolbar .btn {
+      height: 34px;
+      font-size: 12px;
+      padding: 6px 11px;
+    }
+
+    .kanban-board {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(235px, 1fr));
+      gap: 12px;
+      align-items: start;
+      overflow-x: auto;
+      padding-bottom: 10px;
+    }
+
+    .kanban-column {
+      min-width: 235px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--surface) 58%, transparent);
+      display: flex;
+      flex-direction: column;
+      max-height: calc(100vh - 168px);
+      min-height: 170px;
+      overflow: hidden;
+    }
+
+    .kanban-column-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 700;
+      background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+    }
+
+    .kanban-count {
+      color: var(--text-3);
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      min-width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface);
+    }
+
+    .kanban-card-list {
+      padding: 10px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .kanban-empty {
+      color: var(--text-3);
+      font-size: 12px;
+      padding: 24px 10px;
+      border: 1px dashed var(--border-md);
+      border-radius: var(--radius);
+      text-align: center;
+      background: color-mix(in srgb, var(--surface-2) 44%, transparent);
+    }
+
+    .kanban-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, .035);
+      transition: border-color .12s ease, box-shadow .12s ease, transform .12s ease;
+    }
+
+    .kanban-card:hover {
+      border-color: var(--border-md);
+      box-shadow: 0 6px 16px rgba(15, 23, 42, .07);
+      transform: translateY(-1px);
+    }
+
+    .kanban-card-top {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .kanban-card-title {
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.35;
+      word-break: break-word;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .kanban-card-menu {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .kanban-card-menu .btn {
+      height: 24px;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--text-3);
+    }
+
+    .kanban-card-desc {
+      color: var(--text-2);
+      font-size: 12px;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .kanban-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      color: var(--text-3);
+      font-size: 11px;
+      row-gap: 5px;
+    }
+
+    .board-chip {
+      max-width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 1px 7px;
+      background: var(--surface-2);
+      color: var(--text-2);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kanban-card-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .kanban-card-actions select {
+      min-width: 0;
+      height: 32px;
+      font-size: 12px;
+    }
+
+    .kanban-card-actions .btn,
+    .board-log-btn {
+      font-size: 12px;
+      padding: 6px 9px;
+    }
+
+    .board-log-btn {
+      justify-content: center;
+      width: 100%;
+      color: var(--text-2);
+      background: var(--surface-2);
+    }
+
+    .btn.ghost:hover {
+      border-color: var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .danger-text {
+      color: var(--red) !important;
+    }
+
+    @media (max-width: 980px) {
+      .kanban-board {
+        grid-template-columns: repeat(6, 250px);
+      }
+
+      .board-page-head {
+        align-items: stretch;
+      }
+
+      .board-toolbar {
+        justify-content: flex-start;
+        margin-left: 0;
+      }
     }
 
     /* ── 侧边栏 ───────────────────────────────────────── */
@@ -954,7 +1185,7 @@
       align-items: center;
       gap: 6px;
       padding: 5px 10px;
-      background: #111827;
+      background: var(--log-panel);
       border-bottom: 1px solid var(--log-line);
     }
 
@@ -1674,19 +1905,19 @@
 
     .modal-header {
       padding: 16px 18px 12px;
-      border-bottom: 1px solid rgba(148, 163, 184, .16);
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
       flex-shrink: 0;
-      background: linear-gradient(180deg, #182231, var(--log-bg));
+      background: linear-gradient(180deg, var(--log-card-soft), var(--log-bg));
     }
 
     .modal-title {
       font-size: 16px;
       font-weight: 750;
-      color: #f8fafc;
+      color: var(--text);
     }
 
     .log-meta {
@@ -1695,7 +1926,7 @@
       align-items: center;
       flex-wrap: wrap;
       font-size: 12px;
-      color: #9fb2ae;
+      color: var(--text-2);
       margin-top: 6px;
     }
 
@@ -1712,13 +1943,13 @@
       grid-template-columns: repeat(4, minmax(120px, 1fr));
       gap: 10px;
       padding: 12px 18px;
-      border-bottom: 1px solid rgba(148, 163, 184, .14);
+      border-bottom: 1px solid var(--border);
       background: var(--log-panel);
     }
 
     .log-summary-item {
       min-height: 58px;
-      border: 1px solid rgba(148, 163, 184, .15);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
       background: var(--log-card);
       padding: 10px 12px;
@@ -1726,14 +1957,14 @@
 
     .log-summary-label {
       font-size: 11px;
-      color: #7f948f;
+      color: var(--text-3);
       font-weight: 700;
     }
 
     .log-summary-value {
       margin-top: 5px;
       font-size: 13px;
-      color: #f8fafc;
+      color: var(--text);
       font-weight: 720;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1891,17 +2122,17 @@
 
     .meta-row {
       font-size: 11px;
-      color: #81938f;
+      color: var(--text-3);
       font-family: var(--mono);
       line-height: 1.8;
     }
 
     .meta-key {
-      color: #64748b;
+      color: var(--text-3);
     }
 
     .meta-val {
-      color: #93c5fd;
+      color: var(--accent);
       white-space: pre-wrap;
       word-break: break-all;
     }
@@ -1917,7 +2148,7 @@
       align-items: center;
       gap: 5px;
       font-size: 11px;
-      color: #99f6e4;
+      color: var(--accent);
       border: 1px solid rgba(45, 212, 191, .22);
       border-radius: 999px;
       padding: 4px 12px;
@@ -1925,7 +2156,7 @@
     }
 
     .chat-sys-pill .pill-detail {
-      color: #7dd3fc;
+      color: var(--text-2);
     }
 
     /* AI 气泡 */
@@ -2007,7 +2238,7 @@
     }
 
     .bubble-label.think-label {
-      color: #94a3b8;
+      color: var(--text-3);
     }
 
     .bubble-content {
@@ -2156,7 +2387,7 @@
     }
 
     .chat-tool-header:hover {
-      background: #1b2634;
+      background: var(--log-card);
     }
 
     .tool-status {
@@ -2177,24 +2408,24 @@
 
     .tool-badge.pending {
       background: rgba(37, 99, 235, .14);
-      color: #93c5fd;
+      color: var(--accent);
     }
 
     .tool-badge.ok {
       background: rgba(21, 128, 61, .18);
-      color: #86efac;
+      color: var(--green);
     }
 
     .tool-badge.fail {
       background: rgba(220, 38, 38, .16);
-      color: #fca5a5;
+      color: var(--red);
     }
 
     .tool-cmd {
       flex: 1;
       font-family: var(--mono);
       font-size: 11.5px;
-      color: #bfdbfe;
+      color: var(--accent);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -2231,8 +2462,8 @@
       padding: 8px 12px;
       font-family: var(--mono);
       font-size: 11.5px;
-      color: #93c5fd;
-      background: #101722;
+      color: var(--accent);
+      background: var(--log-card-soft);
       white-space: pre-wrap;
       word-break: break-all;
       border-bottom: 1px solid rgba(148, 163, 184, .12);
@@ -2266,11 +2497,11 @@
     }
 
     .tool-exit.ok-exit {
-      color: #86efac;
+      color: var(--green);
     }
 
     .tool-exit.fail-exit {
-      color: #fca5a5;
+      color: var(--red);
     }
 
     /* 文件变更 */
@@ -2295,24 +2526,24 @@
     }
 
     .file-op-badge.create {
-      background: #0e2a1a;
-      color: #4ade80;
+      background: var(--green-bg);
+      color: var(--green);
     }
 
     .file-op-badge.edit {
-      background: #1e2a3a;
-      color: #60a5fa;
+      background: var(--accent-bg);
+      color: var(--accent);
     }
 
     .file-op-badge.delete {
-      background: #2a0e0e;
-      color: #f87171;
+      background: var(--red-bg);
+      color: var(--red);
     }
 
     .file-path {
       font-family: var(--mono);
       font-size: 11.5px;
-      color: #bfdbfe;
+      color: var(--accent);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -2332,12 +2563,12 @@
 
     .usage-item {
       font-size: 11px;
-      color: #94a3b8;
+      color: var(--text-3);
       font-family: var(--mono);
     }
 
     .usage-item span {
-      color: #93c5fd;
+      color: var(--accent);
     }
 
     /* 页脚完成状态 */
@@ -2357,14 +2588,14 @@
     }
 
     .footer-pill.done {
-      background: rgba(21, 128, 61, .18);
-      color: #86efac;
+      background: var(--green-bg);
+      color: var(--green);
       border: 1px solid rgba(134, 239, 172, .24);
     }
 
     .footer-pill.failed {
-      background: rgba(220, 38, 38, .16);
-      color: #fca5a5;
+      background: var(--red-bg);
+      color: var(--red);
       border: 1px solid rgba(252, 165, 165, .24);
     }
 
@@ -3383,11 +3614,43 @@
       margin-top: 2px;
     }
 
-    .chat-main-viewport {
+    .chat-viewport-wrap {
       flex: 1;
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .chat-main-viewport {
+      height: 100%;
       overflow-y: auto;
       padding: 16px;
       background: var(--bg);
+    }
+
+    .scroll-to-bottom-btn {
+      position: absolute;
+      bottom: 16px;
+      right: 20px;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      gap: 5px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 20px;
+      padding: 7px 14px 7px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    .scroll-to-bottom-btn:hover {
+      opacity: 0.85;
     }
 
     .chat-input-container {
@@ -4848,6 +5111,30 @@
     .layout.sidebar-collapsed .theme-toggle-btn {
       margin-left: 0;
     }
+
+    /* ── 浅色模式：终端区域视觉优化 ────────────────────────
+       终端本体保持深色，但调整分隔边界和投影，避免与浅色内容区过于割裂
+    ─────────────────────────────────────────────────────── */
+
+    /* 底部终端抽屉：浅色模式下加强顶部分隔线 + 投影 */
+    html[data-theme="light"] .bottom-terminal-drawer {
+      border-top: 2px solid rgba(0, 0, 0, 0.12);
+      box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    /* 项目页终端卡片：浅色模式下加强边框可见度 */
+    html[data-theme="light"] .terminal-card {
+      border-color: rgba(0, 0, 0, 0.15);
+      box-shadow: 0 2px 16px rgba(0, 0, 0, 0.08);
+    }
+
+    /* 终端 toolbar（项目页顶部工具栏）：浅色模式下加强底部分隔线 */
+    html[data-theme="light"] .terminal-toolbar {
+      border-bottom-color: rgba(255, 255, 255, 0.10);
+    }
+
+    /* 终端状态文字（项目页）：始终用浅色系保证在深色背景上可读 */
+    .terminal-status { color: #cbd5e1; }
 
     /* ── 自定义滚动条（全局主题适配）────────────────────────
        Chrome/Safari/Edge：::-webkit-scrollbar 系列

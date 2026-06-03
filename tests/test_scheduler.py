@@ -16,6 +16,7 @@ from coderfleet.server.models import (
     AccountAuth,
     AccountProxy,
     AccountType,
+    BoardCardStatus,
     Conversation,
     Project,
     Task,
@@ -248,6 +249,82 @@ def test_reconcile_alive_task_schedules_reattach(
 
     # 状态保持 running（reattach 协程已完成 fake_reattach，但状态由它自己管理）
     assert sched.get_task("alive-1").status == TaskStatus.running
+
+
+def test_board_card_tracks_related_task(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    board = sched.create_board("开发专题", "repo")
+    card = sched.create_board_card(
+        board.id,
+        title="看板 MVP",
+        project_name="repo",
+        status=BoardCardStatus.todo,
+    )
+    task = Task(
+        id="task-1",
+        status=TaskStatus.done,
+        account="alice",
+        type=AccountType.codex,
+        prompt="implement board",
+        project=str(tmp_path / "repo"),
+        project_name="repo",
+        conversation_id="conv-1",
+    )
+    task.save(sched.tasks_dir)
+
+    updated = sched.add_task_to_board_card(card.id, task.id)
+
+    assert updated.task_ids == ["task-1"]
+    assert updated.conversation_id == "conv-1"
+    assert sched.list_board_cards(board_id=board.id)[0].status == BoardCardStatus.todo
+
+
+def test_board_card_status_follows_task_lifecycle_conservatively(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    board = sched.create_board("开发专题", "repo")
+    card = sched.create_board_card(board.id, title="看板 MVP", status=BoardCardStatus.planned)
+    task = Task(
+        id="task-1",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.codex,
+        prompt="implement board",
+        project=str(tmp_path / "repo"),
+        project_name="repo",
+        board_card_id=card.id,
+    )
+    task.save(sched.tasks_dir)
+
+    sched.add_task_to_board_card(card.id, task.id)
+
+    assert sched.get_board_card(card.id).status == BoardCardStatus.running
+
+    task.update_status(TaskStatus.done, sched.tasks_dir)
+    sched._sync_board_card_for_task(task)
+
+    assert sched.get_board_card(card.id).status == BoardCardStatus.review
+
+
+def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    board = sched.create_board("开发专题", "repo")
+    card = sched.create_board_card(board.id, title="工作空间管理优化")
+    task = Task(
+        id="task-2",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.codex,
+        prompt="optimize workspace",
+        project=str(tmp_path / "repo"),
+        project_name="repo",
+        board_card_id=card.id,
+    )
+    task.save(sched.tasks_dir)
+
+    cards = sched.list_board_cards(board_id=board.id)
+
+    assert cards[0].task_ids == ["task-2"]
+    assert cards[0].status == BoardCardStatus.running
 
 
 def test_extract_native_session_id_from_codex_jsonl() -> None:

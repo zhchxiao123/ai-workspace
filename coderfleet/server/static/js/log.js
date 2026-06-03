@@ -9,7 +9,7 @@ async function openLogModal(taskId) {
   stopFollow();
 
   document.getElementById('log-modal').style.display = 'flex';
-  document.getElementById('log-content').innerHTML = '<div style="color:#3a3a3e;font-size:12px;padding:20px">加载中...</div>';
+  document.getElementById('log-content').innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:20px">加载中...</div>';
   document.getElementById('log-meta').innerHTML = '';
   resetLogSummary();
   document.getElementById('kill-btn').style.display = 'none';

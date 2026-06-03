@@ -8,6 +8,7 @@ class ChatLogRenderer {
     this.toolMap = {};          // tool_use_id → { headerEl, badgeEl, outputEl, exitEl, toolName, input, wrap }
     this._buf = '';          // SSE 行缓冲
     this._footerRendered = false;
+    this._isPending = false;   // renderPending() 后首次 push() 时清除占位 pill
     this.isRunning = isRunning;   // 是否正在运行
     this.foldProcess = foldProcess; // 是否折叠最新步骤
     this.projectName = projectName; // 所属项目名，用于 CF_SEND 文件下载链接
@@ -98,6 +99,22 @@ class ChatLogRenderer {
       </span>
     `;
     this.inner.appendChild(el);
+    this._isPending = true;
+  }
+
+  // 账号空闲时的乐观占位：SSE 首条数据到来后自动被 _isPending 机制清除
+  renderExecuting() {
+    this.container.innerHTML = '<div class="chat-log timeline"></div>';
+    this.inner = this.container.querySelector('.chat-log');
+    const el = document.createElement('div');
+    el.className = 'chat-sys-event timeline-node is-muted';
+    el.innerHTML = `
+      <span class="chat-sys-pill" style="background: rgba(13,148,136,0.06); border-color: rgba(13,148,136,0.22); color: var(--accent,#0d9488);">
+        <span style="display: inline-block; animation: spin 1.2s linear infinite; margin-right: 6px;">⚙️</span> AI 正在执行...
+      </span>
+    `;
+    this.inner.appendChild(el);
+    this._isPending = true;
   }
 
   renderScheduled(executeAt) {
@@ -170,6 +187,19 @@ class ChatLogRenderer {
   // ── 增量推送（SSE 每行调用一次）─────────────────────────
   push(line) {
     if (!line.trim()) return;
+
+    // 首次收到实际内容时清除 renderPending() 留下的占位 pill。
+    // 场景：账号空闲时任务瞬间启动，tail=0 的 SSE 跳过了日志头，直接推后续内容。
+    if (this._isPending) {
+      this._isPending = false;
+      if (this.inner) this.inner.innerHTML = '';
+      this.toolMap = {};
+      this._footerRendered = false;
+      this.processWrapper = null;
+      this.processBody = null;
+      this.toolCount = 0;
+      this.lastBubbleEl = null;
+    }
 
     if (line.startsWith('=== CoderFleet Task Log ===') || line.startsWith('=== AICM Task Log ===')) {
       if (this.inner && this.inner.querySelector('.chat-meta-block')) {

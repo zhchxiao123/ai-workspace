@@ -24,6 +24,7 @@ let chatNewSessionProject = '';
 let currentChatProjectName = '';
 let pendingImages = [];
 let chatUploadingImages = 0;
+let chatUserScrolledUp = false;
 const CHAT_PROJECT_VISIBLE_LIMIT = 5;
 let chatExpandedProjectNames = new Set();
 let chatCollapsedProjectNames = (function() {
@@ -45,12 +46,16 @@ let chatSearchResults = [];
 let chatSearchLoading = false;
 let chatSearchDeep = false;
 let tasksCache = [];
-let submitContext = { surface: 'task', projectName: '' };
+let submitContext = { surface: 'task', projectName: '', boardCardId: '' };
 let taskRowsCache = [];
 let taskPage = 1;
 const TASK_PAGE_SIZE = 12;
 let globalAccountsCache = [];
 let accountTypesCache = [];   // 账号类型注册表缓存，由 loadAccountTypes() 填充
+let boardsCache = [];
+let boardCardsCache = [];
+let activeBoardId = localStorage.getItem('coderfleet.activeBoardId') || '';
+let editingBoardCardId = '';
 
 // ── 工作流 ────────────────────────────────────────────────
 let activePipelineId = null;

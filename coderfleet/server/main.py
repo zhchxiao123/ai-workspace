@@ -37,6 +37,9 @@ from coderfleet.server.models import (
     AccountProxy,
     AccountResponse,
     AccountType,
+    BoardCardResponse,
+    BoardCardStatus,
+    BoardResponse,
     Conversation,
     ConversationResponse,
     ConversationStatus,
@@ -101,6 +104,35 @@ class ProjectUpdateRequest(BaseModel):
     active:      Optional[bool] = None
     ide_enabled: Optional[bool] = None
     ide_port:    Optional[int]  = None
+
+
+class BoardCreateRequest(BaseModel):
+    name:         str
+    project_name: str = ""
+
+
+class BoardUpdateRequest(BaseModel):
+    name:         Optional[str] = None
+    project_name: Optional[str] = None
+
+
+class BoardCardCreateRequest(BaseModel):
+    title:        str
+    description:  str = ""
+    project_name: str = ""
+    status:       BoardCardStatus = BoardCardStatus.planned
+    priority:     str = "normal"
+
+
+class BoardCardUpdateRequest(BaseModel):
+    title:           Optional[str] = None
+    description:     Optional[str] = None
+    project_name:    Optional[str] = None
+    status:          Optional[BoardCardStatus] = None
+    priority:        Optional[str] = None
+    conversation_id: Optional[str] = None
+    pipeline_id:     Optional[str] = None
+    archived:        Optional[bool] = None
 
 
 class SearchMatch(BaseModel):
@@ -631,6 +663,7 @@ async def create_task(req: TaskCreateRequest):
             parent_task_id = req.parent_task_id,
             depends_on     = req.depends_on,
             pipeline_id    = req.pipeline_id,
+            board_card_id  = req.board_card_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -638,6 +671,101 @@ async def create_task(req: TaskCreateRequest):
         raise HTTPException(status_code=409, detail=str(e))
 
     return TaskResponse.from_task(task)
+
+
+@app.get("/api/boards", response_model=list[BoardResponse])
+async def list_boards():
+    return [BoardResponse.from_board(b) for b in scheduler.list_boards()]
+
+
+@app.post("/api/boards", response_model=BoardResponse, status_code=201)
+async def create_board(req: BoardCreateRequest):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="看板名称不能为空")
+    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
+    board = scheduler.create_board(name, req.project_name)
+    return BoardResponse.from_board(board)
+
+
+@app.patch("/api/boards/{board_id}", response_model=BoardResponse)
+async def update_board(board_id: str, req: BoardUpdateRequest):
+    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
+    try:
+        board = scheduler.update_board(board_id, req.name, req.project_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return BoardResponse.from_board(board)
+
+
+@app.delete("/api/boards/{board_id}", status_code=204)
+async def delete_board(board_id: str):
+    try:
+        scheduler.delete_board(board_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/boards/{board_id}/cards", response_model=list[BoardCardResponse])
+async def list_board_cards(
+    board_id: str,
+    include_archived: bool = Query(False, description="是否包含已归档专题"),
+):
+    if scheduler.get_board(board_id) is None:
+        raise HTTPException(status_code=404, detail=f"看板 '{board_id}' 不存在")
+    return [
+        BoardCardResponse.from_card(c)
+        for c in scheduler.list_board_cards(board_id=board_id, include_archived=include_archived)
+    ]
+
+
+@app.post("/api/boards/{board_id}/cards", response_model=BoardCardResponse, status_code=201)
+async def create_board_card(board_id: str, req: BoardCardCreateRequest):
+    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
+    try:
+        card = scheduler.create_board_card(
+            board_id=board_id,
+            title=req.title,
+            description=req.description,
+            project_name=req.project_name,
+            status=req.status,
+            priority=req.priority,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return BoardCardResponse.from_card(card)
+
+
+@app.patch("/api/board-cards/{card_id}", response_model=BoardCardResponse)
+async def update_board_card(card_id: str, req: BoardCardUpdateRequest):
+    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
+    try:
+        card = scheduler.update_board_card(
+            card_id=card_id,
+            title=req.title,
+            description=req.description,
+            project_name=req.project_name,
+            status=req.status,
+            priority=req.priority,
+            conversation_id=req.conversation_id,
+            pipeline_id=req.pipeline_id,
+            archived=req.archived,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return BoardCardResponse.from_card(card)
+
+
+@app.delete("/api/board-cards/{card_id}", status_code=204)
+async def delete_board_card(card_id: str):
+    try:
+        scheduler.delete_board_card(card_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/projects", response_model=list[ProjectResponse])
@@ -1087,6 +1215,7 @@ async def retry_task(task_id: str):
             pipeline_id    = original.pipeline_id or None,
             parent_task_id = original.parent_task_id or None,
             depends_on     = [],
+            board_card_id  = original.board_card_id or None,
         )
         if original.pipeline_id:
             scheduler.update_pipeline_node_task(original.pipeline_id, task_id, new_task.id)

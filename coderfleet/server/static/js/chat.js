@@ -622,10 +622,16 @@ function renderEmptyChatState() {
   </div>
 </div>
 
-<div class="chat-main-viewport" id="chat-viewport">
-  <div id="chat-content">
-    <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发</div>
+<div class="chat-viewport-wrap">
+  <div class="chat-main-viewport" id="chat-viewport">
+    <div id="chat-content">
+      <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发</div>
+    </div>
   </div>
+  <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    跳到底部
+  </button>
 </div>
 
 ${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Enter 换行)', '发送第一条消息后将自动创建会话链')}
@@ -633,6 +639,7 @@ ${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Ente
 
   const textarea = document.getElementById('chat-input');
   bindChatTextareaEvents(textarea);
+  bindChatViewportScroll();
   if (textarea) textarea.focus();
 }
 
@@ -655,11 +662,36 @@ function bindChatTextareaEvents(textarea) {
   textarea.addEventListener('paste', handleChatPaste);
 }
 
-function scrollChatViewportToBottom() {
+function scrollChatViewportToBottom(force = false) {
+  if (!force && chatUserScrolledUp) return;
   const viewport = document.getElementById('chat-viewport');
   if (viewport) {
     viewport.scrollTop = viewport.scrollHeight;
   }
+}
+
+function _updateScrollToBottomBtn(show) {
+  const btn = document.getElementById('scroll-to-bottom-btn');
+  if (btn) btn.style.display = show ? 'flex' : 'none';
+}
+
+function scrollToBottomAndResume() {
+  chatUserScrolledUp = false;
+  _updateScrollToBottomBtn(false);
+  const viewport = document.getElementById('chat-viewport');
+  if (viewport) viewport.scrollTop = viewport.scrollHeight;
+}
+
+function bindChatViewportScroll() {
+  chatUserScrolledUp = false;
+  _updateScrollToBottomBtn(false);
+  const viewport = document.getElementById('chat-viewport');
+  if (!viewport) return;
+  viewport.addEventListener('scroll', function () {
+    const atBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 80;
+    chatUserScrolledUp = !atBottom;
+    _updateScrollToBottomBtn(chatUserScrolledUp);
+  }, { passive: true });
 }
 
 // 渲染右侧会话主工作区
@@ -687,8 +719,14 @@ async function renderChatWorkspace(conv) {
 </div>
 
 <!-- 对话渲染区 -->
-<div class="chat-main-viewport" id="chat-viewport">
-  <div id="chat-content"></div>
+<div class="chat-viewport-wrap">
+  <div class="chat-main-viewport" id="chat-viewport">
+    <div id="chat-content"></div>
+  </div>
+  <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    跳到底部
+  </button>
 </div>
 
 <!-- 底部输入框 -->
@@ -809,7 +847,8 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
       }
     });
 
-    scrollChatViewportToBottom();
+    scrollToBottomAndResume();
+    bindChatViewportScroll();
 
     // 追踪任务选择：优先正在运行的任务，其次是第一个 pending 任务，最后是第一个 scheduled 任务
     const activeTask = runningTask
@@ -828,6 +867,62 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
   } catch (e) {
     chatContent.innerHTML = `<div style="color:var(--red);padding:16px">加载会话历史失败: ${esc(e.message)}<br><pre style="font-size:11px;color:var(--text-3);margin-top:8px">${esc(e.stack)}</pre></div>`;
   }
+}
+
+// 发送前判断项目绑定账号是否已有任务在跑，决定占位态（排队 or 执行中）
+function _isProjectAccountBusy(projectName) {
+  const project = (projectsCache || []).find(p => p.name === projectName);
+  if (!project) return false;
+  return (tasksCache || []).some(t => t.account === project.account && t.status === 'running');
+}
+
+// 乐观 UI：无需整页重渲就地追加用户气泡 + 等待中响应区
+// isPending: true → 排队中占位；false → 执行中占位（会在首条 SSE 数据后自动清除）
+// 返回 true 表示操作成功（已找到 chat-content）
+function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPending = false) {
+  const chatContent = document.getElementById('chat-content');
+  if (!chatContent) return false;
+
+  const userWrap = document.createElement('div');
+  userWrap.className = 'timeline-node-wrapper user-wrapper';
+  userWrap.innerHTML = `
+    <div class="user-bubble">
+      <div class="user-bubble-title-row">
+        <div class="user-bubble-title">你:</div>
+        <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
+      </div>
+      <div class="user-bubble-content">${esc(promptText)}</div>
+      ${renderTaskImageAttachments({ images: snapshotPaths, project_name: currentChatProjectName }, currentChatProjectName)}
+    </div>`;
+  chatContent.appendChild(userWrap);
+
+  const logWrap = document.createElement('div');
+  logWrap.style.marginBottom = '24px';
+  chatContent.appendChild(logWrap);
+
+  const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName);
+  if (isPending) {
+    localRenderer.renderPending();
+  } else {
+    localRenderer.renderExecuting();
+  }
+  chatRenderer = localRenderer;
+  currentChatTaskId = taskId;
+
+  const headerActions = document.getElementById('chat-header-actions');
+  if (headerActions) {
+    headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">终止执行</button>`;
+  }
+  const statusText = document.getElementById('chat-status-text');
+  if (statusText) {
+    statusText.innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
+  }
+
+  scrollToBottomAndResume();
+  // tail=50：对刚创建的任务，日志文件极短，tail=50 等同于从头读取，
+  // 确保 SSE 能拿到日志头部元数据块（id/account/project 等）。
+  startChatFollow(taskId, 0, 50);
+  return true;
 }
 
 // 发送消息及自动升级任务链
@@ -898,6 +993,7 @@ async function sendChatMessage() {
       activeConversationId = taskData.conversation_id;
       activeTabId = upsertConversationTab(activeConversationId);
       renderTopbarTabs();
+      const snapshotPaths = pendingImages.map(i => i.container_path);
       textarea.value = '';
       textarea.style.height = 'auto';
       pendingImages = [];
@@ -910,7 +1006,15 @@ async function sendChatMessage() {
       sendBtn.disabled = false;
       sendBtn.textContent = '发送';
 
-      await selectConversation(activeConversationId);
+      // 发送前判断账号状态，决定占位态（排队 or 执行中）
+      const willPend1 = _isProjectAccountBusy(currentChatProjectName);
+      // 清空占位文字，就地渲染用户气泡，避免整页重建导致的闪烁
+      const chatContent = document.getElementById('chat-content');
+      if (chatContent) chatContent.innerHTML = '';
+      if (!_appendOptimisticUserMessage(promptText, snapshotPaths, taskData.id, willPend1)) {
+        await selectConversation(activeConversationId);
+      }
+      loadConversations(false);
       loadTasks();
       loadProjectsDashboard();
       return;
@@ -976,6 +1080,7 @@ async function sendChatMessage() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
 
+    const snapshotPaths = pendingImages.map(i => i.container_path);
     textarea.value = '';
     textarea.style.height = 'auto';
     pendingImages = [];
@@ -988,7 +1093,13 @@ async function sendChatMessage() {
     sendBtn.disabled = false;
     sendBtn.textContent = '发送';
 
-    await selectConversation(convId);
+    // 发送前判断账号状态，决定占位态（排队 or 执行中）
+    const willPend = _isProjectAccountBusy(currentChatProjectName);
+    // 就地追加气泡，避免整页重建导致的闪烁；fallback 到完整重载
+    if (!_appendOptimisticUserMessage(promptText, snapshotPaths, data.id, willPend)) {
+      await selectConversation(convId);
+    }
+    loadConversations(false);
     loadTasks();
     loadProjectsDashboard();
   } catch (e) {
@@ -1000,10 +1111,11 @@ async function sendChatMessage() {
 
 // 实时日志 SSE 追踪
 // skipBytes: 客户端已渲染的字节数，传给服务端 skip_bytes 参数以精确跳过已有内容。
-function startChatFollow(taskId, skipBytes = 0) {
+// tail: skipBytes=0 时回退的行数；乐观发送场景传 50 以捕获日志头部元数据块。
+function startChatFollow(taskId, skipBytes = 0, tail = 0) {
   stopChatFollow();
   chatFollowMode = true;
-  const qs = skipBytes > 0 ? `skip_bytes=${skipBytes}` : 'tail=0';
+  const qs = skipBytes > 0 ? `skip_bytes=${skipBytes}` : `tail=${tail}`;
   sseChatSource = new EventSource(sseUrl(`${API}/api/tasks/${taskId}/logs/stream?${qs}`));
   sseChatSource.onmessage = e => {
     if (e.data === '[DONE]') {

@@ -114,6 +114,38 @@ def test_dashboard_exposes_project_workspace() -> None:
     assert "function terminalWsUrl" in source
 
 
+def test_development_board_page_is_exposed() -> None:
+    html = read_index()
+    source = read_ui_source()
+
+    assert 'data-page="boards"' in html
+    assert 'id="page-boards"' in html
+    assert 'id="board-shell"' in html
+    assert 'id="board-modal"' in html
+    assert 'id="board-name"' in html
+    assert "deleteActiveBoard()" in html
+    assert "/static/js/boards.js" in html
+    assert "function loadBoards" in source
+    assert "function openBoardModal" in source
+    assert "function submitBoard" in source
+    assert "function deleteActiveBoard" in source
+    assert "function renderBoard" in source
+    assert "function tasksForBoardCard" in source
+    assert "task.board_card_id === card.id" in source
+    assert "function submitForBoardCard" in source
+    assert "function archiveBoardCard" in source
+    assert "board_card_id" in source
+    assert "editingBoardCardId" in source
+    assert ".kanban-board" in source
+
+
+def test_topbar_task_tab_scroll_buttons_hide_outside_chat() -> None:
+    source = read_ui_source()
+
+    assert "document.querySelectorAll('.topbar .tab-scroll-btn')" in source
+    assert "btn.style.display = name === 'chat' ? '' : 'none'" in source
+
+
 def test_legacy_project_records_use_single_canonical_path_owner() -> None:
     # Phase 0 后逻辑已迁移至共享模块，仍应在完整 UI source 中可找到
     source = read_ui_source()
@@ -259,6 +291,10 @@ def test_log_modal_uses_neutral_color_tokens() -> None:
 
     for token in ["--log-bg", "--log-panel", "--log-card", "--log-card-soft"]:
         assert token in source
+    assert "--log-bg: #ffffff" in source
+    assert "html[data-theme=\"dark\"]" in source
+    assert "--log-bg: #111827" in source
+    assert "color:var(--text-3);font-size:12px;padding:20px" in source
 
 
 def test_chat_input_supports_pasted_image_uploads() -> None:

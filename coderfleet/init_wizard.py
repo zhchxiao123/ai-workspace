@@ -102,24 +102,27 @@ def run_init_wizard(ws: Path) -> None:
 
     # ── 步骤 2：代理配置 ────────────────────────────────
     click.echo("\n── 代理配置 ──────────────────────────────────────")
-    click.echo("容器通过宿主机代理访问互联网（Clash / v2ray / sing-box 等）。")
+    click.echo("容器可通过宿主机代理中继访问互联网（Clash / v2ray / sing-box 等）。")
+    click.echo("不需要代理的账号可在 accounts.conf 中设置 PROXY=off 直连。")
 
-    proxy_host = click.prompt(
-        "代理地址",
-        default="host.docker.internal",
-    )
-    proxy_http_port = click.prompt(
-        "代理 HTTP 端口",
-        default="10808",
-    )
-    same_port = click.confirm(
-        f"SOCKS5 端口与 HTTP 端口相同（{proxy_http_port}）",
-        default=True,
-    )
-    proxy_socks5_port = proxy_http_port if same_port else click.prompt(
-        "代理 SOCKS5 端口",
-        default="10808",
-    )
+    use_proxy = click.confirm("是否为容器启用代理中继？", default=False)
+
+    if use_proxy:
+        proxy_host = click.prompt("代理地址", default="host.docker.internal")
+        proxy_http_port = click.prompt("代理 HTTP 端口", default="10808")
+        same_port = click.confirm(
+            f"SOCKS5 端口与 HTTP 端口相同（{proxy_http_port}）",
+            default=True,
+        )
+        proxy_socks5_port = proxy_http_port if same_port else click.prompt(
+            "代理 SOCKS5 端口",
+            default="10808",
+        )
+    else:
+        proxy_host = "host.docker.internal"
+        proxy_http_port = "7890"
+        proxy_socks5_port = "7890"
+        click.secho("  跳过代理配置。如需启用，在 config.conf 修改端口，账号添加 PROXY=relay 即可。", fg="yellow")
 
     # ── 步骤 3：镜像配置 ────────────────────────────────
     click.echo("\n── Docker 镜像配置 ───────────────────────────────")

@@ -25,6 +25,15 @@ class ConversationStatus(str, Enum):
     archived = "archived"
 
 
+class BoardCardStatus(str, Enum):
+    planned    = "planned"
+    todo       = "todo"
+    running    = "running"
+    review     = "review"
+    done       = "done"
+    parked     = "parked"
+
+
 # AccountType 从账号类型注册表自动派生，添加新类型只需编辑注册表。
 from coderfleet.account_type_registry import AccountType  # noqa: F401, E402
 
@@ -122,6 +131,86 @@ class Conversation(BaseModel):
         self.save(conversations_dir)
 
 
+class Board(BaseModel):
+    id:      str
+    name:    str
+    project_name: str = ""
+    created: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, boards_dir: Path) -> None:
+        boards_dir.mkdir(parents=True, exist_ok=True)
+        path = boards_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "Board":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_all(cls, boards_dir: Path) -> list["Board"]:
+        if not boards_dir.exists():
+            return []
+        boards = []
+        for p in sorted(boards_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                boards.append(cls.load(p))
+            except Exception:
+                pass
+        return boards
+
+    def touch(self, boards_dir: Path) -> None:
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(boards_dir)
+
+
+class BoardCard(BaseModel):
+    id:              str
+    board_id:        str
+    title:           str
+    description:     str = ""
+    project_name:    str = ""
+    status:          BoardCardStatus = BoardCardStatus.planned
+    priority:        str = "normal"
+    conversation_id: str = ""
+    task_ids:        list[str] = Field(default_factory=list)
+    pipeline_id:     str = ""
+    archived:        bool = False
+    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, cards_dir: Path) -> None:
+        cards_dir.mkdir(parents=True, exist_ok=True)
+        path = cards_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "BoardCard":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_all(cls, cards_dir: Path) -> list["BoardCard"]:
+        if not cards_dir.exists():
+            return []
+        cards = []
+        for p in sorted(cards_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                cards.append(cls.load(p))
+            except Exception:
+                pass
+        return cards
+
+    def touch(self, cards_dir: Path) -> None:
+        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.save(cards_dir)
+
+
 class Task(BaseModel):
     id:           str
     status:       TaskStatus
@@ -143,6 +232,7 @@ class Task(BaseModel):
     parent_task_id: str = ""
     depends_on:     list[str] = Field(default_factory=list)
     pipeline_id:    str = ""
+    board_card_id:  str = ""
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -199,6 +289,7 @@ class TaskCreateRequest(BaseModel):
     parent_task_id: Optional[str] = None
     depends_on:     list[str] = []
     pipeline_id:    Optional[str] = None
+    board_card_id:  Optional[str] = None
 
 
 class TaskResponse(BaseModel):
@@ -221,6 +312,7 @@ class TaskResponse(BaseModel):
     parent_task_id: str = ""
     depends_on:     list[str] = []
     pipeline_id:    str = ""
+    board_card_id:  str = ""
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -244,7 +336,46 @@ class TaskResponse(BaseModel):
             parent_task_id = getattr(t, "parent_task_id", ""),
             depends_on     = getattr(t, "depends_on", []),
             pipeline_id    = getattr(t, "pipeline_id", ""),
+            board_card_id  = getattr(t, "board_card_id", ""),
         )
+
+
+class BoardResponse(BaseModel):
+    id:      str
+    name:    str
+    project_name: str = ""
+    created: str
+    updated: str
+
+    @classmethod
+    def from_board(cls, b: Board) -> "BoardResponse":
+        return cls(
+            id=b.id,
+            name=b.name,
+            project_name=b.project_name,
+            created=b.created,
+            updated=b.updated,
+        )
+
+
+class BoardCardResponse(BaseModel):
+    id:              str
+    board_id:        str
+    title:           str
+    description:     str = ""
+    project_name:    str = ""
+    status:          BoardCardStatus
+    priority:        str = "normal"
+    conversation_id: str = ""
+    task_ids:        list[str] = []
+    pipeline_id:     str = ""
+    archived:        bool = False
+    created:         str
+    updated:         str
+
+    @classmethod
+    def from_card(cls, c: BoardCard) -> "BoardCardResponse":
+        return cls(**c.model_dump())
 
 
 class ConversationResponse(BaseModel):

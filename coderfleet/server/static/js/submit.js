@@ -36,7 +36,7 @@ function moveSubmitPanel(slotId) {
 }
 
 async function openTaskSubmitPanel(options = {}) {
-  submitContext = { surface: 'task', projectName: options.projectName || '' };
+  submitContext = { surface: 'task', projectName: options.projectName || '', boardCardId: options.boardCardId || '' };
   showPage('tasks');
   const panel = moveSubmitPanel('task-submit-slot');
   document.getElementById('submit-modal').style.display = 'none';
@@ -51,7 +51,7 @@ async function openTaskSubmitPanel(options = {}) {
 }
 
 async function openProjectSubmitModal(options = {}) {
-  submitContext = { surface: 'project', projectName: options.projectName || projectContext?.name || '' };
+  submitContext = { surface: options.surface || 'project', projectName: options.projectName || projectContext?.name || '', boardCardId: options.boardCardId || '' };
   const panel = moveSubmitPanel('submit-modal-slot');
   const modal = document.getElementById('submit-modal');
   const subtitle = document.getElementById('submit-modal-subtitle');
@@ -73,7 +73,7 @@ function closeTaskSubmitPanel() {
 function closeSubmitModal(e) {
   if (e && e.target !== document.getElementById('submit-modal')) return;
   document.getElementById('submit-modal').style.display = 'none';
-  submitContext = { surface: 'task', projectName: '' };
+  submitContext = { surface: 'task', projectName: '', boardCardId: '' };
   const panel = moveSubmitPanel('task-submit-slot');
   document.getElementById('submit-panel-close-btn').style.display = '';
   panel.style.display = 'none';
@@ -152,7 +152,7 @@ async function submitTask() {
   try {
     const r = await fetch(`${API}/api/tasks`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, project_name: projectName, auto: document.getElementById('f-auto').checked, conversation_id: conversationId, conversation_name: conversationName }),
+      body: JSON.stringify({ prompt, project_name: projectName, auto: document.getElementById('f-auto').checked, conversation_id: conversationId, conversation_name: conversationName, board_card_id: submitContext.boardCardId || null }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
@@ -162,6 +162,7 @@ async function submitTask() {
     resetForm(false);
     loadAccountOptions();
     loadTasks();
+    if (currentPage === 'boards' || submitContext.boardCardId) loadBoards();
     if (projectContext) loadProjectsDashboard();
   } catch (e) {
     msg.style.display = '';

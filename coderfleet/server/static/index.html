@@ -57,6 +57,13 @@
           </svg>
           <span class="sidebar-label">任务监控</span>
         </div>
+        <div class="nav-item" data-page="boards" onclick="showPage('boards')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="4" width="18" height="16" rx="3" />
+            <path d="M9 4v16M15 4v16" />
+          </svg>
+          <span class="sidebar-label">开发看板</span>
+        </div>
         <div class="nav-item" data-page="workflows" onclick="showPage('workflows')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/>
@@ -309,6 +316,28 @@
               </table>
             </div>
             <div class="pagination-bar" id="task-pagination" style="display:none"></div>
+          </div>
+        </div>
+
+        <!-- 开发看板页 -->
+        <div class="page" id="page-boards">
+          <div class="section-head board-page-head">
+            <div>
+              <div class="section-title">开发看板</div>
+              <div class="section-subtitle">以专题卡片管理开发阶段，并从卡片发起任务链或执行任务</div>
+            </div>
+            <div class="board-toolbar">
+              <select id="board-select" onchange="selectBoard(this.value)">
+                <option value="">加载中...</option>
+              </select>
+              <button class="btn" onclick="openBoardModal()">+ 新建看板</button>
+              <button class="btn danger" onclick="deleteActiveBoard()">删除看板</button>
+              <button class="btn" onclick="loadBoards()">刷新</button>
+              <button class="btn primary" onclick="openBoardCardModal()">+ 新建专题</button>
+            </div>
+          </div>
+          <div class="board-shell" id="board-shell">
+            <div class="empty">加载中...</div>
           </div>
         </div>
 
@@ -853,12 +882,13 @@
   <script src="/static/js/terminal-utils.js?v=20260528a"></script>
   <script src="/static/js/shared/project-utils.js?v=20260527-shared"></script>
   <script src="/static/js/shared/image-upload.js?v=20260528-imagefix"></script>
-  <script src="/static/js/renderer.js?v=20260601-download-auth"></script>
+  <script src="/static/js/renderer.js?v=20260603-executing-state"></script>
   <script src="/static/js/state.js?v=20260527f"></script>
-  <script src="/static/js/chat.js?v=20260602-quickjump"></script>
+  <script src="/static/js/chat.js?v=20260603-tail-meta"></script>
   <script src="/static/js/terminal.js?v=20260521"></script>
   <script src="/static/js/nav.js?v=20260526a"></script>
   <script src="/static/js/tasks.js?v=20260527f"></script>
+  <script src="/static/js/boards.js?v=20260602"></script>
   <script src="/static/js/projects.js?v=20260602-ide"></script>
   <script src="/static/js/accounts.js?v=20260527e"></script>
   <script src="/static/js/submit.js?v=20260521"></script>
@@ -889,6 +919,58 @@
         <span><kbd>↵</kbd> 打开</span>
         <span><kbd>Ctrl K</kbd> 关闭</span>
       </div>
+    </div>
+  </div>
+
+  <!-- 新建看板 Modal -->
+  <div class="modal-backdrop" id="board-modal" style="display:none" onclick="closeBoardModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()">
+      <div class="section-head">
+        <div>
+          <div class="modal-title">新建看板</div>
+          <div class="section-subtitle">看板用于承载一组开发专题卡片</div>
+        </div>
+        <button class="btn" onclick="closeBoardModal()">关闭</button>
+      </div>
+      <div class="form-group">
+        <label>看板名称 *</label>
+        <input id="board-name" type="text" placeholder="例如：开发专题" onkeydown="if(event.key==='Enter') submitBoard()">
+      </div>
+      <div class="flex gap-8">
+        <button class="btn primary" id="board-submit" onclick="submitBoard()">创建看板</button>
+        <button class="btn" onclick="closeBoardModal()">取消</button>
+      </div>
+      <div id="board-msg" style="display:none;margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- 新建专题卡片 Modal -->
+  <div class="modal-backdrop" id="board-card-modal" style="display:none" onclick="closeBoardCardModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()">
+      <div class="section-head">
+        <div>
+          <div class="modal-title" id="board-card-modal-title">新建开发专题</div>
+          <div class="section-subtitle">专题卡片用于管理一个功能、修复或重构事项</div>
+        </div>
+        <button class="btn" onclick="closeBoardCardModal()">关闭</button>
+      </div>
+      <div class="form-group">
+        <label>专题标题 *</label>
+        <input id="board-card-title" type="text" placeholder="例如：看板 MVP">
+      </div>
+      <div class="form-group">
+        <label>关联项目</label>
+        <select id="board-card-project"><option value="">不绑定项目</option></select>
+      </div>
+      <div class="form-group">
+        <label>描述</label>
+        <textarea id="board-card-description" rows="3" placeholder="补充目标、验收点或上下文..."></textarea>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn primary" id="board-card-submit" onclick="submitBoardCard()">创建专题</button>
+        <button class="btn" onclick="closeBoardCardModal()">取消</button>
+      </div>
+      <div id="board-card-msg" style="display:none;margin-top:10px"></div>
     </div>
   </div>
 </body>

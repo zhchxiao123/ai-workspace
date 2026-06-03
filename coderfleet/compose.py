@@ -73,25 +73,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     no_proxy  = f"localhost,127.0.0.1,{subnet}"
 
     services: dict[str, Any] = {}
-
-    services["proxy-relay"] = {
-        "image": relay_image,
-        "container_name": "coderfleet-proxy-relay",
-        "restart": "unless-stopped",
-        "networks": {
-            "intnet": {"ipv4_address": relay_ip},
-            "extnet": {},
-        },
-        "extra_hosts": ["host.docker.internal:host-gateway"],
-        "command": f"-L http://:{relay_port} -F \"{proxy_host}:{http_port}\"",
-        "healthcheck": {
-            "test": ["CMD", "sh", "-c", f"nc -z localhost {relay_port}"],
-            "interval": "8s",
-            "timeout": "4s",
-            "retries": 5,
-            "start_period": "5s",
-        },
-    }
+    needs_relay = False
 
     count = 0
     used_ide_ports: set[int] = set()
@@ -190,6 +172,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             svc["env_file"] = [acc_env_file]
 
         if acc_proxy != "off":
+            needs_relay = True
             svc["depends_on"] = {"proxy-relay": {"condition": "service_healthy"}}
 
         services[svc_name] = svc
@@ -221,15 +204,36 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     if count == 0:
         raise click.ClickException("没有可用的项目（账号配置可能有误）")
 
-    return {
-        "networks": {
-            "intnet": {
-                "driver": "bridge",
-                "internal": True,
-                "ipam": {"config": [{"subnet": subnet}]},
+    if needs_relay:
+        services["proxy-relay"] = {
+            "image": relay_image,
+            "container_name": "coderfleet-proxy-relay",
+            "restart": "unless-stopped",
+            "networks": {
+                "intnet": {"ipv4_address": relay_ip},
+                "extnet": {},
             },
-            "extnet": {"driver": "bridge"},
-        },
+            "extra_hosts": ["host.docker.internal:host-gateway"],
+            "command": f"-L http://:{relay_port} -F \"{proxy_host}:{http_port}\"",
+            "healthcheck": {
+                "test": ["CMD", "sh", "-c", f"nc -z localhost {relay_port}"],
+                "interval": "8s",
+                "timeout": "4s",
+                "retries": 5,
+                "start_period": "5s",
+            },
+        }
+
+    networks: dict[str, Any] = {"extnet": {"driver": "bridge"}}
+    if needs_relay:
+        networks["intnet"] = {
+            "driver": "bridge",
+            "internal": True,
+            "ipam": {"config": [{"subnet": subnet}]},
+        }
+
+    return {
+        "networks": networks,
         "services": services,
     }
 

@@ -28,6 +28,9 @@ from coderfleet.server.models import (
     AccountProxy,
     AccountResponse,
     AccountType,
+    Board,
+    BoardCard,
+    BoardCardStatus,
     Conversation,
     ConversationStatus,
     LogicalProject,
@@ -60,6 +63,8 @@ class Scheduler:
         self.projects_conf  = workspace_dir / "projects.conf"
         self.tasks_dir      = workspace_dir / "tasks"
         self.conversations_dir = workspace_dir / "conversations"
+        self.boards_dir     = workspace_dir / "boards"
+        self.board_cards_dir = workspace_dir / "board_cards"
         self.pipelines_dir  = workspace_dir / "pipelines"
         self.templates_dir  = workspace_dir / "workflow_templates"
         self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
@@ -532,6 +537,197 @@ class Scheduler:
         rand = random.randint(0, 9999)
         return f"conv-{ts}-{rand:04d}"
 
+    @staticmethod
+    def new_board_id() -> str:
+        ts   = datetime.now().strftime("%Y%m%d%H%M%S")
+        rand = random.randint(0, 9999)
+        return f"board-{ts}-{rand:04d}"
+
+    @staticmethod
+    def new_board_card_id() -> str:
+        ts   = datetime.now().strftime("%Y%m%d%H%M%S")
+        rand = random.randint(0, 9999)
+        return f"card-{ts}-{rand:04d}"
+
+    def list_boards(self) -> list[Board]:
+        return Board.load_all(self.boards_dir)
+
+    def get_board(self, board_id: str) -> Optional[Board]:
+        path = self.boards_dir / f"{board_id}.json"
+        if not path.exists():
+            return None
+        return Board.load(path)
+
+    def create_board(self, name: str, project_name: str = "") -> Board:
+        board = Board(
+            id=self.new_board_id(),
+            name=name.strip() or "开发看板",
+            project_name=project_name.strip(),
+        )
+        board.save(self.boards_dir)
+        return board
+
+    def update_board(self, board_id: str, name: Optional[str] = None, project_name: Optional[str] = None) -> Board:
+        board = self.get_board(board_id)
+        if board is None:
+            raise ValueError(f"看板 '{board_id}' 不存在")
+        if name is not None:
+            board.name = name.strip() or board.name
+        if project_name is not None:
+            board.project_name = project_name.strip()
+        board.touch(self.boards_dir)
+        return board
+
+    def delete_board(self, board_id: str) -> None:
+        board_path = self.boards_dir / f"{board_id}.json"
+        if not board_path.exists():
+            raise ValueError(f"看板 '{board_id}' 不存在")
+        board_path.unlink()
+        for card in self.list_board_cards(board_id=board_id, include_archived=True):
+            self.delete_board_card(card.id)
+
+    def list_board_cards(self, board_id: str = "", include_archived: bool = False) -> list[BoardCard]:
+        cards = BoardCard.load_all(self.board_cards_dir)
+        self._reconcile_board_cards_from_tasks(cards)
+        if board_id:
+            cards = [c for c in cards if c.board_id == board_id]
+        if not include_archived:
+            cards = [c for c in cards if not c.archived]
+        return cards
+
+    def _reconcile_board_cards_from_tasks(self, cards: list[BoardCard]) -> None:
+        if not cards:
+            return
+        cards_by_id = {c.id: c for c in cards}
+        for task in Task.load_all(self.tasks_dir):
+            card_id = getattr(task, "board_card_id", "")
+            if not card_id or card_id not in cards_by_id:
+                continue
+            self._sync_board_card_for_task(task, cards_by_id[card_id])
+
+    def get_board_card(self, card_id: str) -> Optional[BoardCard]:
+        path = self.board_cards_dir / f"{card_id}.json"
+        if not path.exists():
+            return None
+        return BoardCard.load(path)
+
+    def create_board_card(
+        self,
+        board_id: str,
+        title: str,
+        description: str = "",
+        project_name: str = "",
+        status: BoardCardStatus = BoardCardStatus.planned,
+        priority: str = "normal",
+    ) -> BoardCard:
+        if self.get_board(board_id) is None:
+            raise ValueError(f"看板 '{board_id}' 不存在")
+        card = BoardCard(
+            id=self.new_board_card_id(),
+            board_id=board_id,
+            title=title.strip() or "未命名专题",
+            description=description.strip(),
+            project_name=project_name.strip(),
+            status=status,
+            priority=priority.strip() or "normal",
+        )
+        card.save(self.board_cards_dir)
+        return card
+
+    def update_board_card(
+        self,
+        card_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        project_name: Optional[str] = None,
+        status: Optional[BoardCardStatus] = None,
+        priority: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        pipeline_id: Optional[str] = None,
+        archived: Optional[bool] = None,
+    ) -> BoardCard:
+        card = self.get_board_card(card_id)
+        if card is None:
+            raise ValueError(f"看板卡片 '{card_id}' 不存在")
+        if title is not None:
+            card.title = title.strip() or card.title
+        if description is not None:
+            card.description = description.strip()
+        if project_name is not None:
+            card.project_name = project_name.strip()
+        if status is not None:
+            card.status = status
+        if priority is not None:
+            card.priority = priority.strip() or card.priority
+        if conversation_id is not None:
+            card.conversation_id = conversation_id.strip()
+        if pipeline_id is not None:
+            card.pipeline_id = pipeline_id.strip()
+        if archived is not None:
+            card.archived = archived
+        card.touch(self.board_cards_dir)
+        return card
+
+    def delete_board_card(self, card_id: str) -> None:
+        path = self.board_cards_dir / f"{card_id}.json"
+        if not path.exists():
+            raise ValueError(f"看板卡片 '{card_id}' 不存在")
+        path.unlink()
+
+    def add_task_to_board_card(self, card_id: str, task_id: str) -> BoardCard:
+        card = self.get_board_card(card_id)
+        if card is None:
+            raise ValueError(f"看板卡片 '{card_id}' 不存在")
+        if task_id not in card.task_ids:
+            card.task_ids.append(task_id)
+        task = self.get_task(task_id)
+        if task is not None:
+            if task.conversation_id and not card.conversation_id:
+                card.conversation_id = task.conversation_id
+            if task.pipeline_id and not card.pipeline_id:
+                card.pipeline_id = task.pipeline_id
+            if task.project_name and not card.project_name:
+                card.project_name = task.project_name
+            return self._sync_board_card_for_task(task, card)
+        card.touch(self.board_cards_dir)
+        return card
+
+    def _sync_board_card_for_task(self, task: Task, card: Optional[BoardCard] = None) -> Optional[BoardCard]:
+        card_id = getattr(task, "board_card_id", "")
+        if not card_id and card is None:
+            return None
+        card = card or self.get_board_card(card_id)
+        if card is None:
+            return None
+
+        changed = False
+        if task.id not in card.task_ids:
+            card.task_ids.append(task.id)
+            changed = True
+        if task.conversation_id and not card.conversation_id:
+            card.conversation_id = task.conversation_id
+            changed = True
+        if task.pipeline_id and not card.pipeline_id:
+            card.pipeline_id = task.pipeline_id
+            changed = True
+        if task.project_name and not card.project_name:
+            card.project_name = task.project_name
+            changed = True
+
+        if task.status in (TaskStatus.pending, TaskStatus.scheduled) and card.status == BoardCardStatus.planned:
+            card.status = BoardCardStatus.todo
+            changed = True
+        elif task.status == TaskStatus.running and card.status in (BoardCardStatus.planned, BoardCardStatus.todo):
+            card.status = BoardCardStatus.running
+            changed = True
+        elif task.status == TaskStatus.done and card.status == BoardCardStatus.running:
+            card.status = BoardCardStatus.review
+            changed = True
+
+        if changed:
+            card.touch(self.board_cards_dir)
+        return card
+
     def list_conversations(self, include_archived: bool = False) -> list[Conversation]:
         convs = Conversation.load_all(self.conversations_dir)
         if not include_archived:
@@ -701,6 +897,7 @@ class Scheduler:
 
             # 转换为运行状态
             task.update_status(TaskStatus.running, self.tasks_dir)
+            self._sync_board_card_for_task(task)
 
             # 写日志头
             log_path = self.get_log_path(task.id)
@@ -753,6 +950,7 @@ class Scheduler:
         parent_task_id: Optional[str]         = None,
         depends_on:     list[str]             = [],
         pipeline_id:    Optional[str]         = None,
+        board_card_id:  Optional[str]         = None,
     ) -> Task:
         """
         提交任务，异步在后台执行，立即返回 Task 对象。
@@ -760,6 +958,9 @@ class Scheduler:
         """
         is_pending = False
         conversation: Optional[Conversation] = None
+        card_id = board_card_id or ""
+        if card_id and self.get_board_card(card_id) is None:
+            raise ValueError(f"看板卡片 '{card_id}' 不存在")
 
         if conversation_id:
             conversation = self.get_conversation(conversation_id)
@@ -860,10 +1061,13 @@ class Scheduler:
                         parent_task_id = dag_parent,
                         depends_on     = dag_depends,
                         pipeline_id    = dag_pipeline,
+                        board_card_id  = card_id,
                     )
                     task.save(self.tasks_dir)
                     if dag_pipeline:
                         self._register_task_in_pipeline(task_id, dag_pipeline)
+                    if card_id:
+                        self.add_task_to_board_card(card_id, task_id)
 
                     # 写入空日志文件防 SSE 404
                     log_path = self.get_log_path(task_id)
@@ -891,10 +1095,13 @@ class Scheduler:
                 parent_task_id = dag_parent,
                 depends_on     = dag_depends,
                 pipeline_id    = dag_pipeline,
+                board_card_id  = card_id,
             )
             task.save(self.tasks_dir)
             if dag_pipeline:
                 self._register_task_in_pipeline(task_id, dag_pipeline)
+            if card_id:
+                self.add_task_to_board_card(card_id, task_id)
 
             # 写入空日志文件防 SSE 404
             log_path = self.get_log_path(task_id)
@@ -922,10 +1129,13 @@ class Scheduler:
             parent_task_id = dag_parent,
             depends_on     = dag_depends,
             pipeline_id    = dag_pipeline,
+            board_card_id  = card_id,
         )
         task.save(self.tasks_dir)
         if dag_pipeline:
             self._register_task_in_pipeline(task_id, dag_pipeline)
+        if card_id:
+            self.add_task_to_board_card(card_id, task_id)
 
         # 写日志头
         self._write_log_header(log_path, task, acc, container_workdir, container_name)
@@ -1063,10 +1273,12 @@ class Scheduler:
                 else:
                     conversation.touch(self.conversations_dir, last_task_id=task.id)
             task.update_status(TaskStatus.done, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, "done")
         else:
             task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, f"failed (exit={rc})")
 
@@ -1121,11 +1333,13 @@ class Scheduler:
         except asyncio.CancelledError:
             self.kill_task_process(task)
             task.update_status(TaskStatus.killed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(log_path, "killed")
             asyncio.create_task(self._notify(task))
             return
         except Exception as e:
             task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, f"failed: {e}")
             asyncio.create_task(self._notify(task))
@@ -1142,12 +1356,14 @@ class Scheduler:
         acc = next((a for a in self.get_accounts() if a.name == task.account), None)
         if acc is None:
             task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(log_path, "failed: account not found on reattach")
             return
 
         project_root = self._get_project_root(task)
         if project_root is None:
             task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(log_path, "failed: project root not found on reattach")
             return
 
@@ -1165,11 +1381,13 @@ class Scheduler:
         except asyncio.CancelledError:
             self.kill_task_process(task)
             task.update_status(TaskStatus.killed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(log_path, "killed")
             asyncio.create_task(self._notify(task))
             return
         except Exception as e:
             task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(log_path, f"failed during reattach: {e}")
             asyncio.create_task(self._notify(task))
             return
@@ -1345,6 +1563,7 @@ class Scheduler:
                 result = "failed: server restarted; project root not found"
 
             task.update_status(status, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             self._append_log_footer(self.get_log_path(task.id), result)
             self._cleanup_container_task_files(task)
             reconciled += 1
@@ -1363,6 +1582,7 @@ class Scheduler:
         if task.status in (TaskStatus.pending, TaskStatus.scheduled):
             old_status = task.status
             task.update_status(TaskStatus.killed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
             reason = "killed by user (cancelled schedule)" if old_status == TaskStatus.scheduled else "killed by user (while pending)"
             self._append_log_footer(self.get_log_path(task_id), reason)
             # 异步触发一次调度，确保释放该队列的后续处理（以防万一）
@@ -1371,6 +1591,7 @@ class Scheduler:
 
         # 先更新状态防止并发写入
         task.update_status(TaskStatus.killed, self.tasks_dir)
+        self._sync_board_card_for_task(task)
 
         # 取消后台协程
         self.kill_task_process(task)
