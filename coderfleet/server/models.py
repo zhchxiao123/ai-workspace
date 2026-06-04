@@ -233,6 +233,10 @@ class Task(BaseModel):
     depends_on:     list[str] = Field(default_factory=list)
     pipeline_id:    str = ""
     board_card_id:  str = ""
+    # Token usage (populated after task completes)
+    tokens_input:  int = 0
+    tokens_output: int = 0
+    cost_usd:      float = 0.0
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -313,6 +317,9 @@ class TaskResponse(BaseModel):
     depends_on:     list[str] = []
     pipeline_id:    str = ""
     board_card_id:  str = ""
+    tokens_input:  int = 0
+    tokens_output: int = 0
+    cost_usd:      float = 0.0
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -337,6 +344,9 @@ class TaskResponse(BaseModel):
             depends_on     = getattr(t, "depends_on", []),
             pipeline_id    = getattr(t, "pipeline_id", ""),
             board_card_id  = getattr(t, "board_card_id", ""),
+            tokens_input   = getattr(t, "tokens_input", 0),
+            tokens_output  = getattr(t, "tokens_output", 0),
+            cost_usd       = getattr(t, "cost_usd", 0.0),
         )
 
 
@@ -545,15 +555,17 @@ class LogicalProject(BaseModel):
 
 class TemplateNode(BaseModel):
     """模板中的一个节点定义（可重复使用的任务蓝图）"""
-    node_id:      str
-    name:         str
-    prompt_tpl:   str              # 支持 {{input}} 变量替换
-    target_mode:  str = "default"  # default / fixed_project / runtime_role
-    project_name: str = ""         # target_mode=fixed_project 时使用
-    project_role: str = ""         # 角色名（如 "claude"/"codex"）或具体项目名
-    depends_on:   list[str] = Field(default_factory=list)  # 依赖的 node_id 列表
-    pos_x:        float = 0.0      # 画布坐标（Drawflow）
-    pos_y:        float = 0.0
+    node_id:              str
+    name:                 str
+    prompt_tpl:           str              # 支持 {{input}} 和 {{steps.<id>.outputs.text}}
+    target_mode:          str = "default"  # default / fixed_project / runtime_role
+    project_name:         str = ""         # target_mode=fixed_project 时使用
+    project_role:         str = ""         # 角色名（如 "claude"/"codex"）或具体项目名
+    depends_on:           list[str] = Field(default_factory=list)  # 依赖的 node_id 列表
+    pos_x:                float = 0.0      # 画布坐标（Drawflow）
+    pos_y:                float = 0.0
+    max_retries:          int = 0          # 节点失败后最大重试次数（0=不重试）
+    retry_delay_seconds:  int = 30         # 每次重试前等待秒数
 
 
 class WorkflowTemplate(BaseModel):

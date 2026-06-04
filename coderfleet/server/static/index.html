@@ -471,6 +471,14 @@
                 <button class="btn primary" style="font-size:12px" onclick="openCreateAccountModal()">+ 新建账号</button>
               </div>
             </div>
+            <!-- 用量统计栏 -->
+            <div id="usage-stats-bar" style="display:none;margin-bottom:16px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 16px">
+              <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                <div style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.04em">近 30 天用量</div>
+                <div style="display:flex;gap:20px;flex-wrap:wrap" id="usage-stats-cells"></div>
+              </div>
+              <div id="usage-per-account" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap"></div>
+            </div>
             <div class="account-grid" id="account-grid">
               <div class="empty">加载中...</div>
             </div>

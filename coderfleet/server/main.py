@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
@@ -469,6 +470,88 @@ async def push_test():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "workspace": str(WORKSPACE_DIR)}
+
+
+# ── 用量统计 ──────────────────────────────────────────────
+
+@app.get("/api/stats/usage")
+async def get_usage_stats(
+    project_name: str = Query("", description="按项目名过滤"),
+    days: int = Query(30, ge=1, le=365, description="统计最近 N 天"),
+):
+    """
+    聚合所有已完成任务的 token 用量和费用。
+    返回总计 + 按账号 + 按项目的分组统计。
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+    tasks = scheduler.list_tasks()
+
+    total_input:  int   = 0
+    total_output: int   = 0
+    total_cost:   float = 0.0
+    task_count:   int   = 0
+
+    per_account: dict[str, dict] = {}
+    per_project: dict[str, dict] = {}
+
+    for task in tasks:
+        if (task.created or "") < cutoff:
+            continue
+        if project_name and task.project_name != project_name:
+            continue
+        if task.status not in (TaskStatus.done, TaskStatus.failed):
+            continue
+
+        ti   = getattr(task, "tokens_input",  0)   or 0
+        to_  = getattr(task, "tokens_output", 0)   or 0
+        cost = getattr(task, "cost_usd",      0.0) or 0.0
+
+        total_input  += ti
+        total_output += to_
+        total_cost   += cost
+        task_count   += 1
+
+        acc = task.account or "unknown"
+        if acc not in per_account:
+            per_account[acc] = {
+                "tokens_input": 0, "tokens_output": 0,
+                "cost_usd": 0.0, "task_count": 0,
+            }
+        per_account[acc]["tokens_input"]  += ti
+        per_account[acc]["tokens_output"] += to_
+        per_account[acc]["cost_usd"]      += cost
+        per_account[acc]["task_count"]    += 1
+
+        pname = task.project_name or ""
+        if pname:
+            if pname not in per_project:
+                per_project[pname] = {
+                    "tokens_input": 0, "tokens_output": 0,
+                    "cost_usd": 0.0, "task_count": 0,
+                }
+            per_project[pname]["tokens_input"]  += ti
+            per_project[pname]["tokens_output"] += to_
+            per_project[pname]["cost_usd"]      += cost
+            per_project[pname]["task_count"]    += 1
+
+    # Round cost values
+    total_cost = round(total_cost, 4)
+    for v in per_account.values():
+        v["cost_usd"] = round(v["cost_usd"], 4)
+    for v in per_project.values():
+        v["cost_usd"] = round(v["cost_usd"], 4)
+
+    return {
+        "days":          days,
+        "task_count":    task_count,
+        "tokens_input":  total_input,
+        "tokens_output": total_output,
+        "cost_usd":      total_cost,
+        "per_account":   per_account,
+        "per_project":   per_project,
+    }
 
 
 # ── 账号类型注册表 ─────────────────────────────────────────

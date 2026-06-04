@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import shlex
 import subprocess
 from datetime import datetime
@@ -1282,6 +1283,7 @@ class Scheduler:
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, f"failed (exit={rc})")
 
+        self._extract_and_save_token_usage(task, log_path)
         asyncio.create_task(self._notify(task))
         return rc
 
@@ -1434,6 +1436,20 @@ class Scheduler:
             with log_path.open("a", encoding="utf-8") as f:
                 f.write("\n" + "=" * 38 + "\n")
                 f.write(f"finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [{result}]\n")
+        except Exception:
+            pass
+
+    def _extract_and_save_token_usage(self, task: Task, log_path: Path) -> None:
+        """Parse completed task log to extract token usage and persist it in the Task JSON."""
+        try:
+            from coderfleet.server.log_parser import parse_log
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+            data = parse_log(log_text, task.type.value)
+            if data.tokens_input or data.tokens_output or data.cost_usd:
+                task.tokens_input  = data.tokens_input
+                task.tokens_output = data.tokens_output
+                task.cost_usd      = data.cost_usd
+                task.save(self.tasks_dir)
         except Exception:
             pass
 
@@ -1796,7 +1812,18 @@ class Scheduler:
                 raise ValueError(f"节点「{label}」配置的项目 '{project_name}' 不存在")
             resolved_projects[node.node_id] = project_name
 
-        # 创建此次运行的 Pipeline
+        # 按拓扑层级分组（同层节点并发，跨层串行并传递输出）
+        from collections import defaultdict
+        dep_levels: dict[str, int] = {}
+        for node in sorted_nodes:
+            level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
+            dep_levels[node.node_id] = level
+
+        level_groups: dict[int, list[TemplateNode]] = defaultdict(list)
+        for node in sorted_nodes:
+            level_groups[dep_levels[node.node_id]].append(node)
+
+        # 创建此次运行的 Pipeline（只含元数据，task_ids 由后台协程逐步追加）
         run_name = f"{tpl.name} · {input_str[:30]}" if input_str else tpl.name
         pipeline = Pipeline(
             id            = self.new_pipeline_id(),
@@ -1806,52 +1833,181 @@ class Scheduler:
         )
         pipeline.save(self.pipelines_dir)
 
-        # 按拓扑层级分组，同层节点并发提交
-        from collections import defaultdict
-        dep_levels: dict[str, int] = {}
-        for node in sorted_nodes:
-            level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
-            dep_levels[node.node_id] = level
-
-        level_groups: dict[int, list] = defaultdict(list)
-        for node in sorted_nodes:
-            level_groups[dep_levels[node.node_id]].append(node)
-
-        node_task_map: dict[str, str] = {}  # node_id → task_id
-
-        for level in sorted(level_groups):
-            async def _submit_node(node: TemplateNode) -> tuple:
-                actual_prompt = node.prompt_tpl.replace("{{input}}", input_str)
-                pname = resolved_projects[node.node_id]
-                deps = [node_task_map[nid] for nid in (node.depends_on or []) if nid in node_task_map]
-                t = await self.submit(
-                    prompt       = actual_prompt,
-                    project_name = pname,
-                    auto         = True,
-                    depends_on   = deps,
-                    pipeline_id  = pipeline.id,
-                )
-                return node, t, actual_prompt, pname
-
-            results = await asyncio.gather(*[_submit_node(n) for n in level_groups[level]])
-
-            for node, task, actual_prompt, pname in results:
-                node_task_map[node.node_id] = task.id
-                if task.id not in pipeline.task_ids:
-                    pipeline.task_ids.append(task.id)
-                pipeline.node_runs.append(PipelineNodeRun(
-                    node_id          = node.node_id,
-                    node_name        = node.name,
-                    task_id          = task.id,
-                    target_mode      = getattr(node, "target_mode", "default") or "default",
-                    project_name     = getattr(node, "project_name", ""),
-                    project_role     = getattr(node, "project_role", ""),
-                    resolved_project = pname,
-                    actual_prompt    = actual_prompt,
-                ))
-            pipeline.touch(self.pipelines_dir)
+        # 后台协程按层推进：等待上层完成 → 提取输出 → 插值提交下层
+        asyncio.create_task(
+            self._execute_pipeline_levels(
+                pipeline.id, tpl, level_groups, resolved_projects, input_str
+            ),
+            name=f"pipeline-{pipeline.id}",
+        )
 
         return pipeline
+
+    # ── 模板执行辅助 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _render_prompt(prompt_tpl: str, input_str: str, node_outputs: dict[str, str]) -> str:
+        """
+        Replace {{input}} and {{steps.<node_id>.outputs.text}} placeholders.
+        Unknown step references are replaced with a readable placeholder.
+        """
+        result = prompt_tpl.replace("{{input}}", input_str)
+        result = re.sub(
+            r"\{\{steps\.([^}]+)\.outputs\.text\}\}",
+            lambda m: node_outputs.get(m.group(1), f"[output of {m.group(1)} not available]"),
+            result,
+        )
+        return result
+
+    async def _wait_for_task_done(
+        self,
+        task_id: str,
+        poll_interval: float = 2.0,
+        timeout: float = 7200.0,
+    ) -> "TaskStatus":
+        """Poll until the task reaches a terminal state; return that status."""
+        elapsed = 0.0
+        while elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            task = self.get_task(task_id)
+            if task is None:
+                return TaskStatus.failed
+            if task.status in (TaskStatus.done, TaskStatus.failed, TaskStatus.killed):
+                return task.status
+        return TaskStatus.failed
+
+    async def _submit_pipeline_node(
+        self,
+        node: "TemplateNode",
+        pipeline_id: str,
+        resolved_projects: dict[str, str],
+        input_str: str,
+        node_outputs: dict[str, str],
+    ) -> "Task":
+        """Submit a single node's task and register it in the pipeline."""
+        actual_prompt = self._render_prompt(node.prompt_tpl, input_str, node_outputs)
+        pname = resolved_projects[node.node_id]
+
+        task = await self.submit(
+            prompt       = actual_prompt,
+            project_name = pname,
+            auto         = True,
+            pipeline_id  = pipeline_id,
+        )
+
+        # Update pipeline: add task_id + node_run record
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline:
+            if task.id not in pipeline.task_ids:
+                pipeline.task_ids.append(task.id)
+            # Replace any previous node_run for this node (retry case)
+            pipeline.node_runs = [r for r in pipeline.node_runs if r.node_id != node.node_id]
+            pipeline.node_runs.append(PipelineNodeRun(
+                node_id          = node.node_id,
+                node_name        = node.name,
+                task_id          = task.id,
+                target_mode      = getattr(node, "target_mode", "default") or "default",
+                project_name     = getattr(node, "project_name", ""),
+                project_role     = getattr(node, "project_role", ""),
+                resolved_project = pname,
+                actual_prompt    = actual_prompt,
+            ))
+            pipeline.touch(self.pipelines_dir)
+
+        return task
+
+    async def _execute_pipeline_levels(
+        self,
+        pipeline_id:       str,
+        tpl:               "WorkflowTemplate",
+        level_groups:      dict,
+        resolved_projects: dict[str, str],
+        input_str:         str,
+    ) -> None:
+        """
+        Background coroutine: execute workflow levels sequentially.
+
+        For each level:
+          1. Submit all nodes in the level concurrently.
+          2. Wait for every node to reach a terminal state (with retry support).
+          3. Extract each node's text output.
+          4. Proceed to the next level, injecting outputs into prompts via
+             {{steps.<node_id>.outputs.text}}.
+        """
+        from coderfleet.server.log_parser import parse_log
+
+        node_outputs: dict[str, str] = {}
+        pipeline_failed = False
+
+        for level in sorted(level_groups.keys()):
+            if pipeline_failed:
+                break
+
+            nodes: list[TemplateNode] = level_groups[level]
+
+            # --- Submit all nodes in this level concurrently ---
+            submit_results = await asyncio.gather(
+                *[
+                    self._submit_pipeline_node(
+                        node, pipeline_id, resolved_projects, input_str, node_outputs
+                    )
+                    for node in nodes
+                ],
+                return_exceptions=True,
+            )
+
+            # --- Wait for each node to finish (with per-node retry) ---
+            for node, submit_result in zip(nodes, submit_results):
+                if isinstance(submit_result, Exception):
+                    print(f"[pipeline {pipeline_id}] node {node.node_id} submit error: {submit_result}")
+                    pipeline_failed = True
+                    continue
+
+                task: Task = submit_result
+                max_retries      = getattr(node, "max_retries", 0) or 0
+                retry_delay      = getattr(node, "retry_delay_seconds", 30) or 30
+                attempt          = 0
+
+                while True:
+                    final_status = await self._wait_for_task_done(task.id)
+
+                    if final_status == TaskStatus.done:
+                        # Extract output text for downstream nodes
+                        log_path = self.get_log_path(task.id)
+                        if log_path.exists():
+                            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+                            data = parse_log(log_text, task.type.value)
+                            node_outputs[node.node_id] = data.text
+                        break
+
+                    # Task failed / killed
+                    if attempt < max_retries:
+                        attempt += 1
+                        print(
+                            f"[pipeline {pipeline_id}] node {node.node_id} "
+                            f"failed (attempt {attempt}/{max_retries + 1}), "
+                            f"retrying in {retry_delay}s"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        try:
+                            task = await self._submit_pipeline_node(
+                                node, pipeline_id, resolved_projects, input_str, node_outputs
+                            )
+                        except Exception as e:
+                            print(
+                                f"[pipeline {pipeline_id}] node {node.node_id} "
+                                f"retry submit failed: {e}"
+                            )
+                            pipeline_failed = True
+                            break
+                    else:
+                        print(
+                            f"[pipeline {pipeline_id}] node {node.node_id} "
+                            f"permanently failed after {attempt + 1} attempt(s)"
+                        )
+                        pipeline_failed = True
+                        break
 
     # ── 逻辑项目（按 path 分组） ──────────────────────────
 
