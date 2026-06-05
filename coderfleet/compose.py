@@ -193,12 +193,14 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             ide_networks = {"extnet": {}}
             if acc_proxy != "off":
                 ide_networks["intnet"] = {}
+            ide_remote = _truthy(p.get("IDE_REMOTE", "off"))
+            ide_bind   = "0.0.0.0" if ide_remote else "127.0.0.1"
             services[ide_svc_name] = {
                 "image": ide_proxy_image,
                 "container_name": ide_ctr_name,
                 "restart": "unless-stopped",
                 "networks": ide_networks,
-                "ports": [f"127.0.0.1:{ide_port}:8080"],
+                "ports": [f"{ide_bind}:{ide_port}:8080"],
                 "entrypoint": ["socat"],
                 "command": [
                     "TCP-LISTEN:8080,fork,reuseaddr",

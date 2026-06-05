@@ -98,6 +98,7 @@ class ProjectCreateRequest(BaseModel):
     ide_enabled: bool = False
     ide_port:    Optional[int] = None
     ide_auth:    str = "none"
+    ide_remote:  bool = False
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -107,6 +108,7 @@ class ProjectUpdateRequest(BaseModel):
     ide_enabled: Optional[bool] = None
     ide_port:    Optional[int]  = None
     ide_auth:    Optional[str]  = None
+    ide_remote:  Optional[bool] = None
 
 
 class BoardCreateRequest(BaseModel):
@@ -870,7 +872,7 @@ async def create_project(req: ProjectCreateRequest):
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
     try:
-        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth)
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -886,14 +888,15 @@ async def update_project(name: str, req: ProjectUpdateRequest):
     new_active  = existing.active if req.active is None else req.active
     new_ide_enabled = existing.ide_enabled if req.ide_enabled is None else req.ide_enabled
     new_ide_port = existing.ide_port if req.ide_port is None else req.ide_port
-    new_ide_auth = existing.ide_auth if req.ide_auth is None else req.ide_auth
+    new_ide_auth   = existing.ide_auth   if req.ide_auth   is None else req.ide_auth
+    new_ide_remote = existing.ide_remote if req.ide_remote is None else req.ide_remote
     if not new_ide_enabled:
         new_ide_port = None
     _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
     try:
-        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth)
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)

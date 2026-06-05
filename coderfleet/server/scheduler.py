@@ -211,6 +211,7 @@ class Scheduler:
                     ide_enabled=_truthy(parts.get("IDE", "off")),
                     ide_port=_parse_optional_int(parts.get("IDE_PORT", "")),
                     ide_auth=parts.get("IDE_AUTH", "none"),
+                    ide_remote=_truthy(parts.get("IDE_REMOTE", "off")),
                 ))
 
         return projects
@@ -381,12 +382,14 @@ class Scheduler:
         ide_enabled: bool = False,
         ide_port: Optional[int] = None,
         ide_auth: str = "none",
+        ide_remote: bool = False,
     ) -> Project:
         """新增或修改 projects.conf 中的项目行。"""
         path_norm = str(Path(path).expanduser())
         if not ide_enabled:
             ide_port = None
             ide_auth = "none"
+            ide_remote = False
         elif ide_port is None:
             used_ports = [
                 p.ide_port
@@ -403,6 +406,8 @@ class Scheduler:
                 parts.append(f"IDE_PORT={ide_port}")
             if ide_auth and ide_auth != "none":
                 parts.append(f"IDE_AUTH={ide_auth}")
+            if ide_remote:
+                parts.append("IDE_REMOTE=on")
         self._rewrite_conf(self.projects_conf, name, " ".join(parts))
         return Project(
             name=name,
@@ -412,6 +417,7 @@ class Scheduler:
             ide_enabled=ide_enabled,
             ide_port=ide_port,
             ide_auth=ide_auth,
+            ide_remote=ide_remote,
         )
 
     def delete_project(self, name: str) -> None:

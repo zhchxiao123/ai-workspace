@@ -884,6 +884,10 @@
               <option value="password">password（密码保护）</option>
             </select>
           </div>
+          <label class="toggle-row">
+            <input id="project-form-ide-remote" type="checkbox">
+            <span>允许远程访问 <span style="color:var(--text-3);font-size:11px">（绑定 0.0.0.0，默认仅 127.0.0.1）</span></span>
+          </label>
         </div>
         <div id="project-form-msg" style="display:none"></div>
         <button id="project-form-btn" class="btn primary" onclick="saveProjectForm()">保存</button>
