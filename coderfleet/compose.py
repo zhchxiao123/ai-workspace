@@ -162,10 +162,12 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             if ide_port in used_ide_ports:
                 raise click.ClickException(f"IDE_PORT {ide_port} 被多个项目重复使用")
             used_ide_ports.add(ide_port)
+            ide_remote = _truthy(p.get("IDE_REMOTE", "off"))
             environment.update({
-                "CODERFLEET_IDE": "on",
+                "CODERFLEET_IDE":      "on",
                 "CODERFLEET_IDE_PORT": "8080",
                 "CODERFLEET_IDE_AUTH": p.get("IDE_AUTH", "none"),
+                "CODERFLEET_IDE_BIND": "0.0.0.0" if ide_remote else "127.0.0.1",
             })
 
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
@@ -193,8 +195,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             ide_networks = {"extnet": {}}
             if acc_proxy != "off":
                 ide_networks["intnet"] = {}
-            ide_remote = _truthy(p.get("IDE_REMOTE", "off"))
-            ide_bind   = "0.0.0.0" if ide_remote else "127.0.0.1"
+            ide_bind = "0.0.0.0" if ide_remote else "127.0.0.1"
             services[ide_svc_name] = {
                 "image": ide_proxy_image,
                 "container_name": ide_ctr_name,

@@ -75,11 +75,16 @@ esac
 if [ "${CODERFLEET_IDE:-off}" = "on" ]; then
     IDE_PORT="${CODERFLEET_IDE_PORT:-8080}"
     IDE_AUTH="${CODERFLEET_IDE_AUTH:-password}"
-    echo "启动 code-server：0.0.0.0:${IDE_PORT} -> /workspace（auth=${IDE_AUTH}）"
-    code-server /workspace \
-        --bind-addr "0.0.0.0:${IDE_PORT}" \
-        --auth "${IDE_AUTH}" \
-        > /tmp/coderfleet-code-server.log 2>&1 &
+    IDE_BIND="${CODERFLEET_IDE_BIND:-127.0.0.1}"
+    # 覆写 config.yaml，防止旧配置里的 bind-addr 覆盖当前设置
+    mkdir -p /home/byclaw/.config/code-server
+    cat > /home/byclaw/.config/code-server/config.yaml << EOF
+bind-addr: ${IDE_BIND}:${IDE_PORT}
+auth: ${IDE_AUTH}
+cert: false
+EOF
+    echo "启动 code-server：${IDE_BIND}:${IDE_PORT} -> /workspace（auth=${IDE_AUTH}）"
+    code-server /workspace > /tmp/coderfleet-code-server.log 2>&1 &
 fi
 
 # ── 执行传入的命令（默认 sleep infinity）─────────────────
