@@ -80,7 +80,7 @@ async function openProject(name) {
   document.getElementById('project-list-view').style.display = 'none';
   document.getElementById('project-detail-view').style.display = '';
   document.getElementById('page-title').textContent = `项目 · ${project.name}`;
-  await loadProjectsDashboard();
+  await Promise.all([loadProjectsDashboard(), loadProjectEnvVars(name)]);
 }
 
 function backToProjects() {
@@ -193,6 +193,7 @@ async function openProjectFormModal(name) {
       document.getElementById('project-form-active').checked = project.active !== false;
       document.getElementById('project-form-ide-enabled').checked = !!project.ide_enabled;
       document.getElementById('project-form-ide-port').value = project.ide_port || '';
+      document.getElementById('project-form-ide-auth').value = project.ide_auth || 'none';
     }
   } else {
     nameInput.value = '';
@@ -201,6 +202,7 @@ async function openProjectFormModal(name) {
     document.getElementById('project-form-active').checked = true;
     document.getElementById('project-form-ide-enabled').checked = false;
     document.getElementById('project-form-ide-port').value = '';
+    document.getElementById('project-form-ide-auth').value = 'none';
   }
   toggleProjectIdePort();
 
@@ -220,6 +222,7 @@ async function saveProjectForm() {
   const ideEnabled = document.getElementById('project-form-ide-enabled').checked;
   const idePortRaw = document.getElementById('project-form-ide-port').value.trim();
   const idePort = idePortRaw ? Number(idePortRaw) : null;
+  const ideAuth = document.getElementById('project-form-ide-auth').value || 'none';
   if (!name)    { showProjectFormMsg('请填写项目名', 'error'); return; }
   if (!account) { showProjectFormMsg('请选择账号',   'error'); return; }
   if (!path)    { showProjectFormMsg('请填写路径',   'error'); return; }
@@ -237,8 +240,8 @@ async function saveProjectForm() {
       method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isEdit
-        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort }
-        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort }),
+        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth }
+        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) { showProjectFormMsg(data.detail || '保存失败', 'error'); return; }
@@ -254,7 +257,7 @@ async function saveProjectForm() {
 function toggleProjectIdePort() {
   const enabled = document.getElementById('project-form-ide-enabled')?.checked;
   const wrap = document.getElementById('project-form-ide-port-wrap');
-  if (wrap) wrap.style.display = enabled ? '' : 'none';
+  if (wrap) wrap.style.display = enabled ? 'flex' : 'none';
 }
 
 async function deleteProjectConfirm(name) {
@@ -278,5 +281,90 @@ function showProjectFormMsg(text, type) {
   el.textContent = text;
   el.className = type === 'error' ? 'inline-alert' : '';
   el.style.display = '';
+}
+
+// ── 项目环境变量 ──────────────────────────────────────────
+
+async function loadProjectEnvVars(name) {
+  try {
+    const resp = await fetch(`${API}/api/projects/${encodeURIComponent(name)}/env`).then(r => r.json());
+    renderProjectEnvRows(resp.vars || {});
+  } catch {
+    renderProjectEnvRows({});
+  }
+}
+
+function renderProjectEnvRows(vars) {
+  const container = document.getElementById('project-env-rows');
+  if (!container) return;
+  const entries = Object.entries(vars);
+  if (!entries.length) {
+    container.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:2px 0">暂无变量</div>';
+    return;
+  }
+  container.innerHTML = entries.map(([k, v]) => `
+    <div class="env-row" id="proj-env-row-${esc(k)}">
+      <span class="env-key">${esc(k)}</span>
+      <input class="env-val-input" id="proj-env-val-${esc(k)}" type="text" value="${esc(v)}" autocomplete="off" spellcheck="false">
+      <button class="btn danger" style="font-size:11px;padding:2px 8px" onclick="removeProjectEnvRow('${esc(k)}')">删除</button>
+    </div>`).join('');
+}
+
+function addProjectEnvRow() {
+  const k = document.getElementById('project-new-env-key').value.trim();
+  const v = document.getElementById('project-new-env-val').value;
+  if (!k) return;
+  const container = document.getElementById('project-env-rows');
+  const empty = container.querySelector('div[style*="color:var(--text-3)"]');
+  if (empty) empty.remove();
+  document.getElementById(`proj-env-row-${k}`)?.remove();
+  container.insertAdjacentHTML('beforeend', `
+    <div class="env-row" id="proj-env-row-${esc(k)}">
+      <span class="env-key">${esc(k)}</span>
+      <input class="env-val-input" id="proj-env-val-${esc(k)}" type="text" value="${esc(v)}" autocomplete="off" spellcheck="false">
+      <button class="btn danger" style="font-size:11px;padding:2px 8px" onclick="removeProjectEnvRow('${esc(k)}')">删除</button>
+    </div>`);
+  document.getElementById('project-new-env-key').value = '';
+  document.getElementById('project-new-env-val').value = '';
+}
+
+function removeProjectEnvRow(key) {
+  document.getElementById(`proj-env-row-${key}`)?.remove();
+  const container = document.getElementById('project-env-rows');
+  if (!container.querySelector('.env-row')) {
+    container.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:2px 0">暂无变量</div>';
+  }
+}
+
+async function saveProjectEnvVars() {
+  if (!projectContext) return;
+  const rows = document.querySelectorAll('#project-env-rows .env-row');
+  const vars = {};
+  rows.forEach(row => {
+    const key = row.id.replace('proj-env-row-', '');
+    const inp = row.querySelector('.env-val-input');
+    if (key && inp) vars[key] = inp.value;
+  });
+  try {
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(projectContext.name)}/env`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vars }),
+    });
+    const data = await r.json();
+    if (!r.ok) { showProjectEnvMsg(data.detail || '保存失败', 'error'); return; }
+    showProjectEnvMsg('已保存', 'ok');
+  } catch (e) {
+    showProjectEnvMsg(e.message, 'error');
+  }
+}
+
+function showProjectEnvMsg(text, type) {
+  const el = document.getElementById('project-env-msg');
+  if (!el) return;
+  el.textContent = text;
+  el.className = type === 'error' ? 'inline-alert' : '';
+  el.style.display = '';
+  if (type !== 'error') setTimeout(() => { el.style.display = 'none'; }, 2000);
 }
 

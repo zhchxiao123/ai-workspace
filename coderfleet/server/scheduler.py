@@ -210,6 +210,7 @@ class Scheduler:
                     active=_truthy(parts.get("ACTIVE", "on")),
                     ide_enabled=_truthy(parts.get("IDE", "off")),
                     ide_port=_parse_optional_int(parts.get("IDE_PORT", "")),
+                    ide_auth=parts.get("IDE_AUTH", "none"),
                 ))
 
         return projects
@@ -327,6 +328,50 @@ class Scheduler:
         except OSError:
             pass
 
+    def _project_env_path(self, name: str) -> Path:
+        return self.workspace_dir / "projects" / name / "env"
+
+    def get_project_env(self, name: str) -> dict[str, str]:
+        """读取项目 env 文件，返回变量字典。"""
+        if not any(p.name == name for p in self.get_projects()):
+            raise ValueError(f"项目 '{name}' 不存在")
+        env_path = self._project_env_path(name)
+        if not env_path.exists():
+            return {}
+        result: dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            result[k.strip()] = v.strip()
+        return result
+
+    def set_project_env(self, name: str, vars: dict[str, str]) -> None:
+        """合并写入项目 env 文件；value 为空字符串表示删除该变量。"""
+        if not any(p.name == name for p in self.get_projects()):
+            raise ValueError(f"项目 '{name}' 不存在")
+        env_path = self._project_env_path(name)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, str] = {}
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                existing[k.strip()] = v.strip()
+        for k, v in vars.items():
+            if v == "":
+                existing.pop(k, None)
+            else:
+                existing[k] = v
+        env_path.write_text("".join(f"{k}={v}\n" for k, v in existing.items()), encoding="utf-8")
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+
     def save_project(
         self,
         name: str,
@@ -335,11 +380,13 @@ class Scheduler:
         active: bool = True,
         ide_enabled: bool = False,
         ide_port: Optional[int] = None,
+        ide_auth: str = "none",
     ) -> Project:
         """新增或修改 projects.conf 中的项目行。"""
         path_norm = str(Path(path).expanduser())
         if not ide_enabled:
             ide_port = None
+            ide_auth = "none"
         elif ide_port is None:
             used_ports = [
                 p.ide_port
@@ -354,6 +401,8 @@ class Scheduler:
             parts.append("IDE=on")
             if ide_port is not None:
                 parts.append(f"IDE_PORT={ide_port}")
+            if ide_auth and ide_auth != "none":
+                parts.append(f"IDE_AUTH={ide_auth}")
         self._rewrite_conf(self.projects_conf, name, " ".join(parts))
         return Project(
             name=name,
@@ -362,6 +411,7 @@ class Scheduler:
             active=active,
             ide_enabled=ide_enabled,
             ide_port=ide_port,
+            ide_auth=ide_auth,
         )
 
     def delete_project(self, name: str) -> None:
@@ -1310,8 +1360,20 @@ class Scheduler:
                 images=images,
             )
 
+            project_env = {}
+            if task.project_name:
+                try:
+                    project_env = self.get_project_env(task.project_name)
+                except Exception:
+                    pass
+
+            docker_exec_args = ["docker", "exec"]
+            for k, v in project_env.items():
+                docker_exec_args += ["-e", f"{k}={v}"]
+            docker_exec_args += [container_name, "bash", "-c", cmd]
+
             proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", container_name, "bash", "-c", cmd,
+                *docker_exec_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )

@@ -97,6 +97,7 @@ class ProjectCreateRequest(BaseModel):
     active:      bool = True
     ide_enabled: bool = False
     ide_port:    Optional[int] = None
+    ide_auth:    str = "none"
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -105,6 +106,7 @@ class ProjectUpdateRequest(BaseModel):
     active:      Optional[bool] = None
     ide_enabled: Optional[bool] = None
     ide_port:    Optional[int]  = None
+    ide_auth:    Optional[str]  = None
 
 
 class BoardCreateRequest(BaseModel):
@@ -868,7 +870,7 @@ async def create_project(req: ProjectCreateRequest):
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
     try:
-        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port)
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -884,13 +886,14 @@ async def update_project(name: str, req: ProjectUpdateRequest):
     new_active  = existing.active if req.active is None else req.active
     new_ide_enabled = existing.ide_enabled if req.ide_enabled is None else req.ide_enabled
     new_ide_port = existing.ide_port if req.ide_port is None else req.ide_port
+    new_ide_auth = existing.ide_auth if req.ide_auth is None else req.ide_auth
     if not new_ide_enabled:
         new_ide_port = None
     _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
     try:
-        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port)
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -901,6 +904,24 @@ async def delete_project(name: str):
     if not any(p.name == name for p in scheduler.get_projects()):
         raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
     scheduler.delete_project(name)
+
+
+@app.get("/api/projects/{name}/env")
+async def get_project_env(name: str):
+    try:
+        raw = scheduler.get_project_env(name)
+        return {"vars": raw}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.put("/api/projects/{name}/env", status_code=200)
+async def set_project_env(name: str, req: EnvVarsRequest):
+    try:
+        scheduler.set_project_env(name, req.vars)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── 系统运维 ──────────────────────────────────────────────

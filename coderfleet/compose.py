@@ -165,11 +165,21 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             environment.update({
                 "CODERFLEET_IDE": "on",
                 "CODERFLEET_IDE_PORT": "8080",
-                "CODERFLEET_IDE_AUTH": "none",
+                "CODERFLEET_IDE_AUTH": p.get("IDE_AUTH", "none"),
             })
 
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
             svc["env_file"] = [acc_env_file]
+
+        # 项目级环境变量：覆盖到 environment（优先级高于账号级）
+        project_env_file = ws / "projects" / pname / "env"
+        if project_env_file.exists():
+            for line in project_env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                environment[k.strip()] = v.strip()
 
         if acc_proxy != "off":
             needs_relay = True

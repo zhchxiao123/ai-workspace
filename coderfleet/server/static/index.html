@@ -362,8 +362,24 @@
               <button class="btn primary" onclick="submitForCurrentProject()">开启新对话</button>
             </div>
             <div class="project-detail">
-              <div class="card project-side" id="project-detail-summary">
-                <div class="empty">加载中...</div>
+              <div style="display:flex;flex-direction:column;gap:16px">
+                <div class="card project-side" id="project-detail-summary">
+                  <div class="empty">加载中...</div>
+                </div>
+                <div class="card project-side" id="project-env-card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
+                  <div style="font-weight:600;font-size:13px;color:var(--text-2)">环境变量</div>
+                  <div style="font-size:11px;color:var(--text-3)">通过 docker exec -e 注入，无需重启容器</div>
+                  <div id="project-env-rows"><div style="color:var(--text-3);font-size:12px;padding:2px 0">暂无变量</div></div>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <input id="project-new-env-key" class="form-input" placeholder="变量名" style="flex:1.4;font-size:12px" autocomplete="off">
+                    <input id="project-new-env-val" class="form-input" type="text" placeholder="值" style="flex:1;font-size:12px" autocomplete="off" spellcheck="false">
+                    <button class="btn" style="font-size:11px;white-space:nowrap" onclick="addProjectEnvRow()">+ 添加</button>
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <button class="btn primary" style="font-size:12px" onclick="saveProjectEnvVars()">保存</button>
+                    <div id="project-env-msg" style="display:none;font-size:12px"></div>
+                  </div>
+                </div>
               </div>
               <div class="project-main">
                 <div class="ide-card" id="project-ide-card">
@@ -856,9 +872,18 @@
           <input id="project-form-ide-enabled" type="checkbox" onchange="toggleProjectIdePort()">
           <span>启用浏览器 IDE（code-server）</span>
         </label>
-        <div class="form-group" id="project-form-ide-port-wrap" style="display:none">
-          <label class="form-label">IDE 端口 <span style="color:var(--text-3);font-size:11px">（留空随机分配空闲端口）</span></label>
-          <input id="project-form-ide-port" class="form-input" type="number" min="1024" max="65535" placeholder="自动随机分配" autocomplete="off">
+        <div id="project-form-ide-port-wrap" style="display:none;flex-direction:column;gap:12px">
+          <div class="form-group">
+            <label class="form-label">IDE 端口 <span style="color:var(--text-3);font-size:11px">（留空随机分配空闲端口）</span></label>
+            <input id="project-form-ide-port" class="form-input" type="number" min="1024" max="65535" placeholder="自动随机分配" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label">IDE 认证</label>
+            <select id="project-form-ide-auth" class="form-input">
+              <option value="none">none（无密码）</option>
+              <option value="password">password（密码保护）</option>
+            </select>
+          </div>
         </div>
         <div id="project-form-msg" style="display:none"></div>
         <button id="project-form-btn" class="btn primary" onclick="saveProjectForm()">保存</button>
