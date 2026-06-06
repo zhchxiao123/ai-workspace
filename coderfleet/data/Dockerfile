@@ -159,9 +159,13 @@ RUN playwright install-deps chromium \
 # 4. Node.js Playwright（复用 PLAYWRIGHT_BROWSERS_PATH，无需重新下载浏览器）
 RUN npm install -g playwright
 
-# ── 创建非特权用户 byclaw ─────────────────────────────────
-RUN groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw \
-    && chown -R byclaw:byclaw /opt/hermes-venv
+# ── 创建非特权用户 byclaw（含 sudo 免密）─────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends sudo \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r byclaw && useradd -r -g byclaw -m -s /bin/bash byclaw \
+    && chown -R byclaw:byclaw /opt/hermes-venv \
+    && echo 'byclaw ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/byclaw \
+    && chmod 440 /etc/sudoers.d/byclaw
 
 # ── 工作目录和环境变量 ────────────────────────────────────
 RUN mkdir -p /workspace && chown byclaw:byclaw /workspace
