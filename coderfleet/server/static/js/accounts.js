@@ -102,6 +102,7 @@ function renderAccounts(accounts) {
   <div class="account-footer">
     <button class="btn" style="font-size:12px" onclick="filterTasksByAccount('${esc(a.name)}');event.stopPropagation()">查看任务</button>
     <button class="btn" style="font-size:12px" onclick="openAccount('${esc(a.name)}');event.stopPropagation()">管理账号</button>
+    <button class="btn" style="font-size:12px" onclick="openCloneAccountModal('${esc(a.name)}');event.stopPropagation()">复制</button>
   </div>
 </div>`;
   }).join('');
@@ -408,6 +409,43 @@ function showMarketInstallMsg(text, type) {
   el.textContent = text;
   el.className = type === 'error' ? 'inline-alert mt-16' : 'mt-16';
   el.style.display = '';
+}
+
+// ── 复制账号 ──────────────────────────────────────────────
+function openCloneAccountModal(sourceName) {
+  const source = (globalAccountsCache || []).find(a => a.name === sourceName);
+  if (!source) return;
+  const newName = prompt(`复制账号「${sourceName}」\n请输入新账号名：`, `${sourceName}_copy`);
+  if (!newName || !newName.trim()) return;
+  cloneAccount(source, newName.trim());
+}
+
+async function cloneAccount(source, newName) {
+  try {
+    const [createResp, envResp] = await Promise.all([
+      fetch(`${API}/api/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, type: source.type, auth: source.auth, proxy: source.proxy }),
+      }),
+      fetch(`${API}/api/accounts/${encodeURIComponent(source.name)}/env`).then(r => r.json()).catch(() => ({ vars: {} })),
+    ]);
+    const data = await createResp.json();
+    if (!createResp.ok) { alert(data.detail || '复制失败'); return; }
+
+    const vars = envResp.vars || {};
+    if (Object.keys(vars).length) {
+      await fetch(`${API}/api/accounts/${encodeURIComponent(newName)}/env`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vars }),
+      });
+    }
+
+    await loadAccounts();
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
 // ── 新建账号 ──────────────────────────────────────────────
