@@ -50,7 +50,7 @@ http://localhost:8765
 
 ### 账号
 
-展示账号类型、容器状态、忙碌状态和相关资源。支持 Codex、Claude Code、OpenCode、Hermes Agent、Grok Build 全部类型。
+展示账号类型、容器状态、忙碌状态和相关资源。支持 Codex、Claude Code、OpenCode、Hermes Agent、Grok Build、Kimi Code 全部类型。
 
 ## API 文档
 

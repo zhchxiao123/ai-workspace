@@ -69,6 +69,14 @@ case "$ACCOUNT_TYPE" in
             echo "Hermes 环境变量认证：已启用"
         fi
         ;;
+    kimi)
+        KIMI_DIR="${KIMI_CODE_HOME:-/home/byclaw/.kimi-code}"
+        mkdir -p "$KIMI_DIR"
+        echo "Kimi Code 数据目录：$KIMI_DIR"
+        if [ "${CODERFLEET_ACCOUNT_AUTH:-login}" = "env" ]; then
+            echo "Kimi Code 环境变量模型认证：已启用"
+        fi
+        ;;
 esac
 
 # ── 可选启动 code-server（浏览器内 VS Code）────────────────

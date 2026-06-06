@@ -10,6 +10,7 @@ INDEX_HTML = STATIC_DIR / "index.html"
 MOBILE_HTML = STATIC_DIR / "mobile.html"
 PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
 MAIN_PY = ROOT / "coderfleet" / "server" / "main.py"
+RENDERER_CSS = STATIC_DIR / "css" / "renderer.css"
 
 
 def read_index() -> str:
@@ -26,6 +27,10 @@ def read_projects_js() -> str:
 
 def read_main_py() -> str:
     return MAIN_PY.read_text(encoding="utf-8")
+
+
+def read_renderer_css() -> str:
+    return RENDERER_CSS.read_text(encoding="utf-8")
 
 
 def read_ui_source() -> str:
@@ -461,6 +466,16 @@ def test_mobile_chat_supports_image_uploads_and_attachments() -> None:
     assert "user-image-attachments" in source
     assert "请查看附件图片。" in source
     assert "shared/image-upload.js" in source  # 移动端已引入共享
+
+
+def test_mobile_renders_cf_send_download_cards() -> None:
+    source = read_mobile()
+    renderer_css = read_renderer_css()
+
+    assert "new ChatLogRenderer(wrap, false, true, task.project_name || null)" in source
+    assert "new ChatLogRenderer(wrap, true, true, task.project_name || null)" in source
+    assert ".cf-download-card" in renderer_css
+    assert ".cf-dl-btn" in renderer_css
 
 
 def test_mobile_running_chat_hydrates_history_before_streaming() -> None:

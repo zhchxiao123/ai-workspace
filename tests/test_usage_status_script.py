@@ -8,7 +8,7 @@ from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "coderfleet_usage_status.py"
-DOCKERFILE = ROOT / "Dockerfile"
+DOCKERFILE = ROOT / "coderfleet" / "data" / "Dockerfile"
 
 
 def load_usage_status_module() -> ModuleType:
@@ -30,6 +30,14 @@ def test_dockerfile_installs_usage_status_helper() -> None:
     assert "pexpect" in dockerfile
     assert "coderfleet_usage_status.py" in dockerfile
     assert "/usr/local/bin/coderfleet-usage-status" in dockerfile
+
+
+def test_dockerfile_installs_kimi_code_cli() -> None:
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "KIMI_CODE_VERSION" in dockerfile
+    assert "https://code.kimi.com/kimi-code/install.sh" in dockerfile
+    assert "/usr/local/bin/kimi" in dockerfile
 
 
 def test_extract_codex_usage_summary_from_status_box() -> None:

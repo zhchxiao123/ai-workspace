@@ -1151,6 +1151,37 @@
       background: var(--bg);
     }
 
+    .terminal-card {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--log-bg);
+      overflow: hidden;
+      min-height: 320px;
+    }
+
+    .terminal-toolbar {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--log-line);
+      background: var(--log-panel);
+    }
+
+    .project-terminal-mount {
+      flex: 1;
+      min-height: 278px;
+      padding: 8px;
+    }
+
+    .project-terminal-mount .xterm {
+      height: 100%;
+    }
+
     .top-terminal-btn.active {
       color: var(--accent);
       border-color: color-mix(in srgb, var(--accent) 35%, var(--border));

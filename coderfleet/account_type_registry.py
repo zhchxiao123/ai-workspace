@@ -119,6 +119,16 @@ def _build_grok(prompt, auto, task_id, marker, task_env, session_id, images):
     )
 
 
+def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images):
+    p = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
+    ep = shlex.quote(p)
+    sess = f" --session {shlex.quote(session_id)}" if session_id else ""
+    return (
+        f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
+        f"kimi{sess} -p {ep} --output-format stream-json"
+    )
+
+
 # ── per-type session ID extractors ────────────────────────────
 
 def _extract_claude(text):
@@ -196,6 +206,22 @@ def _extract_grok(text):
         if d.get("type") == "end" and d.get("sessionId"):
             return str(d["sessionId"])
     return ""
+
+
+def _extract_kimi(text):
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("{"):
+            continue
+        try:
+            d = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        if d.get("role") == "meta" and d.get("type") == "session.resume_hint":
+            if d.get("session_id"):
+                return str(d["session_id"])
+    m = re.search(r"To resume this session:\s+kimi\s+-r\s+(\S+)", text)
+    return m.group(1) if m else ""
 
 
 # ── AccountTypeSpec ───────────────────────────────────────────
@@ -295,6 +321,26 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="#0f1923", badge_color="#38bdf8",
         build_inner_cmd=_build_grok,
         extract_session_id=_extract_grok,
+    ),
+    "kimi": AccountTypeSpec(
+        id="kimi", label="Kimi Code",
+        auth_dir="/home/byclaw/.kimi-code",
+        login_cli="kimi", login_args=["login"],
+        supports_env_auth=True,
+        env_vars={
+            "KIMI_CODE_HOME":           "/home/byclaw/.kimi-code",
+            "KIMI_CODE_NO_AUTO_UPDATE": "1",
+            "KIMI_DISABLE_TELEMETRY":   "1",
+        },
+        env_hint=(
+            "请在 env 文件中配置 KIMI_MODEL_* 环境变量\n"
+            "示例：KIMI_MODEL_NAME=kimi-for-coding\n"
+            "示例：KIMI_MODEL_API_KEY=sk-...\n"
+            "可选：KIMI_MODEL_BASE_URL=https://api.moonshot.ai/v1"
+        ),
+        badge_bg="#101820", badge_color="#7dd3fc",
+        build_inner_cmd=_build_kimi,
+        extract_session_id=_extract_kimi,
     ),
 }
 

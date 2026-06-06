@@ -86,6 +86,7 @@ async function openProject(name) {
 function backToProjects() {
   const frame = document.getElementById('project-ide-frame');
   if (frame) frame.src = 'about:blank';
+  disconnectProjectTerminal();
   projectContext = null;
   document.getElementById('project-detail-view').style.display = 'none';
   document.getElementById('project-list-view').style.display = '';
@@ -370,4 +371,3 @@ function showProjectEnvMsg(text, type) {
   el.style.display = '';
   if (type !== 'error') setTimeout(() => { el.style.display = 'none'; }, 2000);
 }
-

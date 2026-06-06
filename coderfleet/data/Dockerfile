@@ -101,6 +101,21 @@ RUN set -eux; \
     fi; \
     rm -rf "$grok_home" /tmp/grok-install.sh
 
+# ── Kimi Code CLI ────────────────────────────────────────
+# Use the official native binary installer instead of npm because this image
+# currently carries Node.js 20 while @moonshot-ai/kimi-code requires newer Node.
+ARG KIMI_CODE_VERSION=0.11.0
+RUN set -eux; \
+    curl -fsSL https://code.kimi.com/kimi-code/install.sh -o /tmp/kimi-code-install.sh; \
+    KIMI_VERSION="${KIMI_CODE_VERSION}" \
+    KIMI_INSTALL_DIR=/opt/kimi-code \
+    KIMI_NO_MODIFY_PATH=1 \
+    bash /tmp/kimi-code-install.sh; \
+    ln -sf /opt/kimi-code/bin/kimi /usr/local/bin/kimi; \
+    chmod -R a+rx /opt/kimi-code; \
+    kimi --version; \
+    rm -f /tmp/kimi-code-install.sh
+
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \

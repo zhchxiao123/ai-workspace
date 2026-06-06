@@ -59,6 +59,23 @@ XAI_API_KEY=xai-...
 
 API key 在 [console.x.ai](https://console.x.ai/) 获取。无需执行 `coderfleet login`。
 
+## Kimi Code 账号如何配置？
+
+Kimi Code 支持网页登录：
+
+```bash
+coderfleet account add my-kimi TYPE=kimi
+coderfleet login my-kimi
+```
+
+也支持 `AUTH=env`，但新版 Kimi Code 需要使用 `KIMI_MODEL_*` 环境变量：
+
+```env
+KIMI_MODEL_NAME=kimi-for-coding
+KIMI_MODEL_API_KEY=sk-...
+KIMI_MODEL_BASE_URL=https://api.moonshot.ai/v1
+```
+
 ## macOS 系统托盘怎么安装？
 
 ```bash

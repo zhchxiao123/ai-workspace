@@ -265,10 +265,24 @@
     .pill-fail { background: rgba(220,38,38,.18); color: #f87171; }
 
     /* ── Chat bubbles ───────────────────────────────────── */
+    .chat-body-wrap {
+      flex: 1; position: relative; min-height: 0; overflow: hidden;
+    }
     .chat-body {
-      flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+      height: 100%; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
       padding: 14px 14px 8px;
       display: flex; flex-direction: column; gap: 22px;
+    }
+    .mobile-scroll-to-bottom {
+      position: absolute; bottom: 14px; right: 16px; z-index: 20;
+      display: none; align-items: center; gap: 5px;
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 20px;
+      padding: 8px 14px 8px 10px;
+      font-size: 13px; font-family: inherit;
+      cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+      -webkit-tap-highlight-color: transparent;
+      white-space: nowrap;
     }
     /* 顶部弹性占位：消息少时把消息推到底部（类 iMessage 布局） */
     .chat-top-spacer {
@@ -734,12 +748,18 @@
     </div>
   </div>
 
-  <div class="chat-body" id="chat-body">
-    <div class="chat-top-spacer" id="chat-top-spacer" style="display:none"></div>
-    <div class="empty-hint" id="chat-empty">
-      <div class="ei">🤖</div>
-      <div>发送消息，开始对话</div>
+  <div class="chat-body-wrap">
+    <div class="chat-body" id="chat-body">
+      <div class="chat-top-spacer" id="chat-top-spacer" style="display:none"></div>
+      <div class="empty-hint" id="chat-empty">
+        <div class="ei">🤖</div>
+        <div>发送消息，开始对话</div>
+      </div>
     </div>
+    <button id="mobile-scroll-to-bottom" class="mobile-scroll-to-bottom" onclick="mobileScrollToBottom()" title="跳到底部">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      跳到底部
+    </button>
   </div>
 
   <div class="input-bar">
@@ -862,6 +882,7 @@ let tasks     = [];
 let activeConv    = null;   // Conversation object (ongoing chat)
 let pendingProj   = null;   // Project selected for new chat (before first send)
 let liveStream    = null;   // Active EventSource
+let mobileUserScrolledUp = false;
 const PROJECT_VISIBLE_LIMIT = 5;
 const expandedProjects = new Set();
 const collapsedProjects = new Set();
@@ -1381,7 +1402,11 @@ function syncMessages(scrollEnd) {
     if (!ct.find(t => `mp-${t.id}` === el.id)) el.remove();
   });
 
-  if (scrollEnd) body.scrollTop = body.scrollHeight;
+  if (scrollEnd) {
+    mobileUserScrolledUp = false;
+    _mobileUpdateScrollBtn(false);
+    body.scrollTop = body.scrollHeight;
+  }
 }
 
 function makeMsgPair(task) {
@@ -1418,27 +1443,51 @@ async function loadAiContent(task) {
     return;
   }
   if (task.status === 'pending') {
-    const renderer = new ChatLogRenderer(wrap, false, true);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
     renderer.renderPending();
     return;
   }
   if (task.status === 'scheduled') {
-    const renderer = new ChatLogRenderer(wrap, false, true);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
     renderer.renderScheduled(task.execute_at);
     return;
   }
 
   try {
     const txt = await fetch(`/api/tasks/${task.id}/logs`).then(r => r.text());
-    const renderer = new ChatLogRenderer(wrap, false, true);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
     renderer.render(stripAnsi(txt), task.type);
   } catch { wrap.textContent = '加载失败'; }
+}
+
+function _mobileUpdateScrollBtn(show) {
+  const btn = document.getElementById('mobile-scroll-to-bottom');
+  if (btn) btn.style.display = show ? 'flex' : 'none';
+}
+
+function mobileScrollToBottom() {
+  mobileUserScrolledUp = false;
+  _mobileUpdateScrollBtn(false);
+  const body = document.getElementById('chat-body');
+  if (body) body.scrollTop = body.scrollHeight;
+}
+
+function bindMobileChatScroll() {
+  mobileUserScrolledUp = false;
+  _mobileUpdateScrollBtn(false);
+  const body = document.getElementById('chat-body');
+  if (!body) return;
+  body.onscroll = function () {
+    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 80;
+    mobileUserScrolledUp = !atBottom;
+    _mobileUpdateScrollBtn(mobileUserScrolledUp);
+  };
 }
 
 async function streamAiContent(task, wrap) {
   const id = task.id;
   if (liveStream) { liveStream.close(); liveStream = null; }
-  const renderer = new ChatLogRenderer(wrap, true, true);
+  const renderer = new ChatLogRenderer(wrap, true, true, task.project_name || null);
   let skipBytes = 0;
   try {
     const txt = await fetch(`/api/tasks/${id}/logs`).then(r => r.ok ? r.text() : '');
@@ -1459,7 +1508,7 @@ async function streamAiContent(task, wrap) {
   es.onmessage = e => {
     if (e.data === '[DONE]') { es.close(); liveStream = null; bgRefresh(); return; }
     renderer.push(stripAnsi(e.data));
-    body.scrollTop = body.scrollHeight;
+    if (!mobileUserScrolledUp) body.scrollTop = body.scrollHeight;
   };
   es.onerror = () => {
     es.close(); liveStream = null;
@@ -1917,6 +1966,7 @@ function toggleMobileProjPin() {
 // ── Navigation ────────────────────────────────────────────
 function showChat() {
   document.getElementById('v-chat').classList.remove('slide-out');
+  bindMobileChatScroll();
 }
 
 function backToList() {

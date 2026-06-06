@@ -44,7 +44,7 @@ accounts/
 coderfleet build
 ```
 
-镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code、OpenCode、Hermes Agent 和 Grok Build。
+镜像包含 Ubuntu、Python、Node.js、Rust、Codex CLI、Claude Code、OpenCode、Hermes Agent、Grok Build 和 Kimi Code。
 
 ## 4. 添加账号与项目
 
@@ -60,9 +60,12 @@ coderfleet account add bob TYPE=claude
 coderfleet account add carol TYPE=opencode
 coderfleet account add dave TYPE=hermes
 coderfleet account add eve TYPE=grok --auth env   # Grok 只支持 API key
+coderfleet account add frank TYPE=kimi
 ```
 
 Grok Build 账号需要在 `~/.coderfleet/accounts/eve/env` 中配置 `XAI_API_KEY=xai-...`，无需执行 login。
+
+Kimi Code 账号可以使用 `coderfleet login frank` 完成 OAuth 登录；也可以用 `TYPE=kimi --auth env`，在 env 文件里配置 `KIMI_MODEL_NAME` 和 `KIMI_MODEL_API_KEY`。
 
 ## 5. 应用配置并登录
 

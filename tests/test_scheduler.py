@@ -143,6 +143,40 @@ def test_build_cli_command_uses_headless_opencode_run() -> None:
     assert "opencode run --format json --dangerously-skip-permissions --session ses_123 --file /workspace/a.png" in auto_command
 
 
+def test_build_cli_command_uses_headless_kimi_prompt() -> None:
+    command = Scheduler.build_cli_command(
+        AccountType.kimi,
+        "fix tests",
+        auto=False,
+        task_id="task-kimi",
+    )
+    resume_command = Scheduler.build_cli_command(
+        AccountType.kimi,
+        "continue fixes",
+        auto=True,
+        task_id="task-kimi-2",
+        native_session_id="ses_abc123",
+    )
+
+    _assert_detached_command(command, "task-kimi")
+    assert "kimi -p" in command
+    assert "fix tests" in command
+    assert "--output-format stream-json" in command
+    assert "--session" not in command
+    assert "kimi --session ses_abc123 -p" in resume_command
+    assert "continue fixes" in resume_command
+    assert "--output-format stream-json" in resume_command
+
+
+def test_extract_native_session_id_from_kimi_resume_hint() -> None:
+    text = '\n'.join([
+        '{"role":"assistant","content":"done"}',
+        '{"role":"meta","type":"session.resume_hint","session_id":"ses_kimi_123","command":"kimi -r ses_kimi_123"}',
+    ])
+
+    assert Scheduler.extract_native_session_id(AccountType.kimi, text) == "ses_kimi_123"
+
+
 def test_build_usage_status_command_for_codex() -> None:
     command = Scheduler.build_usage_status_command(AccountType.codex)
 

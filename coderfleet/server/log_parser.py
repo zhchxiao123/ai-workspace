@@ -32,11 +32,11 @@ def parse_log(log_text: str, acc_type: str = "claude") -> TaskOutputData:
     Parse a completed task log, returning text output and token usage.
 
     acc_type should match AccountType.value (e.g. "claude", "codex", "opencode",
-    "hermes", "grok").  Defaults to "claude" for unknown types.
+    "hermes", "grok", "kimi").  Defaults to "claude" for unknown types.
     """
     result = TaskOutputData()
 
-    if acc_type in ("claude", "codex", "opencode", "grok"):
+    if acc_type in ("claude", "codex", "opencode", "grok", "kimi"):
         _parse_jsonl_log(log_text, result, acc_type)
 
     # Fallback / supplement: plain-text extraction when JSONL gave no text
@@ -75,6 +75,8 @@ def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> No
             _parse_opencode_line(d, t, text_chunks, result)
         elif acc_type == "grok":
             _parse_grok_line(d, t, text_chunks, result)
+        elif acc_type == "kimi":
+            _parse_kimi_line(d, text_chunks)
 
     if not result.text and text_chunks:
         result.text = "".join(text_chunks).strip()
@@ -155,6 +157,18 @@ def _parse_grok_line(
         if isinstance(usage, dict):
             result.tokens_input = int(usage.get("input_tokens", 0))
             result.tokens_output = int(usage.get("output_tokens", 0))
+
+
+def _parse_kimi_line(d: dict, chunks: list[str]) -> None:
+    if d.get("role") != "assistant":
+        return
+    content = d.get("content", "")
+    if isinstance(content, str):
+        chunks.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                chunks.append(str(block.get("text", "")))
 
 
 # ── plain-text fallback ───────────────────────────────────────────────────────

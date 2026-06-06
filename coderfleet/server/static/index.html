@@ -392,6 +392,19 @@
                   </div>
                   <iframe id="project-ide-frame" class="ide-frame" title="项目 IDE" src="about:blank"></iframe>
                 </div>
+                <div class="terminal-card">
+                  <div class="terminal-toolbar">
+                    <div class="terminal-status">
+                      <span class="status-dot killed" id="project-terminal-dot">未连接</span>
+                      <span class="terminal-status-text" id="project-terminal-status">连接项目容器终端</span>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                      <button class="btn" id="project-terminal-reconnect" type="button" onclick="openProjectTerminal()">连接</button>
+                      <button class="btn" type="button" onclick="disconnectProjectTerminal()">断开</button>
+                    </div>
+                  </div>
+                  <div id="project-terminal" class="project-terminal-mount"></div>
+                </div>
               </div>
             </div>
           </div>

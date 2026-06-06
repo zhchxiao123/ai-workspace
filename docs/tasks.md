@@ -20,6 +20,8 @@ coderfleet task run "在 auth.py 中添加 JWT 生成逻辑" --project app-a
 | `claude` | `claude -p --output-format stream-json` |
 | `opencode` | `opencode run --format json` |
 | `hermes` | `hermes chat -q` |
+| `grok` | `grok -p --output-format streaming-json` |
+| `kimi` | `kimi -p --output-format stream-json` |
 
 开启全自动模式：
 
@@ -27,7 +29,7 @@ coderfleet task run "在 auth.py 中添加 JWT 生成逻辑" --project app-a
 coderfleet task run "运行并修复所有 lint 错误" --project app-a --auto
 ```
 
-`--auto` 会映射到各 CLI 的非交互执行能力。对 Hermes Agent 来说，CoderFleet 会使用 `--yolo`，并在容器启动时关闭 Hermes 的交互式审批提示。
+`--auto` 会映射到各 CLI 的非交互执行能力。对 Hermes Agent 来说，CoderFleet 会使用 `--yolo`，并在容器启动时关闭 Hermes 的交互式审批提示。Kimi Code 的 `-p` 非交互模式会自动使用无人值守权限策略，因此 Kimi 后台任务始终按无人值守方式执行。
 
 ## 任务链
 
@@ -43,7 +45,7 @@ coderfleet task run "开始实现支付接口" --project app-a --new-chain 支�
 coderfleet task run "增加退款支持" --conversation <任务链ID>
 ```
 
-任务链会保存各 CLI 返回的原生会话 ID。Hermes Agent 的日志里会输出 `Session: <id>`，CoderFleet 会捕获该 ID 并在续接任务时传给 `hermes --resume <id> chat -q`。
+任务链会保存各 CLI 返回的原生会话 ID。Hermes Agent 的日志里会输出 `Session: <id>`，CoderFleet 会捕获该 ID 并在续接任务时传给 `hermes --resume <id> chat -q`。Kimi Code 会在 `stream-json` 输出中写入 `session.resume_hint`，CoderFleet 会捕获其中的 `session_id` 并在续接任务时传给 `kimi --session <id> -p`。
 
 ## 查看任务
 

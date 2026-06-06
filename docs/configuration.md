@@ -34,8 +34,10 @@ NAME=bob TYPE=claude
 NAME=carol TYPE=opencode
 NAME=dave TYPE=hermes
 NAME=eve TYPE=grok AUTH=env
+NAME=frank TYPE=kimi
 NAME=claude-api TYPE=claude AUTH=env ENV_FILE=./accounts/claude-api/env
 NAME=hermes-api TYPE=hermes AUTH=env ENV_FILE=./accounts/hermes-api/env
+NAME=kimi-api TYPE=kimi AUTH=env ENV_FILE=./accounts/kimi-api/env
 NAME=local TYPE=claude PROXY=off
 ```
 
@@ -44,8 +46,8 @@ NAME=local TYPE=claude PROXY=off
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `NAME` | 是 | 账号名 |
-| `TYPE` | 是 | `codex`、`claude`、`opencode`、`hermes` 或 `grok` |
-| `AUTH` | 否 | `login` 或 `env`。`env` 适用于 `claude`、`opencode`、`hermes` 和 `grok`；`grok` 仅支持 `env` |
+| `TYPE` | 是 | `codex`、`claude`、`opencode`、`hermes`、`grok` 或 `kimi` |
+| `AUTH` | 否 | `login` 或 `env`。`env` 适用于 `claude`、`opencode`、`hermes`、`grok` 和 `kimi`；`grok` 仅支持 `env` |
 | `ENV_FILE` | 否 | env 文件路径，默认 `./accounts/<账号名>/env` |
 | `PROXY` | 否 | `relay` 或 `off` |
 
@@ -55,6 +57,15 @@ NAME=local TYPE=claude PROXY=off
 | --- | --- |
 | `hermes` | `HERMES_HOME=/home/byclaw/.hermes` |
 | `grok` | `GROK_HOME=/home/byclaw/.grok`、`GROK_NO_AUTO_UPDATE=1` |
+| `kimi` | `KIMI_CODE_HOME=/home/byclaw/.kimi-code`、`KIMI_CODE_NO_AUTO_UPDATE=1`、`KIMI_DISABLE_TELEMETRY=1` |
+
+Kimi Code 使用 `AUTH=env` 时需要配置 `KIMI_MODEL_*`：
+
+```env
+KIMI_MODEL_NAME=kimi-for-coding
+KIMI_MODEL_API_KEY=sk-...
+KIMI_MODEL_BASE_URL=https://api.moonshot.ai/v1
+```
 
 ## projects.conf
 

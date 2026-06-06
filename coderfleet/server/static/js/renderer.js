@@ -246,6 +246,7 @@ class ChatLogRenderer {
   _processLine(line) {
     if (this.accountType === 'hermes') { this._hermesLine(line); return; }
     if (this.accountType === 'grok')   { this._grokLine(line);   return; }
+    if (this.accountType === 'kimi')   { this._kimiLine(line);   return; }
     if (!line.startsWith('{')) { this._rawLine(line); return; }
     let d;
     try { d = JSON.parse(line); } catch { this._rawLine(line); return; }
@@ -404,6 +405,40 @@ class ChatLogRenderer {
 
   _codexEnd(d) {
     if (!this._footerRendered) this._renderFooter(d.result ? 'done' : 'failed');
+  }
+
+  // ── Kimi Code ──────────────────────────────────────────────
+  _kimiLine(line) {
+    if (!line.startsWith('{')) return;
+    let d;
+    try { d = JSON.parse(line); } catch { this._rawLine(line); return; }
+
+    if (d.role === 'assistant') {
+      if (d.content?.trim()) this._bubble(d.content);
+      for (const tc of (d.tool_calls || [])) {
+        const fn = tc.function || {};
+        let input = fn.arguments || {};
+        if (typeof input === 'string') {
+          try { input = JSON.parse(input); } catch { input = { arguments: input }; }
+        }
+        this._toolUse({
+          id: tc.id || ('kimi-' + Math.random().toString(36).slice(2, 8)),
+          name: fn.name || 'tool',
+          input,
+        });
+      }
+      return;
+    }
+
+    if (d.role === 'tool') {
+      this._fillTool(d.tool_call_id, d.content || '', false);
+      return;
+    }
+
+    if (d.role === 'meta' && d.type === 'session.resume_hint') {
+      const sid = d.session_id ? String(d.session_id).slice(0, 12) : '';
+      this._pill('Kimi 会话', sid ? `#${sid}` : '');
+    }
   }
 
   _codexItemStarted(item) {

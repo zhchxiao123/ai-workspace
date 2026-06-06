@@ -1,6 +1,6 @@
 # 自定义镜像
 
-CoderFleet 的默认镜像定义随包提供，`coderfleet build` 会使用它构建本地工作镜像。镜像内预装 Codex CLI、Claude Code、OpenCode 和 Hermes Agent。
+CoderFleet 的默认镜像定义随包提供，`coderfleet build` 会使用它构建本地工作镜像。镜像内预装 Codex CLI、Claude Code、OpenCode、Hermes Agent、Grok Build 和 Kimi Code。
 
 Hermes Agent 安装在独立虚拟环境：
 
@@ -9,6 +9,8 @@ Hermes Agent 安装在独立虚拟环境：
 ```
 
 并通过 `/usr/local/bin/hermes` 暴露命令。镜像还包含 `ripgrep` 以及常见 LLM provider SDK，用于支持 Hermes 的代码检索和 provider 调用。
+
+Kimi Code 通过官方原生二进制安装脚本安装到 `/opt/kimi-code`，并通过 `/usr/local/bin/kimi` 暴露命令。
 
 如果需要增加项目依赖或开发工具，可以在自定义镜像流程中追加系统包或语言工具，然后重新构建。
 

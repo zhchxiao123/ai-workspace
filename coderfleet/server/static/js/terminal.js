@@ -2,6 +2,152 @@ function terminalWsUrl(projectName) {
   return wsUrl(`${API}/api/projects/${encodeURIComponent(projectName)}/terminal`);
 }
 
+function createProjectTerminalContext() {
+  return {
+    projectName: '',
+    socket: null,
+    terminal: null,
+    fitAddon: null,
+    connected: false,
+    resizeTimer: null,
+    lastState: 'closed',
+  };
+}
+
+let terminalContext = createProjectTerminalContext();
+
+function setProjectTerminalStatus(state, message) {
+  terminalContext.lastState = state;
+  const dot = document.getElementById('project-terminal-dot');
+  const text = document.getElementById('project-terminal-status');
+  if (dot) {
+    dot.className = `status-dot ${state === 'connected' ? 'running' : state === 'error' ? 'failed' : 'killed'}`;
+    dot.textContent = state === 'connected' ? '已连接' : state === 'error' ? '错误' : '未连接';
+  }
+  if (text) text.textContent = message || '';
+}
+
+function ensureProjectTerminalMounted() {
+  const mount = document.getElementById('project-terminal');
+  if (!mount || !window.Terminal || !window.FitAddon) return false;
+  if (terminalContext.terminal) return true;
+  mount.innerHTML = '';
+  const { terminal, fitAddon } = createEnhancedTerminal(mount);
+  terminalContext.terminal = terminal;
+  terminalContext.fitAddon = fitAddon;
+  terminal.onData(data => {
+    const socket = terminalContext.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+  resizeProjectTerminal();
+  return true;
+}
+
+function openProjectTerminal(projectName = '') {
+  connectProjectTerminal(projectName || projectContext?.name || '');
+}
+
+function connectProjectTerminal(projectName) {
+  if (!projectName) {
+    setProjectTerminalStatus('closed', '请选择项目后连接终端');
+    return;
+  }
+  if (terminalContext.projectName === projectName && terminalContext.socket &&
+      (terminalContext.socket.readyState === WebSocket.OPEN || terminalContext.socket.readyState === WebSocket.CONNECTING)) {
+    resizeProjectTerminal();
+    terminalContext.terminal?.focus();
+    return;
+  }
+  disconnectProjectTerminal({ dispose: false });
+  terminalContext.projectName = projectName;
+  if (!ensureProjectTerminalMounted()) {
+    setProjectTerminalStatus('error', '终端资源未加载，请刷新页面后重试');
+    return;
+  }
+
+  setProjectTerminalStatus('closed', '正在连接项目容器...');
+  terminalContext.terminal.clear();
+  terminalContext.terminal.writeln(`Connecting to ${projectName}...`);
+
+  const socket = new WebSocket(terminalWsUrl(projectName));
+  terminalContext.socket = socket;
+  socket.addEventListener('open', () => {
+    if (terminalContext.socket !== socket) return;
+    terminalContext.connected = true;
+    setProjectTerminalStatus('connected', `已连接 ${projectName}`);
+    resizeProjectTerminal();
+    terminalContext.terminal?.focus();
+  });
+  socket.addEventListener('message', event => {
+    if (terminalContext.socket !== socket) return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === 'output') {
+      terminalContext.terminal.write(String(message.data || ''));
+    } else if (message.type === 'status') {
+      terminalContext.connected = message.state === 'connected';
+      setProjectTerminalStatus(message.state, message.message || '');
+      if (message.state === 'error') {
+        terminalContext.terminal.writeln(`\r\n${message.message || '连接失败'}`);
+      }
+    }
+  });
+  socket.addEventListener('close', () => {
+    if (terminalContext.socket !== socket) return;
+    terminalContext.connected = false;
+    if (terminalContext.lastState !== 'error') {
+      setProjectTerminalStatus('closed', '终端连接已关闭');
+    }
+  });
+  socket.addEventListener('error', () => {
+    if (terminalContext.socket !== socket) return;
+    terminalContext.connected = false;
+    setProjectTerminalStatus('error', '终端连接失败');
+  });
+}
+
+function resizeProjectTerminal() {
+  if (!terminalContext.terminal || !terminalContext.fitAddon) return;
+  clearTimeout(terminalContext.resizeTimer);
+  terminalContext.resizeTimer = setTimeout(() => {
+    try {
+      terminalContext.fitAddon.fit();
+      const socket = terminalContext.socket;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'resize',
+          cols: terminalContext.terminal.cols,
+          rows: terminalContext.terminal.rows,
+        }));
+      }
+    } catch {}
+  }, 30);
+}
+
+function disconnectProjectTerminal(options = {}) {
+  const { dispose = true } = options;
+  const socket = terminalContext.socket;
+  terminalContext.socket = null;
+  terminalContext.connected = false;
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    socket.close();
+  }
+  if (dispose && terminalContext.terminal) {
+    terminalContext.terminal.dispose();
+    terminalContext.terminal = null;
+    terminalContext.fitAddon = null;
+    const mount = document.getElementById('project-terminal');
+    if (mount) mount.innerHTML = '';
+  }
+  clearTimeout(terminalContext.resizeTimer);
+  setProjectTerminalStatus('closed', '终端连接已关闭');
+}
+
+window.addEventListener('beforeunload', disconnectProjectTerminal);
+window.addEventListener('resize', resizeProjectTerminal);
+
 // ── 顶部多任务链 Tab 系统 ─────────────────────────────────
 // taskBelongsToProject 来自 shared/project-utils.js（全局）
 let topbarTabs = [{ id: 'chat', kind: 'chat-home', label: 'AI 对话', closable: false }];

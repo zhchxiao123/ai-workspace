@@ -20,16 +20,17 @@
 
 | 命令 | 说明 |
 | --- | --- |
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok\|kimi` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号配置 |
 | `coderfleet account list` | 查看账号列表 |
 | `coderfleet login <账号名\|all>` | 登录账号（`AUTH=env` 账号自动跳过） |
 
-`--auth env` 适用于 `claude`、`opencode`、`hermes` 和 `grok`：
+`--auth env` 适用于 `claude`、`opencode`、`hermes`、`grok` 和 `kimi`：
 
 ```bash
 coderfleet account add grok-api TYPE=grok --auth env
 coderfleet account add hermes-api TYPE=hermes --auth env
+coderfleet account add kimi-api TYPE=kimi --auth env
 ```
 
 ## 项目

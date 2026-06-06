@@ -1,6 +1,6 @@
 # CoderFleet
 
-> 把多个 Codex CLI / Claude Code / OpenCode / Hermes Agent / Grok Build 账号变成一支可调度的 AI 开发舰队。
+> 把多个 Codex CLI / Claude Code / OpenCode / Hermes Agent / Grok Build / Kimi Code 账号变成一支可调度的 AI 开发舰队。
 
 CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作台。
 
@@ -8,14 +8,14 @@ CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作�
 
 ## 适合谁？
 
-- 同时使用多个 Codex / Claude Code / OpenCode / Grok Build 账号的开发者
+- 同时使用多个 Codex / Claude Code / OpenCode / Grok Build / Kimi Code 账号的开发者
 - 经常遇到单账号额度限制的 AI 编程重度用户
 - 希望多个 AI Agent 并行处理任务的独立开发者
 - 需要本地容器隔离、代理隔离和账号隔离的用户
 
 ## 核心能力
 
-- 多账号管理：Codex / Claude Code / OpenCode / Hermes Agent / Grok Build
+- 多账号管理：Codex / Claude Code / OpenCode / Hermes Agent / Grok Build / Kimi Code
 - 每个账号独立容器隔离
 - 每个项目可绑定不同账号
 - Web 控制台提交任务和查看日志
@@ -131,6 +131,7 @@ coderfleet build
 - OpenCode（`opencode-ai`）
 - Hermes Agent（安装在 `/opt/hermes-venv`）
 - Grok Build（`grok` CLI，需 `XAI_API_KEY`）
+- Kimi Code（`kimi` CLI）
 
 ### 3. 添加账号与项目
 
@@ -155,6 +156,12 @@ coderfleet project add app-d dave ~/projects/app-d
 coderfleet account add eve TYPE=grok --auth env
 coderfleet project add app-e eve ~/projects/app-e
 # 编辑 ~/.coderfleet/accounts/eve/env，填入 XAI_API_KEY=xai-...
+
+# Kimi Code 账号
+coderfleet account add frank TYPE=kimi
+coderfleet project add app-f frank ~/projects/app-f
+# 或使用环境变量模型：coderfleet account add kimi-api TYPE=kimi --auth env
+# 编辑 env 文件，填入 KIMI_MODEL_NAME / KIMI_MODEL_API_KEY 等
 ```
 
 ### 4. 生成配置并启动容器
@@ -184,6 +191,7 @@ coderfleet enter app-b   # 进入 app-b 项目容器（使用 Claude Code 账号
 coderfleet enter app-c   # 进入 app-c 项目容器（使用 OpenCode 账号 carol）
 coderfleet enter app-d   # 进入 app-d 项目容器（使用 Hermes Agent 账号 dave）
 coderfleet enter app-e   # 进入 app-e 项目容器（使用 Grok Build 账号 eve）
+coderfleet enter app-f   # 进入 app-f 项目容器（使用 Kimi Code 账号 frank）
 ```
 
 进入后使用对应 CLI：
@@ -203,6 +211,11 @@ hermes chat -q "帮我分析这个项目"
 
 # Grok Build 容器内
 grok -p "帮我实现支付接口" --output-format streaming-json
+
+# Kimi Code 容器内
+kimi
+# 或单次非交互执行：
+kimi -p "帮我分析这个项目"
 ```
 
 ### 7. 启动调度服务与 Web 控制台
@@ -327,7 +340,7 @@ coderfleet server --stop
 
 | 命令 | 说明 |
 |------|------|
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok\|kimi [--auth env] [--env-file 路径] [--proxy relay\|off]` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号（自动停止关联容器） |
 | `coderfleet account list` | 列出所有账号及运行状态 |
 | `coderfleet login <账号名\|all>` | 登录账号并持久化认证文件 |
@@ -400,15 +413,17 @@ RELAY_IMAGE=gogost/gost:3
 ### accounts.conf
 
 ```conf
-# 格式：NAME=<名称>  TYPE=codex|claude|opencode|hermes|grok  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
+# 格式：NAME=<名称>  TYPE=codex|claude|opencode|hermes|grok|kimi  [AUTH=login|env] [ENV_FILE=路径] [PROXY=relay|off]
 NAME=alice       TYPE=codex
 NAME=bob         TYPE=claude
 NAME=carol       TYPE=opencode
 NAME=dave        TYPE=hermes
 NAME=eve         TYPE=grok     AUTH=env
+NAME=frank       TYPE=kimi
 NAME=claude-api  TYPE=claude   AUTH=env  ENV_FILE=./accounts/claude-api/env
 NAME=opencode-api TYPE=opencode AUTH=env ENV_FILE=./accounts/opencode-api/env
 NAME=hermes-api  TYPE=hermes   AUTH=env  ENV_FILE=./accounts/hermes-api/env
+NAME=kimi-api    TYPE=kimi     AUTH=env  ENV_FILE=./accounts/kimi-api/env
 NAME=local       TYPE=claude   PROXY=off
 ```
 
@@ -417,8 +432,8 @@ NAME=local       TYPE=claude   PROXY=off
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `NAME` | 是 | 账号名，只允许字母/数字/连字符 |
-| `TYPE` | 是 | `codex` / `claude` / `opencode` / `hermes` / `grok` |
-| `AUTH` | 否 | 认证方式，默认 `login`；`claude` / `opencode` / `hermes` / `grok` 可用 `env` 通过 API Key 认证 |
+| `TYPE` | 是 | `codex` / `claude` / `opencode` / `hermes` / `grok` / `kimi` |
+| `AUTH` | 否 | 认证方式，默认 `login`；`claude` / `opencode` / `hermes` / `grok` / `kimi` 可用 `env` |
 | `ENV_FILE` | 否 | Docker Compose env_file 路径；`AUTH=env` 时省略则默认 `./accounts/<名称>/env` |
 | `PROXY` | 否 | 默认 `relay`（走代理中继）；`off` 表示不注入代理变量 |
 
@@ -430,6 +445,11 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Grok Build
 XAI_API_KEY=xai-...
+
+# Kimi Code（新版不直接读取 KIMI_API_KEY，需使用 KIMI_MODEL_*）
+KIMI_MODEL_NAME=kimi-for-coding
+KIMI_MODEL_API_KEY=sk-...
+KIMI_MODEL_BASE_URL=https://api.moonshot.ai/v1
 ```
 
 > `login all` 会自动跳过所有 `AUTH=env` 账号。Grok Build 仅支持 `AUTH=env`，无需执行 `login`。
@@ -486,6 +506,7 @@ coderfleet check-proxy
 | OpenCode | `/home/byclaw/.opencode` | `login` 或 `env`（provider API key） |
 | Hermes Agent | `/home/byclaw/.hermes` | `login` 或 `env`（provider API key） |
 | Grok Build | `/home/byclaw/.grok` | `env` 仅（`XAI_API_KEY`） |
+| Kimi Code | `/home/byclaw/.kimi-code` | `login`（OAuth）或 `env`（`KIMI_MODEL_*`） |
 
 每个账号的认证数据独立存储，容器删除重建后无需重新登录。
 

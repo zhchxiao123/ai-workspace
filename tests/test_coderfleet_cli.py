@@ -94,6 +94,30 @@ def test_apply_mounts_opencode_auth_dir(tmp_path: Path) -> None:
     assert "- ./accounts/api-opencode/env" in compose
 
 
+def test_apply_mounts_kimi_auth_dir(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-kimi TYPE=kimi AUTH=env ENV_FILE=./accounts/api-kimi/env\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-kimi PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "kimi-project-repo:" in compose
+    assert "container_name: kimi-repo" in compose
+    assert "./accounts/api-kimi:/home/byclaw/.kimi-code" in compose
+    assert "KIMI_CODE_HOME: /home/byclaw/.kimi-code" in compose
+    assert "KIMI_CODE_NO_AUTO_UPDATE: '1'" in compose
+    assert "KIMI_DISABLE_TELEMETRY: '1'" in compose
+    assert "- ./accounts/api-kimi/env" in compose
+
+
 def test_apply_enables_project_ide(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
     (workspace / "accounts.conf").write_text(
@@ -278,3 +302,27 @@ def test_account_add_accepts_opencode_env_account(tmp_path: Path) -> None:
     accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
     assert "TYPE=opencode" in accounts_conf
     assert "ENV_FILE=./accounts/api-opencode/env" in accounts_conf
+
+
+def test_account_add_accepts_kimi_env_account(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "account",
+        "add",
+        "api-kimi",
+        "TYPE=kimi",
+        "--auth",
+        "env",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "TYPE=kimi" in accounts_conf
+    assert "ENV_FILE=./accounts/api-kimi/env" in accounts_conf
+    assert "KIMI_MODEL_NAME" in result.stdout
+    assert "KIMI_MODEL_API_KEY" in result.stdout
