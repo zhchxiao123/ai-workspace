@@ -744,6 +744,106 @@ class MarketplaceInstallRequest(BaseModel):
     slug:   str    # target slug for the installed skill
 
 
+# ── 定时计划 ───────────────────────────────────────────────
+
+class ScheduleType(str, Enum):
+    daily  = "daily"    # 每天 HH:MM
+    weekly = "weekly"   # 每周指定星期 HH:MM
+    hourly = "hourly"   # 每小时 :MM
+
+
+class Schedule(BaseModel):
+    id:              str
+    name:            str
+    prompt:          str
+    project_name:    str
+    schedule_type:   ScheduleType
+    time_of_day:     Optional[str] = None    # "HH:MM" for daily/weekly
+    days_of_week:    list[int] = Field(default_factory=list)  # 0=Mon..6=Sun
+    minute_of_hour:  Optional[int] = None    # 0-59 for hourly
+    enabled:         bool = True
+    auto:            bool = False
+    account:         Optional[str] = None
+    next_run_at:     Optional[str] = None
+    last_run_at:     Optional[str] = None
+    last_task_id:    str = ""
+    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, schedules_dir: Path) -> None:
+        schedules_dir.mkdir(parents=True, exist_ok=True)
+        path = schedules_dir / f"{self.id}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "Schedule":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def load_all(cls, schedules_dir: Path) -> list["Schedule"]:
+        if not schedules_dir.exists():
+            return []
+        result = []
+        for p in sorted(schedules_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                result.append(cls.load(p))
+            except Exception:
+                pass
+        return result
+
+
+class ScheduleResponse(BaseModel):
+    id:             str
+    name:           str
+    prompt:         str
+    project_name:   str
+    schedule_type:  ScheduleType
+    time_of_day:    Optional[str] = None
+    days_of_week:   list[int] = []
+    minute_of_hour: Optional[int] = None
+    enabled:        bool
+    auto:           bool
+    account:        Optional[str] = None
+    next_run_at:    Optional[str] = None
+    last_run_at:    Optional[str] = None
+    last_task_id:   str = ""
+    created:        str
+    updated:        str
+
+    @classmethod
+    def from_schedule(cls, s: "Schedule") -> "ScheduleResponse":
+        return cls(**s.model_dump())
+
+
+class ScheduleCreateRequest(BaseModel):
+    name:           str
+    prompt:         str
+    project_name:   str
+    schedule_type:  ScheduleType
+    time_of_day:    Optional[str] = None
+    days_of_week:   list[int] = []
+    minute_of_hour: Optional[int] = None
+    enabled:        bool = True
+    auto:           bool = False
+    account:        Optional[str] = None
+
+
+class ScheduleUpdateRequest(BaseModel):
+    name:           Optional[str] = None
+    prompt:         Optional[str] = None
+    project_name:   Optional[str] = None
+    schedule_type:  Optional[ScheduleType] = None
+    time_of_day:    Optional[str] = None
+    days_of_week:   Optional[list[int]] = None
+    minute_of_hour: Optional[int] = None
+    enabled:        Optional[bool] = None
+    auto:           Optional[bool] = None
+    account:        Optional[str] = None
+
+
 # ══════════════════════════════════════════════════════════════
 #  工作流 v2 模型（完整修改计划 - Phase 1 引入）
 #  目标：引入真正的一等公民 WorkflowRun + 节点状态机

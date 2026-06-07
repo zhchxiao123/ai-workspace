@@ -765,8 +765,8 @@
   <div class="input-bar">
     <div class="image-preview-row" id="image-previews" style="display:none"></div>
     <div class="input-row">
-      <input type="file" id="image-file" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
-      <button class="upload-btn" type="button" title="选择图片" onclick="document.getElementById('image-file').click()">
+      <input type="file" id="image-file" multiple style="display:none" onchange="handleFileSelect(this)">
+      <button class="upload-btn" type="button" title="选择文件" onclick="document.getElementById('image-file').click()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
           <rect x="3" y="3" width="18" height="18" rx="2"/>
           <circle cx="8.5" cy="8.5" r="1.5"/>
@@ -1704,7 +1704,7 @@ async function retryMobileTask(taskId) {
   }
 }
 
-async function handleImageSelect(input) {
+async function handleFileSelect(input) {
   const files = Array.from(input.files || []);
   input.value = '';
   if (files.length) await uploadImages(files);
@@ -1712,7 +1712,7 @@ async function handleImageSelect(input) {
 
 async function handlePaste(event) {
   const files = Array.from(event.clipboardData?.items || [])
-    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+    .filter(item => item.kind === 'file')
     .map(item => item.getAsFile())
     .filter(Boolean);
   if (!files.length) return;
@@ -1721,9 +1721,9 @@ async function handlePaste(event) {
 }
 
 async function uploadImages(files, fromPaste = false) {
-  if (typeof uploadImagesForCompose === 'function') {
-    // Phase 2: 复用共享的 uploadImagesForCompose（消除与 chat.js 的重复 wrapper）
-    await uploadImagesForCompose(files, fromPaste, {
+  if (typeof uploadFilesForCompose === 'function') {
+    // Phase 2: 复用共享的 uploadFilesForCompose（消除与 chat.js 的重复 wrapper）
+    await uploadFilesForCompose(files, fromPaste, {
       getProjectName: () => currentUploadProjectName(),
       onItemUploaded: (item) => {
         if (!Array.isArray(pendingImages)) pendingImages = [];
@@ -1740,8 +1740,8 @@ async function uploadImages(files, fromPaste = false) {
     return;
   }
 
-  if (typeof uploadImagesGeneric !== 'function') {
-    alert('图片上传组件未就绪，请刷新页面后重试');
+  if (typeof uploadFilesGeneric !== 'function') {
+    alert('文件上传组件未就绪，请刷新页面后重试');
     return;
   }
 
@@ -1751,7 +1751,7 @@ async function uploadImages(files, fromPaste = false) {
     return;
   }
 
-  await uploadImagesGeneric(projectName, files, fromPaste, {
+  await uploadFilesGeneric(projectName, files, fromPaste, {
     onFileUploaded: (item) => {
       if (!Array.isArray(pendingImages)) pendingImages = [];
       pendingImages.push(item);
@@ -1766,7 +1766,7 @@ async function uploadImages(files, fromPaste = false) {
   });
 }
 
-// normalizeImageFileForUpload / uploadImagesGeneric 由 shared/image-upload.js 提供
+// normalizeFileForUpload / uploadFilesGeneric 由 shared/image-upload.js 提供
 
 // Phase 2 去重：使用共享的 renderPendingPreviews（mobile 配置）
 function renderImagePreviews() {
@@ -1825,8 +1825,8 @@ function currentUploadProjectName() {
 
 function renderTaskImages(task) {
   // 由 shared/image-upload.js 提供（脚本加载顺序保证调用时已就绪）
-  if (window.renderTaskImageAttachments) {
-    return window.renderTaskImageAttachments(task, currentUploadProjectName());
+  if (window.renderTaskFileAttachments) {
+    return window.renderTaskFileAttachments(task, currentUploadProjectName());
   }
   return '';
 }

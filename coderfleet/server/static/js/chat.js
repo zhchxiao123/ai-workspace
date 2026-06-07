@@ -821,7 +821,7 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
         <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
       </div>
       <div class="user-bubble-content">${esc(task.prompt)}</div>
-      ${renderTaskImageAttachments(task, currentChatProjectName)}
+      ${renderTaskFileAttachments(task, currentChatProjectName)}
     </div>`;
       chatContent.appendChild(userWrap);
 
@@ -892,7 +892,7 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
         <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
       </div>
       <div class="user-bubble-content">${esc(promptText)}</div>
-      ${renderTaskImageAttachments({ images: snapshotPaths, project_name: currentChatProjectName }, currentChatProjectName)}
+      ${renderTaskFileAttachments({ images: snapshotPaths, project_name: currentChatProjectName }, currentChatProjectName)}
     </div>`;
   chatContent.appendChild(userWrap);
 
@@ -1238,8 +1238,8 @@ function buildChatInputHTML(placeholder, hint) {
     <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>
     <div class="chat-input-actions">
       <div class="chat-input-options">
-        <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none" onchange="handleImageSelect(this)">
-        <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加图片，或直接粘贴截图">${attachIcon}</button>
+        <input type="file" id="chat-file-input" multiple style="display:none" onchange="handleFileSelect(this)">
+        <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加文件，或直接粘贴截图">${attachIcon}</button>
         <label class="toggle-row" style="cursor: pointer;">
           <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
         </label>
@@ -1269,33 +1269,33 @@ function toggleSchedTimeInput(checked) {
   }
 }
 
-async function handleImageSelect(input) {
+async function handleFileSelect(input) {
   const files = Array.from(input.files);
   input.value = '';
   if (!files.length) return;
-  await uploadChatImages(files);
+  await uploadChatFiles(files);
 }
 
 async function handleChatPaste(event) {
   const items = Array.from(event.clipboardData?.items || []);
   const files = items
-    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+    .filter(item => item.kind === 'file')
     .map(item => item.getAsFile())
     .filter(Boolean);
 
   if (!files.length) return;
   event.preventDefault();
-  await uploadChatImages(files, true);
+  await uploadChatFiles(files, true);
 }
 
-async function uploadChatImages(files, fromPaste = false) {
+async function uploadChatFiles(files, fromPaste = false) {
   if (!currentChatProjectName) {
-    alert('请先从左侧选择项目后再上传图片');
+    alert('请先从左侧选择项目后再上传文件');
     return;
   }
 
-  // Phase 2: 复用共享的 uploadImagesForCompose（消除与 mobile 的重复 wrapper）
-  await uploadImagesForCompose(files, fromPaste, {
+  // Phase 2: 复用共享的 uploadFilesForCompose（消除与 mobile 的重复 wrapper）
+  await uploadFilesForCompose(files, fromPaste, {
     getProjectName: () => currentChatProjectName,
     onItemUploaded: (item) => {
       if (!Array.isArray(pendingImages)) pendingImages = [];
@@ -1311,7 +1311,7 @@ async function uploadChatImages(files, fromPaste = false) {
   });
 }
 
-// normalizeImageFileForUpload 已迁移至 shared/image-upload.js（全局可用）
+// normalizeFileForUpload 已迁移至 shared/image-upload.js（全局可用）
 
 function updateChatUploadState() {
   const sendBtn = document.getElementById('chat-send-btn');
@@ -1345,7 +1345,7 @@ function renderImagePreviews() {
 // removePendingImage / clearPendingImages 由 shared 提供（全局）
 // 它们会自动回退调用 renderImagePreviews（window 上已存在）
 
-// renderTaskImageAttachments 由 shared/image-upload.js 提供（全局可用）
+// renderTaskFileAttachments 由 shared/image-upload.js 提供（全局可用）
 
 // ── 最近访问区 ────────────────────────────────────────────
 
@@ -1564,4 +1564,4 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Enter') { e.preventDefault(); selectQuickJumpItem(quickJumpSelectedIdx); return; }
 });
-// 直接调用即可，此处无需再定义包装函数（否则会覆盖 window.renderTaskImageAttachments，导致无限递归）
+// 直接调用即可，此处无需再定义包装函数（否则会覆盖 window.renderTaskFileAttachments，导致无限递归）

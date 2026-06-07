@@ -1,12 +1,20 @@
 // ══════════════════════════════════════════════════════════════
-//  图片上传共享逻辑（desktop chat + mobile 共用）
+//  文件上传共享逻辑（desktop chat + mobile 共用）
 //  目标：网络上传循环 + 文件规范化 + 历史渲染 不再重复
 // ══════════════════════════════════════════════════════════════
 
+function _isImageMime(type) {
+  return typeof type === 'string' && type.startsWith('image/');
+}
+
+function _isImagePath(path) {
+  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|avif)$/i.test(path || '');
+}
+
 /**
- * 规范化无扩展名的图片文件（paste 场景常见）
+ * 规范化无扩展名的文件（paste 场景常见）
  */
-function normalizeImageFileForUpload(file, fromPaste = false) {
+function normalizeFileForUpload(file, fromPaste = false) {
   const name = file.name || '';
   if (/\.[a-z0-9]+$/i.test(name)) return file;
 
@@ -17,9 +25,9 @@ function normalizeImageFileForUpload(file, fromPaste = false) {
     'image/webp': 'webp',
     'image/bmp': 'bmp',
   };
-  const ext = extByType[file.type] || 'png';
-  const prefix = fromPaste ? 'pasted-image' : 'upload-image';
-  return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || `image/${ext}` });
+  const ext = extByType[file.type] || (file.type ? file.type.split('/').pop() : 'bin');
+  const prefix = fromPaste ? 'pasted-file' : 'upload-file';
+  return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || '' });
 }
 
 /**
@@ -34,8 +42,8 @@ function normalizeImageFileForUpload(file, fromPaste = false) {
  *   - onProgressChange(uploadingCount)
  *   - getApiBase() => string   // 通常返回 API 常量
  */
-async function uploadImagesGeneric(projectName, files, fromPaste, callbacks = {}) {
-  const imageFiles = files.filter(f => f.type && f.type.startsWith('image/'));
+async function uploadFilesGeneric(projectName, files, fromPaste, callbacks = {}) {
+  const imageFiles = files.filter(f => f instanceof File || f instanceof Blob);
   if (!imageFiles.length || !projectName) return;
 
   const {
@@ -52,7 +60,7 @@ async function uploadImagesGeneric(projectName, files, fromPaste, callbacks = {}
 
   for (const file of imageFiles) {
     try {
-      const uploadFile = normalizeImageFileForUpload(file, fromPaste);
+      const uploadFile = normalizeFileForUpload(file, fromPaste);
       const fd = new FormData();
       fd.append('file', uploadFile);
 
@@ -69,7 +77,7 @@ async function uploadImagesGeneric(projectName, files, fromPaste, callbacks = {}
         name: data.filename,
       });
     } catch (e) {
-      onError(`上传图片失败: ${e.message || e}`);
+      onError(`上传文件失败: ${e.message || e}`);
     } finally {
       uploading -= 1;
       onProgressChange(uploading);
@@ -80,7 +88,7 @@ async function uploadImagesGeneric(projectName, files, fromPaste, callbacks = {}
 /**
  * 渲染任务/消息中已上传图片的缩略图 HTML（桌面和移动历史区共用）
  */
-function renderTaskImageAttachments(task, fallbackProjectName = '') {
+function renderTaskFileAttachments(task, fallbackProjectName = '') {
   const images = task.images || [];
   if (!images.length) return '';
 
@@ -92,7 +100,11 @@ function renderTaskImageAttachments(task, fallbackProjectName = '') {
     const src = (typeof sseUrl === 'function')
       ? sseUrl(`${(typeof API !== 'undefined' ? API : '')}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`)
       : `/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`;
-    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${esc ? esc(filename) : filename}"><img src="${src}" alt="${esc ? esc(filename) : filename}"></a>`;
+    const safeName = esc ? esc(filename) : filename;
+    const inner = _isImagePath(filename)
+      ? `<img src="${src}" alt="${safeName}">`
+      : `<span class="file-attach-name">${safeName}</span>`;
+    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${safeName}">${inner}</a>`;
   }).join('');
 
   return `<div class="user-image-attachments">${thumbs}</div>`;
@@ -139,11 +151,14 @@ function renderPendingPreviews(config = {}) {
     return;
   }
   container.style.display = 'flex';
-  container.innerHTML = imgs.map((img, i) => `
-    <div class="${thumbClass}" title="${escFn(img.name)}">
-      <img src="${getSseUrl(`${getApi()}${img.preview_url}`)}" alt="${escFn(img.name)}">
-      <button class="${removeClass}" type="button" onclick="removePendingImage(${i})" title="移除">×</button>
-    </div>`).join('');
+  container.innerHTML = imgs.map((img, i) => {
+    const safeName = escFn(img.name);
+    const src = getSseUrl(`${getApi()}${img.preview_url}`);
+    const inner = _isImagePath(img.name)
+      ? `<img src="${src}" alt="${safeName}">`
+      : `<span class="file-attach-name">${safeName}</span>`;
+    return `<div class="${thumbClass}" title="${safeName}">${inner}<button class="${removeClass}" type="button" onclick="removePendingImage(${i})" title="移除">×</button></div>`;
+  }).join('');
   afterRender();
 }
 
@@ -183,7 +198,7 @@ function clearPendingImages() {
  * 通用「为当前对话/任务 compose 区上传图片」的高层封装
  * 各端（desktop/mobile）只需传入少量适配器即可复用完整流程。
  */
-async function uploadImagesForCompose(files, fromPaste = false, adapters = {}) {
+async function uploadFilesForCompose(files, fromPaste = false, adapters = {}) {
   const {
     getProjectName = () => '',
     onItemUploaded = (item) => {
@@ -197,11 +212,11 @@ async function uploadImagesForCompose(files, fromPaste = false, adapters = {}) {
 
   const projectName = getProjectName();
   if (!projectName) {
-    onError('请先选择项目后再上传图片');
+    onError('请先选择项目后再上传文件');
     return;
   }
 
-  await uploadImagesGeneric(projectName, files, fromPaste, {
+  await uploadFilesGeneric(projectName, files, fromPaste, {
     onFileUploaded: onItemUploaded,
     onError,
     onProgressChange,
@@ -211,11 +226,11 @@ async function uploadImagesForCompose(files, fromPaste = false, adapters = {}) {
 
 // 全局暴露（含 Phase 2 新增）
 if (typeof window !== 'undefined') {
-  window.normalizeImageFileForUpload = normalizeImageFileForUpload;
-  window.uploadImagesGeneric = uploadImagesGeneric;
-  window.renderTaskImageAttachments = renderTaskImageAttachments;
+  window.normalizeFileForUpload = normalizeFileForUpload;
+  window.uploadFilesGeneric = uploadFilesGeneric;
+  window.renderTaskFileAttachments = renderTaskFileAttachments;
   window.renderPendingPreviews = renderPendingPreviews;
   window.removePendingImage = removePendingImage;
   window.clearPendingImages = clearPendingImages;
-  window.uploadImagesForCompose = uploadImagesForCompose;
+  window.uploadFilesForCompose = uploadFilesForCompose;
 }

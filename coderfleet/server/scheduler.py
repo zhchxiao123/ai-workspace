@@ -16,7 +16,8 @@ import random
 import re
 import shlex
 import subprocess
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,8 @@ from coderfleet.server.models import (
     Pipeline,
     PipelineNodeRun,
     Project,
+    Schedule,
+    ScheduleType,
     Task,
     TaskStatus,
     TemplateNode,
@@ -69,6 +72,7 @@ class Scheduler:
         self.pipelines_dir  = workspace_dir / "pipelines"
         self.templates_dir  = workspace_dir / "workflow_templates"
         self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
+        self.schedules_dir  = workspace_dir / "schedules"
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
@@ -588,6 +592,112 @@ class Scheduler:
     def get_log_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id}.log"
 
+    # ── 定时计划管理 ──────────────────────────────────────
+
+    def new_schedule_id(self) -> str:
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        return f"sched-{ts}-{uuid.uuid4().hex[:4]}"
+
+    def list_schedules(self) -> list[Schedule]:
+        return Schedule.load_all(self.schedules_dir)
+
+    def get_schedule(self, sched_id: str) -> Optional[Schedule]:
+        p = self.schedules_dir / f"{sched_id}.json"
+        if not p.exists():
+            return None
+        return Schedule.load(p)
+
+    def create_schedule(self, sched: Schedule) -> Schedule:
+        sched.next_run_at = self._compute_next_run_at(sched)
+        sched.save(self.schedules_dir)
+        return sched
+
+    def update_schedule(self, sched_id: str, updates: dict) -> Optional[Schedule]:
+        sched = self.get_schedule(sched_id)
+        if sched is None:
+            return None
+        for k, v in updates.items():
+            if hasattr(sched, k):
+                setattr(sched, k, v)
+        sched.updated = datetime.now().isoformat(timespec="seconds")
+        sched.next_run_at = self._compute_next_run_at(sched)
+        sched.save(self.schedules_dir)
+        return sched
+
+    def delete_schedule(self, sched_id: str) -> bool:
+        p = self.schedules_dir / f"{sched_id}.json"
+        if not p.exists():
+            return False
+        p.unlink()
+        return True
+
+    def _compute_next_run_at(self, sched: Schedule) -> Optional[str]:
+        if not sched.enabled:
+            return None
+        now = datetime.now()
+
+        if sched.schedule_type == ScheduleType.daily:
+            if not sched.time_of_day:
+                return None
+            h, m = map(int, sched.time_of_day.split(":"))
+            candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(days=1)
+            return candidate.isoformat(timespec="seconds")
+
+        elif sched.schedule_type == ScheduleType.weekly:
+            if not sched.time_of_day or not sched.days_of_week:
+                return None
+            h, m = map(int, sched.time_of_day.split(":"))
+            for delta in range(7):
+                candidate = (now + timedelta(days=delta)).replace(hour=h, minute=m, second=0, microsecond=0)
+                if candidate > now and candidate.weekday() in sched.days_of_week:
+                    return candidate.isoformat(timespec="seconds")
+            return None
+
+        elif sched.schedule_type == ScheduleType.hourly:
+            minute = sched.minute_of_hour if sched.minute_of_hour is not None else 0
+            candidate = now.replace(minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                candidate += timedelta(hours=1)
+            return candidate.isoformat(timespec="seconds")
+
+        return None
+
+    async def _check_and_trigger_schedules(self) -> None:
+        now = datetime.now()
+        for sched in self.list_schedules():
+            if not sched.enabled:
+                continue
+            if not sched.next_run_at:
+                sched.next_run_at = self._compute_next_run_at(sched)
+                sched.save(self.schedules_dir)
+                continue
+            try:
+                dt = datetime.fromisoformat(sched.next_run_at)
+            except Exception:
+                continue
+            if now >= dt:
+                await self._trigger_schedule(sched)
+
+    async def _trigger_schedule(self, sched: Schedule) -> None:
+        try:
+            task = await self.submit(
+                prompt=sched.prompt,
+                project_name=sched.project_name,
+                auto=sched.auto,
+                account_name=sched.account,
+            )
+            sched.last_run_at = datetime.now().isoformat(timespec="seconds")
+            sched.last_task_id = task.id
+            sched.next_run_at = self._compute_next_run_at(sched)
+            sched.updated = datetime.now().isoformat(timespec="seconds")
+            sched.save(self.schedules_dir)
+        except Exception as e:
+            import traceback
+            print(f"Error triggering schedule {sched.id}: {e}")
+            traceback.print_exc()
+
     @staticmethod
     def new_conversation_id() -> str:
         ts   = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -865,6 +975,7 @@ class Scheduler:
     async def _schedule_pending_tasks_loop(self) -> None:
         while True:
             try:
+                await self._check_and_trigger_schedules()
                 await self.schedule_next_tasks()
             except Exception as e:
                 import traceback

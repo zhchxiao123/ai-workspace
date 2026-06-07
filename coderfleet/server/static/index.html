@@ -85,6 +85,13 @@
           </svg>
           <span class="sidebar-label">账号</span>
         </div>
+        <div class="nav-item" data-page="schedules" onclick="showPage('schedules')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 6v6l4 2"/>
+          </svg>
+          <span class="sidebar-label">定时计划</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <div class="flex gap-8 text-sm text-muted">
@@ -545,6 +552,20 @@
           </div>
         </div>
 
+        <!-- 定时计划页 -->
+        <div class="page" id="page-schedules">
+          <div class="section-head">
+            <div>
+              <div class="section-title">定时计划</div>
+              <div class="section-subtitle">自动在指定时间重复执行任务，支持每天、每周、每小时三种频率</div>
+            </div>
+            <button class="btn primary" style="font-size:12px" onclick="openScheduleEditor()">+ 新建计划</button>
+          </div>
+          <div class="account-grid" id="schedules-grid">
+            <div class="empty">加载中...</div>
+          </div>
+        </div>
+
       </div>
 
     </div>
@@ -945,6 +966,7 @@
   <script src="/static/js/log.js?v=20260527h"></script>
   <script src="/static/js/workflows.js?v=20260527"></script>
   <script src="/static/js/app.js?v=20260526a"></script>
+  <script src="/static/js/schedules.js?v=20260607"></script>
   <script src="/static/js/pwa.js?v=20260602"></script>
   <script>
     if ('serviceWorker' in navigator) {

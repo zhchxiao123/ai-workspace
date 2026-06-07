@@ -49,6 +49,11 @@ from coderfleet.server.models import (
     Pipeline,
     PipelineResponse,
     ProjectResponse,
+    Schedule,
+    ScheduleCreateRequest,
+    ScheduleResponse,
+    ScheduleType,
+    ScheduleUpdateRequest,
     Skill,
     SkillUpsertRequest,
     Task,
@@ -972,25 +977,21 @@ async def system_apply():
     return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
 
 
-# ── 图片上传 ──────────────────────────────────────────────
-
-_ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+# ── 文件上传 ──────────────────────────────────────────────
 
 
 @app.post("/api/uploads")
-async def upload_image(
+async def upload_file(
     file: UploadFile = File(...),
     project_name: str = Query(..., description="项目名称"),
 ):
-    """上传图片到项目工作目录，返回容器内可访问的路径。"""
+    """上传文件到项目工作目录，返回容器内可访问的路径。"""
     project = scheduler.find_project_by_name(project_name)
     if project is None:
         raise HTTPException(status_code=404, detail=f"项目 '{project_name}' 不存在")
 
     original_name = file.filename or "upload"
     ext = Path(original_name).suffix.lower()
-    if ext not in _ALLOWED_IMAGE_EXTS:
-        raise HTTPException(status_code=400, detail=f"不支持的图片格式：{ext}")
 
     upload_dir = Path(project.path) / ".coderfleet-uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -1568,6 +1569,84 @@ async def delete_pipeline(pipeline_id: str):
         scheduler.delete_pipeline(pipeline_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════
+#  定时计划 CRUD
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/schedules", response_model=list[ScheduleResponse])
+async def list_schedules():
+    return [ScheduleResponse.from_schedule(s) for s in scheduler.list_schedules()]
+
+
+@app.post("/api/schedules", response_model=ScheduleResponse, status_code=201)
+async def create_schedule(req: ScheduleCreateRequest):
+    sched = Schedule(
+        id            = scheduler.new_schedule_id(),
+        name          = req.name,
+        prompt        = req.prompt,
+        project_name  = req.project_name,
+        schedule_type = req.schedule_type,
+        time_of_day   = req.time_of_day,
+        days_of_week  = req.days_of_week,
+        minute_of_hour= req.minute_of_hour,
+        enabled       = req.enabled,
+        auto          = req.auto,
+        account       = req.account,
+    )
+    sched = scheduler.create_schedule(sched)
+    return ScheduleResponse.from_schedule(sched)
+
+
+@app.get("/api/schedules/{sched_id}", response_model=ScheduleResponse)
+async def get_schedule(sched_id: str):
+    sched = scheduler.get_schedule(sched_id)
+    if sched is None:
+        raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
+    return ScheduleResponse.from_schedule(sched)
+
+
+@app.put("/api/schedules/{sched_id}", response_model=ScheduleResponse)
+async def update_schedule(sched_id: str, req: ScheduleUpdateRequest):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    sched = scheduler.update_schedule(sched_id, updates)
+    if sched is None:
+        raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
+    return ScheduleResponse.from_schedule(sched)
+
+
+@app.delete("/api/schedules/{sched_id}", status_code=204)
+async def delete_schedule(sched_id: str):
+    if not scheduler.delete_schedule(sched_id):
+        raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
+
+
+@app.post("/api/schedules/{sched_id}/toggle", response_model=ScheduleResponse)
+async def toggle_schedule(sched_id: str):
+    sched = scheduler.get_schedule(sched_id)
+    if sched is None:
+        raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
+    sched = scheduler.update_schedule(sched_id, {"enabled": not sched.enabled})
+    return ScheduleResponse.from_schedule(sched)
+
+
+@app.post("/api/schedules/{sched_id}/run-now", response_model=TaskResponse, status_code=201)
+async def run_schedule_now(sched_id: str):
+    sched = scheduler.get_schedule(sched_id)
+    if sched is None:
+        raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
+    task = await scheduler.submit(
+        prompt       = sched.prompt,
+        project_name = sched.project_name,
+        auto         = sched.auto,
+        account_name = sched.account,
+    )
+    sched.last_run_at = datetime.now().isoformat(timespec="seconds")
+    sched.last_task_id = task.id
+    sched.updated = datetime.now().isoformat(timespec="seconds")
+    sched.save(scheduler.schedules_dir)
+    return TaskResponse.from_task(task)
 
 
 # ══════════════════════════════════════════════════════════════

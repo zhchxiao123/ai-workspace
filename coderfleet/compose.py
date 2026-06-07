@@ -47,6 +47,39 @@ def _make_dumper() -> type[yaml.Dumper]:
     return QuotedDumper
 
 
+def _gost_config_with_bypass(
+    relay_port: str,
+    proxy_host: str,
+    http_port: str,
+    bypass_matchers: list[str],
+) -> dict[str, Any]:
+    """Return a gost v3 config dict that forwards to upstream but bypasses listed targets."""
+    return {
+        "services": [{
+            "name": "service-0",
+            "addr": f":{relay_port}",
+            "handler": {"type": "http", "chain": "chain-0"},
+            "listener": {"type": "tcp"},
+        }],
+        "chains": [{
+            "name": "chain-0",
+            "hops": [{
+                "name": "hop-0",
+                "bypass": "bypass-0",
+                "nodes": [{
+                    "name": "node-0",
+                    "addr": f"{proxy_host}:{http_port}",
+                    "connector": {"type": "http"},
+                }],
+            }],
+        }],
+        "bypasses": [{
+            "name": "bypass-0",
+            "matchers": bypass_matchers,
+        }],
+    }
+
+
 def generate_compose(ws: Path) -> dict[str, Any]:
     """Build docker-compose data dict from workspace config files."""
     cfg = load_config(ws)
@@ -68,6 +101,9 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     relay_image    = cfg.get("RELAY_IMAGE", "gogost/gost:3")
     ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+
+    proxy_bypass  = cfg.get("PROXY_BYPASS", "")
+    bypass_list   = [b.strip() for b in proxy_bypass.split(",") if b.strip()]
 
     proxy_url = f"http://{relay_ip}:{relay_port}"
     no_proxy  = f"localhost,127.0.0.1,{subnet}"
@@ -218,7 +254,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         raise click.ClickException("没有可用的项目（账号配置可能有误）")
 
     if needs_relay:
-        services["proxy-relay"] = {
+        relay_svc: dict[str, Any] = {
             "image": relay_image,
             "container_name": "coderfleet-proxy-relay",
             "restart": "unless-stopped",
@@ -227,7 +263,6 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "extnet": {},
             },
             "extra_hosts": ["host.docker.internal:host-gateway"],
-            "command": f"-L http://:{relay_port} -F \"{proxy_host}:{http_port}\"",
             "healthcheck": {
                 "test": ["CMD", "sh", "-c", f"nc -z localhost {relay_port}"],
                 "interval": "8s",
@@ -236,6 +271,25 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "start_period": "5s",
             },
         }
+
+        if bypass_list:
+            # Write a gost config file so bypass rules take effect at the hop level.
+            # Bypass targets are reached directly by the relay (which is on extnet);
+            # everything else is forwarded to the upstream proxy as before.
+            gost_cfg = _gost_config_with_bypass(relay_port, proxy_host, http_port, bypass_list)
+            gost_cfg_path = ws / "proxy-relay-config.yaml"
+            gost_cfg_path.write_text(
+                "# !! 此文件由 coderfleet apply 自动生成，请勿手动编辑 !!\n"
+                + yaml.dump(gost_cfg, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+            relay_svc["command"] = "-C /etc/gost/config.yaml"
+            relay_svc["volumes"] = ["./proxy-relay-config.yaml:/etc/gost/config.yaml:ro"]
+            click.secho(f"  [relay] bypass 直连规则：{', '.join(bypass_list)}", fg="yellow")
+        else:
+            relay_svc["command"] = f"-L http://:{relay_port} -F \"{proxy_host}:{http_port}\""
+
+        services["proxy-relay"] = relay_svc
 
     networks: dict[str, Any] = {"extnet": {"driver": "bridge"}}
     if needs_relay:
