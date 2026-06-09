@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev libffi-dev zlib1g-dev libbz2-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
     # 系统工具
-    bash-completion less vim nano \
+    bash-completion less vim nano tmux \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 (via NodeSource) ───────────────────────────
