@@ -205,6 +205,7 @@ def _run_macos(ws, port: int) -> None:
     class _App(rumps.App):
         def __init__(self_inner) -> None:
             self_inner._seen: set[str] = set()
+            self_inner._user_stopped: bool = False
             self_inner._status_item = rumps.MenuItem("Server: …")
 
             icon_path = (
@@ -237,6 +238,7 @@ def _run_macos(ws, port: int) -> None:
             threading.Thread(target=self_inner._do_start, daemon=True).start()
 
         def _do_start(self_inner) -> None:
+            self_inner._user_stopped = False
             try:
                 new_pid = sd.start_daemon(ws, _current_port())
                 self_inner._status_item.title = f"Server: Running  (PID {new_pid})"
@@ -248,6 +250,7 @@ def _run_macos(ws, port: int) -> None:
             threading.Thread(target=self_inner._do_stop, daemon=True).start()
 
         def _do_stop(self_inner) -> None:
+            self_inner._user_stopped = True
             stopped = sd.stop_daemon(ws)
             if stopped:
                 self_inner._status_item.title = "Server: Stopped"
@@ -290,13 +293,14 @@ def _run_macos(ws, port: int) -> None:
             else:
                 sd.pid_file(ws).unlink(missing_ok=True)
                 self_inner._status_item.title = "Server: Stopped"
-                # Auto-restart: bring it back up silently.
-                try:
-                    new_pid = sd.start_daemon(ws, _current_port())
-                    self_inner._status_item.title = f"Server: Running  (PID {new_pid})"
-                    _notify("CoderFleet", f"Server restarted (PID {new_pid})")
-                except Exception:
-                    pass
+                # Only auto-restart on unexpected crash, not when user stopped it.
+                if not self_inner._user_stopped:
+                    try:
+                        new_pid = sd.start_daemon(ws, _current_port())
+                        self_inner._status_item.title = f"Server: Running  (PID {new_pid})"
+                        _notify("CoderFleet", f"Server restarted (PID {new_pid})")
+                    except Exception:
+                        pass
 
             # Task-completion notifications.
             self_inner._poll_tasks()
@@ -392,6 +396,7 @@ def _run_pystray(ws: Path, port: int) -> None:
 
     _status = {"label": "Server: …"}
     _seen: set[str] = set()
+    _user_stopped = {"value": False}
 
     def _current_port() -> int:
         return int(load_config(ws).get("CODERFLEET_PORT", port))
@@ -410,6 +415,7 @@ def _run_pystray(ws: Path, port: int) -> None:
         threading.Thread(target=_do_start, args=(icon,), daemon=True).start()
 
     def _do_start(icon) -> None:
+        _user_stopped["value"] = False
         try:
             new_pid = sd.start_daemon(ws, _current_port())
             _status["label"] = f"Server: Running  (PID {new_pid})"
@@ -422,6 +428,7 @@ def _run_pystray(ws: Path, port: int) -> None:
         threading.Thread(target=_do_stop, args=(icon,), daemon=True).start()
 
     def _do_stop(icon) -> None:
+        _user_stopped["value"] = True
         stopped = sd.stop_daemon(ws)
         _status["label"] = "Server: Stopped" if stopped else "Server: Not running"
         icon.update_menu()
@@ -460,12 +467,14 @@ def _run_pystray(ws: Path, port: int) -> None:
             else:
                 sd.pid_file(ws).unlink(missing_ok=True)
                 _status["label"] = "Server: Stopped"
-                try:
-                    new_pid = sd.start_daemon(ws, _current_port())
-                    _status["label"] = f"Server: Running  (PID {new_pid})"
-                    _notify("CoderFleet", f"Server restarted (PID {new_pid})")
-                except Exception:
-                    pass
+                # Only auto-restart on unexpected crash, not when user stopped it.
+                if not _user_stopped["value"]:
+                    try:
+                        new_pid = sd.start_daemon(ws, _current_port())
+                        _status["label"] = f"Server: Running  (PID {new_pid})"
+                        _notify("CoderFleet", f"Server restarted (PID {new_pid})")
+                    except Exception:
+                        pass
             icon.update_menu()
             _poll_tasks_pystray(icon)
 

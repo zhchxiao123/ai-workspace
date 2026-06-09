@@ -1,6 +1,6 @@
 # ============================================================
 #  CoderFleet — 统一工作容器镜像
-#  包含：Python 3.12 / Node.js 20 / Rust
+#  包含：Python 3.12 / Node.js 20 / Rust / Java 21 + Maven
 #        Codex CLI / Claude Code / OpenCode / Hermes / Grok
 #        FFmpeg / LibreOffice (headless) / Playwright + Chromium
 #  平台：linux/amd64 + linux/arm64（多平台镜像）
@@ -125,6 +125,15 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh -s -- -y --no-modify-path --default-toolchain 1.93.0 \
     && chmod -R a+w $RUSTUP_HOME $CARGO_HOME \
     && rustc --version
+
+# ── Java 21 (OpenJDK) + Maven ─────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-21-jdk \
+    maven \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && ln -sfn "$(readlink -f /usr/bin/java | sed 's|/bin/java||')" /usr/lib/jvm/java-21
+ENV JAVA_HOME=/usr/lib/jvm/java-21
+ENV PATH=$JAVA_HOME/bin:$PATH
 
 # ── FFmpeg ────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -74,10 +74,12 @@ class Scheduler:
         self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
         self.schedules_dir  = workspace_dir / "schedules"
         # task_id → asyncio.Task（后台运行的协程）
+        self.digests_dir    = workspace_dir / "digests"
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
         self._push_manager = None  # set by main.py after both are initialized
         self.workflow_engine = None  # Phase 1 后由 main.py 注入 WorkflowEngine(self.workspace_dir, self)
+        self._last_auto_digest_date: str = ""
 
     async def _notify(self, task: Task) -> None:
         if self._push_manager is None:
@@ -977,11 +979,56 @@ class Scheduler:
             try:
                 await self._check_and_trigger_schedules()
                 await self.schedule_next_tasks()
+                await self._check_auto_digest()
             except Exception as e:
                 import traceback
                 print("Error in schedule_next_tasks:")
                 traceback.print_exc()
             await asyncio.sleep(1.0)
+
+    async def _check_auto_digest(self) -> None:
+        """Auto-generate the previous day's digest at 23:30 each night."""
+        now = datetime.now()
+        if now.hour != 23 or now.minute != 30:
+            return
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        if self._last_auto_digest_date == yesterday:
+            return
+        self._last_auto_digest_date = yesterday
+
+        digest_path = self.digests_dir / f"{yesterday}.json"
+        if digest_path.exists():
+            try:
+                import json as _json
+                data = _json.loads(digest_path.read_text(encoding="utf-8"))
+                if data.get("ai_summary") or data.get("status") in ("generating", "ready"):
+                    return
+            except Exception:
+                pass
+
+        projects = [p for p in self.get_projects() if p.active]
+        if not projects:
+            return
+
+        try:
+            from coderfleet.server.digest import (
+                build_generate_prompt,
+                compute_daily_stats,
+            )
+            from coderfleet.server.models import DailyDigest, DigestStatus
+
+            stats = compute_daily_stats(yesterday, self.tasks_dir)
+            if stats.total_done + stats.total_failed + stats.total_killed == 0:
+                return
+            prompt = build_generate_prompt(stats)
+            task = await self.submit(prompt=prompt, project_name=projects[0].name, auto=True)
+            record = DailyDigest(date=yesterday, ai_task_id=task.id, status=DigestStatus.generating)
+            record.save(self.digests_dir)
+            print(f"[digest] Auto-generating digest for {yesterday} via task {task.id}")
+        except Exception as e:
+            import traceback
+            print(f"[digest] Auto-generation failed for {yesterday}: {e}")
+            traceback.print_exc()
 
     async def schedule_next_tasks(self) -> None:
         now = datetime.now()

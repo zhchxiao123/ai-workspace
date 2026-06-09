@@ -37,7 +37,6 @@ async function loadAccounts() {
   try {
     const [accounts] = await Promise.all([
       fetch(`${API}/api/accounts`).then(r => r.json()),
-      loadUsageStats(),
     ]);
     globalAccountsCache = accounts;
     renderAccounts(accounts);
@@ -730,64 +729,3 @@ async function _runApply() {
   }
 }
 
-// ── 用量统计看板 ──────────────────────────────────────────────
-
-async function loadUsageStats() {
-  try {
-    const data = await fetch(`${API}/api/stats/usage?days=30`).then(r => r.json());
-    _renderUsageStats(data);
-  } catch { /* 统计接口不可用时静默忽略 */ }
-}
-
-function _fmtTokens(n) {
-  if (!n) return '0';
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
-}
-
-function _renderUsageStats(data) {
-  const bar = document.getElementById('usage-stats-bar');
-  const cells = document.getElementById('usage-stats-cells');
-  const perAcc = document.getElementById('usage-per-account');
-  if (!bar || !cells || !perAcc) return;
-
-  const totalTokens = (data.tokens_input || 0) + (data.tokens_output || 0);
-  if (!totalTokens && !data.cost_usd && !data.task_count) {
-    bar.style.display = 'none';
-    return;
-  }
-
-  bar.style.display = '';
-
-  const statCell = (label, value, color) =>
-    `<div style="text-align:center">
-       <div style="font-size:18px;font-weight:700;color:${color || 'var(--text)'}">${value}</div>
-       <div style="font-size:11px;color:var(--muted);margin-top:2px">${label}</div>
-     </div>`;
-
-  cells.innerHTML = [
-    statCell('任务数', data.task_count || 0, 'var(--text)'),
-    statCell('输入 tokens', _fmtTokens(data.tokens_input), 'var(--accent)'),
-    statCell('输出 tokens', _fmtTokens(data.tokens_output), 'var(--green)'),
-    data.cost_usd ? statCell('费用 (USD)', '$' + (data.cost_usd || 0).toFixed(4), 'var(--amber)') : '',
-  ].join('');
-
-  // Per-account breakdown chips
-  const accEntries = Object.entries(data.per_account || {})
-    .sort((a, b) => (b[1].tokens_input + b[1].tokens_output) - (a[1].tokens_input + a[1].tokens_output));
-
-  if (accEntries.length) {
-    perAcc.innerHTML = accEntries.map(([acc, stats]) => {
-      const tokens = (stats.tokens_input || 0) + (stats.tokens_output || 0);
-      const cost = stats.cost_usd ? ` · $${stats.cost_usd.toFixed(4)}` : '';
-      return `<div style="font-size:11px;background:var(--surface-3);border-radius:5px;padding:4px 8px;display:flex;gap:6px;align-items:center">
-        <span style="font-weight:600;color:var(--text)">${esc(acc)}</span>
-        <span style="color:var(--muted)">${_fmtTokens(tokens)} tokens${cost}</span>
-        <span style="color:var(--muted)">${stats.task_count} 任务</span>
-      </div>`;
-    }).join('');
-  } else {
-    perAcc.innerHTML = '';
-  }
-}

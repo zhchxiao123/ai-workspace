@@ -92,6 +92,14 @@
           </svg>
           <span class="sidebar-label">定时计划</span>
         </div>
+        <div class="nav-item" data-page="digest" onclick="showPage('digest')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="4" width="18" height="16" rx="2"/>
+            <path d="M16 2v4M8 2v4M3 10h18"/>
+            <path d="M8 14h2M8 17h5"/>
+          </svg>
+          <span class="sidebar-label">任务日报</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <div class="flex gap-8 text-sm text-muted">
@@ -507,14 +515,6 @@
                 <button class="btn primary" style="font-size:12px" onclick="openCreateAccountModal()">+ 新建账号</button>
               </div>
             </div>
-            <!-- 用量统计栏 -->
-            <div id="usage-stats-bar" style="display:none;margin-bottom:16px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:12px 16px">
-              <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-                <div style="font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.04em">近 30 天用量</div>
-                <div style="display:flex;gap:20px;flex-wrap:wrap" id="usage-stats-cells"></div>
-              </div>
-              <div id="usage-per-account" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap"></div>
-            </div>
             <div class="account-grid" id="account-grid">
               <div class="empty">加载中...</div>
             </div>
@@ -547,6 +547,34 @@
               </div>
               <div class="skill-grid" id="skill-grid">
                 <div class="empty">加载中...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 任务日报页 -->
+        <div class="page" id="page-digest">
+          <div class="digest-layout">
+            <!-- 左侧：日历选择器 -->
+            <div class="digest-sidebar">
+              <div class="digest-sidebar-header">
+                <span style="font-weight:600;font-size:13px;color:var(--text-2)">任务日报</span>
+              </div>
+              <div class="digest-calendar-wrap" id="digest-calendar">
+                <div class="empty" style="padding:20px 8px;font-size:12px">加载中...</div>
+              </div>
+            </div>
+
+            <!-- 右侧：固定头部 + 滚动正文 -->
+            <div class="digest-content">
+              <div class="digest-sticky-header" id="digest-sticky-header" style="display:none">
+                <!-- 日期 + 统计卡片（由 JS 渲染，固定不滚动） -->
+              </div>
+              <div class="digest-scroll-body" id="digest-scroll-body">
+                <div class="empty digest-placeholder">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".3"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h2M8 17h5"/></svg>
+                  <p>从左侧日历选择一个日期</p>
+                </div>
               </div>
             </div>
           </div>
@@ -967,6 +995,7 @@
   <script src="/static/js/workflows.js?v=20260527"></script>
   <script src="/static/js/app.js?v=20260526a"></script>
   <script src="/static/js/schedules.js?v=20260607"></script>
+  <script src="/static/js/digest.js?v=20260609"></script>
   <script src="/static/js/pwa.js?v=20260602"></script>
   <script>
     if ('serviceWorker' in navigator) {

@@ -64,15 +64,16 @@ function renderConversations(convs, projects, tasks) {
     renderChatSearchResults(chatSearchResults, activeQuery, chatSearchDeep);
     return;
   }
-  if (!projects.length) {
+  const activeProjects = projects.filter(p => p.active !== false);
+  if (!activeProjects.length) {
     list.innerHTML = `<div class="empty" style="padding: 20px 0;">暂无项目配置</div>`;
     return;
   }
 
   const folderSvg = `<svg class="proj-folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
-  let html = renderRecentSection(convs, projects, tasks);
+  let html = renderRecentSection(convs, activeProjects, tasks);
 
-  const sortedProjects = [...projects];
+  const sortedProjects = [...activeProjects];
   if (chatProjectSortOrder === 'name') {
     sortedProjects.sort((a, b) => a.name.localeCompare(b.name));
   } else if (chatProjectSortOrder === 'activity') {

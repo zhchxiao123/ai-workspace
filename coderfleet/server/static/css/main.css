@@ -5404,3 +5404,440 @@
       color: var(--text-2);
       margin-right: 2px;
     }
+
+    /* ══════════════════════════════════════════════════════
+       任务日报页
+       ══════════════════════════════════════════════════════ */
+
+    /* ── 高度链路修正：激活时接管 .content 的滚动与内边距 ─ */
+    .content:has(#page-digest.active) {
+      overflow: hidden;
+      padding: 0;
+    }
+    #page-digest.active {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    /* ── 整体布局 ─────────────────────────────────────────── */
+    .digest-layout {
+      display: flex;
+      flex: 1;
+      min-height: 0;          /* 允许 flex 子元素向下压缩 */
+      overflow: hidden;
+    }
+
+    /* ── 左侧日历侧边栏（固定，不滚动）────────────────────── */
+    .digest-sidebar {
+      width: 206px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;       /* 侧边栏整体不溢出 */
+      background: var(--surface);
+    }
+    .digest-sidebar-header {
+      flex-shrink: 0;
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* 日历容器：固定在侧边栏内，不滚动 */
+    .digest-calendar-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;       /* 日历不可滚动 */
+      padding: 12px 10px 8px;
+    }
+
+    /* 日历头部 */
+    .cal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      gap: 4px;
+    }
+    .cal-month-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-2);
+      flex: 1;
+      text-align: center;
+    }
+    .cal-nav-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      font-size: 18px;
+      line-height: 1;
+      color: var(--text-3);
+      transition: background 0.1s, color 0.1s;
+      flex-shrink: 0;
+    }
+    .cal-nav-btn:hover { background: var(--surface-2); color: var(--text); }
+
+    /* 星期栏 */
+    .cal-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      text-align: center;
+      font-size: 10px;
+      color: var(--text-3);
+      margin-bottom: 4px;
+      gap: 1px;
+    }
+    .cal-wday { padding: 2px 0; }
+
+    /* 日期网格 */
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 2px;
+    }
+    .cal-day {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      border-radius: 5px;
+      cursor: default;
+      color: transparent;           /* empty cells invisible */
+      user-select: none;
+    }
+    .cal-day.no-data {
+      color: var(--border-md);      /* days without data: very dim */
+    }
+    .cal-day.has-data {
+      cursor: pointer;
+      color: var(--text-2);
+      background: var(--surface-2);
+      font-weight: 500;
+      transition: background 0.1s, color 0.1s;
+    }
+    .cal-day.has-data:hover {
+      background: var(--accent-bg);
+      color: var(--accent);
+    }
+    .cal-day.cal-today {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      font-weight: 700;
+    }
+    .cal-day.cal-today.no-data { color: var(--accent); }
+    .cal-day.cal-sel,
+    .cal-day.cal-sel:hover {
+      background: var(--accent) !important;
+      color: #fff !important;
+      font-weight: 700;
+    }
+
+    /* 图例 */
+    .cal-legend {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 10px;
+      color: var(--text-3);
+    }
+    .cal-legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 3px;
+      background: var(--surface-2);
+      display: inline-block;
+    }
+    .cal-legend-dot.has-data { background: var(--surface-2); outline: 1px solid var(--border-md); }
+
+    /* ── 右侧内容区 ──────────────────────────────────────── */
+    .digest-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    /* 固定头部（日期标题 + 统计卡片） */
+    .digest-sticky-header {
+      flex-shrink: 0;
+      padding: 16px 24px 14px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+    .digest-header-row {
+      margin-bottom: 14px;
+    }
+    .digest-date-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+    .digest-rel-badge {
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--accent-bg);
+      color: var(--accent);
+      padding: 2px 7px;
+      border-radius: 20px;
+    }
+    .digest-task-count {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+
+    /* 统计卡片行 */
+    .digest-stats-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .digest-stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      min-width: 80px;
+      text-align: center;
+    }
+    .digest-stat-card.warn {
+      border-color: var(--amber);
+      background: var(--amber-bg);
+    }
+    .digest-stat-num {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.15;
+      color: var(--text);
+    }
+    .digest-stat-num.done   { color: var(--accent); }
+    .digest-stat-num.failed { color: var(--red); }
+    .digest-stat-num.accent { color: var(--accent); }
+    .digest-stat-label {
+      font-size: 10px;
+      color: var(--text-3);
+      margin-top: 2px;
+    }
+
+    /* 滚动正文 */
+    .digest-scroll-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 24px 24px;
+    }
+
+    /* 占位空白态 */
+    .digest-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 80px 0;
+      color: var(--text-3);
+      font-size: 13px;
+    }
+
+    /* ── 正文分区卡片 ─────────────────────────────────────── */
+    .digest-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 12px;
+    }
+    .digest-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .digest-section-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 12px;
+    }
+    .digest-section-header .digest-section-title { margin-bottom: 0; }
+    .digest-ai-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
+    /* ── 项目明细表 ──────────────────────────────────────── */
+    .digest-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .digest-table th {
+      text-align: left;
+      padding: 4px 8px;
+      color: var(--text-3);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border);
+    }
+    .digest-table td { padding: 7px 8px; }
+    .digest-table tbody tr:hover { background: var(--surface-2); border-radius: 6px; }
+    .digest-badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--surface-2);
+      color: var(--text-2);
+    }
+    .digest-badge.done   { background: var(--accent-bg); color: var(--accent); }
+    .digest-badge.failed { background: var(--red-bg);    color: var(--red); }
+    .digest-badge.muted  { background: var(--surface-2); color: var(--text-3); }
+
+    /* ── AI 摘要区 ───────────────────────────────────────── */
+    .digest-ai-content {
+      font-size: 13px;
+      line-height: 1.75;
+      color: var(--text);
+    }
+    .digest-ai-content h1,
+    .digest-ai-content h2,
+    .digest-ai-content h3 { font-size: 13px; font-weight: 700; margin: 14px 0 6px; color: var(--text); }
+    .digest-ai-content p   { margin-bottom: 8px; }
+    .digest-ai-content ul,
+    .digest-ai-content ol  { padding-left: 20px; margin-bottom: 8px; }
+    .digest-ai-content li  { margin-bottom: 4px; }
+    .digest-ai-content strong { color: var(--text); }
+
+    .digest-ai-cta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .digest-ai-hint {
+      font-size: 12px;
+      color: var(--text-3);
+      margin-bottom: 10px;
+    }
+    .digest-ai-pending {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+    .digest-ai-error {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0;
+      font-size: 13px;
+      color: var(--red);
+    }
+    .digest-ai-spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border-md);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: digest-spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes digest-spin { to { transform: rotate(360deg); } }
+
+    /* ── 小屏日期导航条（< 640px 时替代日历侧边栏） ──────── */
+    .digest-mobile-nav {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .digest-mobile-nav-date {
+      flex: 1;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .digest-mobile-nav-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 16px;
+      color: var(--text-3);
+      cursor: pointer;
+      line-height: 1;
+    }
+    .digest-mobile-nav-btn:hover { background: var(--surface-2); color: var(--text); }
+    .digest-mobile-nav-btn:disabled { opacity: 0.3; cursor: default; }
+
+    /* ── 响应式：中等屏幕（< 900px）────────────────────────── */
+    @media (max-width: 900px) {
+      /* 修复小屏时 layout 变 height:auto 后日报页失去高度约束 */
+      .layout:has(#page-digest.active) {
+        height: 100vh !important;
+        overflow: hidden !important;
+      }
+      .main:has(#page-digest.active) {
+        overflow: hidden !important;
+      }
+      .content:has(#page-digest.active) {
+        overflow: hidden !important;
+        padding: 0 !important;
+      }
+
+      .digest-sidebar { width: 174px; }
+
+      .digest-stat-card {
+        min-width: 62px;
+        padding: 8px 10px;
+      }
+      .digest-stat-num { font-size: 20px; }
+
+      .digest-sticky-header { padding: 12px 16px 10px; }
+      .digest-scroll-body   { padding: 12px 16px 20px; }
+    }
+
+    /* ── 响应式：小屏（< 640px），隐藏日历侧边栏 ─────────── */
+    @media (max-width: 640px) {
+      .digest-sidebar { display: none; }
+
+      /* 顶部导航条替代日历 */
+      .digest-mobile-nav { display: flex; }
+
+      /* 统计卡片横向滚动 */
+      .digest-stats-row {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 4px;
+      }
+      .digest-stat-card {
+        flex-shrink: 0;
+        min-width: 56px;
+        padding: 6px 8px;
+      }
+      .digest-stat-num { font-size: 18px; }
+
+      .digest-sticky-header { padding: 10px 12px 8px; }
+      .digest-scroll-body   { padding: 10px 12px 16px; }
+      .digest-date-title    { font-size: 18px; }
+    }

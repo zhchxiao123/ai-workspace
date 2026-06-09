@@ -746,6 +746,57 @@ class MarketplaceInstallRequest(BaseModel):
 
 # ── 定时计划 ───────────────────────────────────────────────
 
+# ── 日报 ──────────────────────────────────────────────────
+
+class DigestStatus(str, Enum):
+    pending    = "pending"
+    generating = "generating"
+    ready      = "ready"
+    error      = "error"
+
+
+class ProjectDigestStats(BaseModel):
+    project_name:  str
+    done:          int = 0
+    failed:        int = 0
+    killed:        int = 0
+    tokens_input:  int = 0
+    tokens_output: int = 0
+    cost_usd:      float = 0.0
+    prompts:       list[str] = Field(default_factory=list)
+
+
+class DailyDigest(BaseModel):
+    date:          str
+    status:        DigestStatus = DigestStatus.pending
+    total_done:    int = 0
+    total_failed:  int = 0
+    total_killed:  int = 0
+    tokens_input:  int = 0
+    tokens_output: int = 0
+    cost_usd:      float = 0.0
+    projects:      list[ProjectDigestStats] = Field(default_factory=list)
+    ai_summary:    str = ""
+    ai_task_id:    str = ""
+    generated_at:  str = ""
+    created:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+
+    def save(self, digests_dir: Path) -> None:
+        digests_dir.mkdir(parents=True, exist_ok=True)
+        path = digests_dir / f"{self.date}.json"
+        path.write_text(
+            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "DailyDigest":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+
+# ── 定时计划 ───────────────────────────────────────────────
+
 class ScheduleType(str, Enum):
     daily  = "daily"    # 每天 HH:MM
     weekly = "weekly"   # 每周指定星期 HH:MM

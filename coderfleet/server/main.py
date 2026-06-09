@@ -69,6 +69,13 @@ from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
 from coderfleet.server.push_manager import PushManager
+from coderfleet.server.digest import (
+    build_generate_prompt,
+    compute_daily_stats,
+    list_active_dates,
+    load_digest,
+)
+from coderfleet.server.models import DailyDigest, DigestStatus
 from coderfleet.account_type_registry import ACCOUNT_TYPES
 
 
@@ -176,6 +183,7 @@ WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".c
 scheduler        = Scheduler(WORKSPACE_DIR)
 push_manager     = PushManager(WORKSPACE_DIR)
 marketplace_mgr  = MarketplaceManager(WORKSPACE_DIR / "cache")
+DIGEST_DIR       = WORKSPACE_DIR / "digests"
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -1703,6 +1711,89 @@ async def run_workflow_template(template_id: str, req: TemplateRunRequest):
         return PipelineResponse.from_pipeline(pipeline, tasks)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════
+#  日报 Digest
+# ══════════════════════════════════════════════════════════════
+
+_DATE_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.get("/api/digest/dates")
+async def get_digest_dates():
+    """Return all dates (YYYY-MM-DD) with task activity, newest first."""
+    return list_active_dates(scheduler.tasks_dir)
+
+
+@app.get("/api/digest/{date}", response_model=DailyDigest)
+async def get_digest(date: str):
+    if not _DATE_RE.match(date):
+        raise HTTPException(status_code=400, detail="日期格式必须为 YYYY-MM-DD")
+
+    digest = compute_daily_stats(date, scheduler.tasks_dir)
+
+    saved = load_digest(date, DIGEST_DIR)
+    if saved:
+        digest.ai_summary  = saved.ai_summary
+        digest.ai_task_id  = saved.ai_task_id
+        digest.generated_at = saved.generated_at
+        digest.status      = saved.status
+
+    # Auto-finalize: if the generating task is now done, extract its output
+    if digest.ai_task_id and digest.status == DigestStatus.generating:
+        ai_task = scheduler.get_task(digest.ai_task_id)
+        if ai_task and ai_task.status == TaskStatus.done:
+            log_path = scheduler.get_log_path(digest.ai_task_id)
+            if log_path.exists():
+                from coderfleet.server.log_parser import parse_log
+                output = parse_log(log_path.read_text(encoding="utf-8"), ai_task.type.value)
+                if output.text:
+                    digest.ai_summary   = output.text
+                    digest.status       = DigestStatus.ready
+                    digest.generated_at = datetime.now().isoformat(timespec="seconds")
+                    record = saved or DailyDigest(date=date)
+                    record.ai_summary   = digest.ai_summary
+                    record.ai_task_id   = digest.ai_task_id
+                    record.status       = DigestStatus.ready
+                    record.generated_at = digest.generated_at
+                    record.save(DIGEST_DIR)
+        elif ai_task and ai_task.status in (TaskStatus.failed, TaskStatus.killed):
+            digest.status = DigestStatus.error
+            if saved:
+                saved.status = DigestStatus.error
+                saved.save(DIGEST_DIR)
+
+    return digest
+
+
+@app.post("/api/digest/{date}/generate")
+async def trigger_digest_generation(date: str):
+    if not _DATE_RE.match(date):
+        raise HTTPException(status_code=400, detail="日期格式必须为 YYYY-MM-DD")
+
+    stats = compute_daily_stats(date, scheduler.tasks_dir)
+    if stats.total_done + stats.total_failed + stats.total_killed == 0:
+        raise HTTPException(status_code=404, detail="该日期没有已完成的任务记录")
+
+    projects = [p for p in scheduler.list_projects() if p.active]
+    if not projects:
+        raise HTTPException(status_code=503, detail="没有活跃项目，无法提交摘要任务")
+
+    prompt = build_generate_prompt(stats)
+    task = await scheduler.submit(
+        prompt=prompt,
+        project_name=projects[0].name,
+        auto=True,
+    )
+
+    record = load_digest(date, DIGEST_DIR) or DailyDigest(date=date)
+    record.ai_task_id = task.id
+    record.status     = DigestStatus.generating
+    record.updated    = datetime.now().isoformat(timespec="seconds")
+    record.save(DIGEST_DIR)
+
+    return {"task_id": task.id, "status": "generating"}
 
 
 # ── 启动入口 ──────────────────────────────────────────────
