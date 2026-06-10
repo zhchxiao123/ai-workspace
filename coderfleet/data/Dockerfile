@@ -11,6 +11,10 @@ FROM ubuntu:24.04
 # 避免交互式安装询问
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+# C.UTF-8 is always available on glibc systems (no locale-gen needed).
+# Without this, bash readline will not correctly echo multibyte UTF-8 input.
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 # ── 基础系统工具 ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
