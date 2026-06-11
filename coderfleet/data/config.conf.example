@@ -15,7 +15,12 @@ IMAGE_TAG=latest
 # 构建平台（Mac M 系列芯片固定用 linux/amd64，由 Docker Rosetta 模拟运行）
 BUILD_PLATFORM=linux/arm64
 
-# ── 代理配置 ──────────────────────────────────────────────
+# ── 代理模式 ──────────────────────────────────────────────
+# host  → 转发至宿主机代理（Clash / V2Ray 等，默认）
+# xray  → 启动 Xray 容器，gost 转发给 Xray（适合无 GUI 服务器）
+PROXY_MODE=host
+
+# ── 宿主机代理配置（PROXY_MODE=host 时生效）────────────────
 # 宿主机代理地址（容器通过 host.docker.internal 访问宿主机）
 PROXY_HOST=host.docker.internal
 
@@ -24,6 +29,20 @@ PROXY_HOST=host.docker.internal
 # 分开端口（如 Clash：HTTP=7890 SOCKS5=7891）：分别填写
 PROXY_HTTP_PORT=10808
 PROXY_SOCKS5_PORT=10808
+
+# ── Xray 容器配置（PROXY_MODE=xray 时生效）────────────────
+# Xray 容器在内网的固定 IP（需在 INTERNAL_SUBNET 范围内，且不与 RELAY_IP 重复）
+#XRAY_IP=172.21.0.3
+
+# Xray HTTP 入站端口（需与 xray/config.json 中 inbounds[0].port 一致）
+#XRAY_LISTEN_PORT=10809
+
+# Xray 容器镜像
+#XRAY_IMAGE=ghcr.io/xtls/xray-core:latest
+
+# Xray 配置文件路径（挂载到容器 /etc/xray/config.json）
+# 可运行 coderfleet init 自动生成模板
+#XRAY_CONFIG=~/.coderfleet/xray/config.json
 
 # ── 内部网络配置 ──────────────────────────────────────────
 INTERNAL_SUBNET=172.21.0.0/16

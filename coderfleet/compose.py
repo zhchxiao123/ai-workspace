@@ -49,8 +49,8 @@ def _make_dumper() -> type[yaml.Dumper]:
 
 def _gost_config_with_bypass(
     relay_port: str,
-    proxy_host: str,
-    http_port: str,
+    upstream_host: str,
+    upstream_port: str,
     bypass_matchers: list[str],
 ) -> dict[str, Any]:
     """Return a gost v3 config dict that forwards to upstream but bypasses listed targets."""
@@ -68,7 +68,7 @@ def _gost_config_with_bypass(
                 "bypass": "bypass-0",
                 "nodes": [{
                     "name": "node-0",
-                    "addr": f"{proxy_host}:{http_port}",
+                    "addr": f"{upstream_host}:{upstream_port}",
                     "connector": {"type": "http"},
                 }],
             }],
@@ -101,6 +101,21 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     relay_image    = cfg.get("RELAY_IMAGE", "gogost/gost:3")
     ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+
+    proxy_mode     = cfg.get("PROXY_MODE", "host")
+    xray_ip        = cfg.get("XRAY_IP", "172.21.0.3")
+    xray_port      = cfg.get("XRAY_LISTEN_PORT", "10809")
+    xray_image     = cfg.get("XRAY_IMAGE", "ghcr.io/xtls/xray-core:latest")
+    xray_config    = Path(
+        cfg.get("XRAY_CONFIG", str(Path.home() / ".coderfleet" / "xray" / "config.json"))
+    ).expanduser().resolve()
+
+    if proxy_mode == "xray":
+        upstream_host = xray_ip
+        upstream_port = xray_port
+    else:
+        upstream_host = proxy_host
+        upstream_port = http_port
 
     proxy_bypass  = cfg.get("PROXY_BYPASS", "")
     bypass_list   = [b.strip() for b in proxy_bypass.split(",") if b.strip()]
@@ -254,6 +269,26 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         raise click.ClickException("没有可用的项目（账号配置可能有误）")
 
     if needs_relay:
+        if proxy_mode == "xray":
+            if not xray_config.exists():
+                raise click.ClickException(
+                    f"Xray 配置文件不存在：{xray_config}\n"
+                    f"请先创建配置文件（可运行 coderfleet init 生成模板），再执行 apply"
+                )
+            xray_svc: dict[str, Any] = {
+                "image": xray_image,
+                "container_name": "coderfleet-xray-proxy",
+                "restart": "unless-stopped",
+                "networks": {
+                    "intnet": {"ipv4_address": xray_ip},
+                    "extnet": {},
+                },
+                "volumes": [f"{xray_config}:/etc/xray/config.json:ro"],
+                "command": ["run", "-c", "/etc/xray/config.json"],
+            }
+            services["xray-proxy"] = xray_svc
+            click.secho(f"  [xray] Xray 容器已配置（配置文件：{xray_config}）", fg="cyan")
+
         relay_svc: dict[str, Any] = {
             "image": relay_image,
             "container_name": "coderfleet-proxy-relay",
@@ -272,11 +307,14 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             },
         }
 
+        if proxy_mode == "xray":
+            relay_svc["depends_on"] = {"xray-proxy": {"condition": "service_started"}}
+
         if bypass_list:
             # Write a gost config file so bypass rules take effect at the hop level.
             # Bypass targets are reached directly by the relay (which is on extnet);
-            # everything else is forwarded to the upstream proxy as before.
-            gost_cfg = _gost_config_with_bypass(relay_port, proxy_host, http_port, bypass_list)
+            # everything else is forwarded to the upstream (host proxy or xray container).
+            gost_cfg = _gost_config_with_bypass(relay_port, upstream_host, upstream_port, bypass_list)
             gost_cfg_path = ws / "proxy-relay-config.yaml"
             gost_cfg_path.write_text(
                 "# !! 此文件由 coderfleet apply 自动生成，请勿手动编辑 !!\n"
@@ -287,7 +325,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             relay_svc["volumes"] = ["./proxy-relay-config.yaml:/etc/gost/config.yaml:ro"]
             click.secho(f"  [relay] bypass 直连规则：{', '.join(bypass_list)}", fg="yellow")
         else:
-            relay_svc["command"] = f"-L http://:{relay_port} -F \"{proxy_host}:{http_port}\""
+            relay_svc["command"] = f"-L http://:{relay_port} -F \"{upstream_host}:{upstream_port}\""
 
         services["proxy-relay"] = relay_svc
 

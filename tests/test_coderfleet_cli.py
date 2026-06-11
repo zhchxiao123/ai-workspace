@@ -6,6 +6,8 @@ import socket
 import subprocess
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -196,6 +198,45 @@ def test_apply_disables_proxy_for_account_proxy_off(tmp_path: Path) -> None:
     assert "HTTP_PROXY" not in service
     assert "depends_on:" not in service
     assert 'CODERFLEET_ACCOUNT_PROXY: "off"' in service
+
+
+def test_apply_configures_xray_proxy_service(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    xray_config = workspace / "xray" / "config.json"
+    xray_config.parent.mkdir()
+    xray_config.write_text("{}", encoding="utf-8")
+    (workspace / "config.conf").write_text(
+        "\n".join([
+            "IMAGE_NAME=coderfleet",
+            "IMAGE_TAG=latest",
+            "BUILD_PLATFORM=linux/amd64",
+            "PROXY_MODE=xray",
+            "XRAY_IP=172.21.0.3",
+            "XRAY_LISTEN_PORT=10809",
+            f"XRAY_CONFIG={xray_config}",
+            "RELAY_LISTEN_PORT=10808",
+        ]),
+        encoding="utf-8",
+    )
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-codex PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = yaml.safe_load((workspace / "docker-compose.yml").read_text(encoding="utf-8"))
+    xray = compose["services"]["xray-proxy"]
+    relay = compose["services"]["proxy-relay"]
+    assert xray["command"] == ["run", "-c", "/etc/xray/config.json"]
+    assert "healthcheck" not in xray
+    assert relay["command"] == '-L http://:10808 -F "172.21.0.3:10809"'
+    assert relay["depends_on"] == {"xray-proxy": {"condition": "service_started"}}
 
 
 def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:

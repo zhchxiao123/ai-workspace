@@ -1,0 +1,71 @@
+{
+  "_comment": "CoderFleet Xray 配置模板 — 填入服务器信息后删除所有 _comment 字段，执行 coderfleet apply",
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "_comment": "HTTP 入站，端口需与 config.conf 中 XRAY_LISTEN_PORT 一致",
+      "tag": "http-in",
+      "port": 10809,
+      "listen": "0.0.0.0",
+      "protocol": "http",
+      "settings": {
+        "allowTransparent": false
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "_comment": "主出站 — 以下为 VLESS+Reality 示例，可替换为 vmess / trojan / shadowsocks 等",
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "YOUR_SERVER_ADDRESS",
+            "port": 443,
+            "users": [
+              {
+                "id": "YOUR_UUID",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.apple.com",
+          "fingerprint": "chrome",
+          "shortId": "YOUR_SHORT_ID",
+          "publicKey": "YOUR_PUBLIC_KEY"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "_comment": "私有 IP 段直连（容器内网通信不走代理）",
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}

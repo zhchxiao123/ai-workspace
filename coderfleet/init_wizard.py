@@ -32,27 +32,60 @@ def _data_file(name: str) -> Path:
 def _write_config(ws: Path, values: dict[str, str]) -> None:
     """将 key=value 对写入 config.conf（整体覆盖）。"""
     conf_path = ws / "config.conf"
+    proxy_mode = values.get("PROXY_MODE", "host")
+
     lines = [
         "# ============================================================",
         "#  config.conf — CoderFleet 全局配置",
         "#  修改后执行 coderfleet apply 生效",
         "# ============================================================",
         "",
+        "# ── Server 配置 ───────────────────────────────────────────",
+        "# Web UI / API 监听端口（默认 8765）",
+        "#CODERFLEET_PORT=8765",
+        "",
         "# ── 镜像配置 ──────────────────────────────────────────────",
         f"IMAGE_NAME={values['IMAGE_NAME']}",
         f"IMAGE_TAG={values['IMAGE_TAG']}",
         f"BUILD_PLATFORM={values['BUILD_PLATFORM']}",
         "",
-        "# ── 代理配置 ──────────────────────────────────────────────",
-        "# 宿主机代理地址（容器通过 host.docker.internal 访问宿主机）",
-        f"PROXY_HOST={values['PROXY_HOST']}",
-        f"PROXY_HTTP_PORT={values['PROXY_HTTP_PORT']}",
-        f"PROXY_SOCKS5_PORT={values['PROXY_SOCKS5_PORT']}",
+        "# ── 代理模式 ──────────────────────────────────────────────",
+        "# host  → 转发至宿主机代理（Clash / V2Ray 等，默认）",
+        "# xray  → 启动 Xray 容器，gost 转发给 Xray（适合无 GUI 服务器）",
+        f"PROXY_MODE={proxy_mode}",
+    ]
+
+    if proxy_mode == "xray":
+        lines += [
+            "",
+            "# ── Xray 容器配置（PROXY_MODE=xray 时生效）────────────",
+            f"XRAY_IP={values.get('XRAY_IP', '172.21.0.3')}",
+            f"XRAY_LISTEN_PORT={values.get('XRAY_LISTEN_PORT', '10809')}",
+            f"XRAY_IMAGE={values.get('XRAY_IMAGE', 'ghcr.io/xtls/xray-core:latest')}",
+            f"XRAY_CONFIG={values.get('XRAY_CONFIG', str(Path.home() / '.coderfleet' / 'xray' / 'config.json'))}",
+        ]
+    else:
+        lines += [
+            "",
+            "# ── 宿主机代理配置（PROXY_MODE=host 时生效）────────────",
+            "# 宿主机代理地址（容器通过 host.docker.internal 访问宿主机）",
+            f"PROXY_HOST={values['PROXY_HOST']}",
+            "# 混合端口（同时支持 HTTP/SOCKS5）：两个填同一个值",
+            "# 分开端口（如 Clash：HTTP=7890 SOCKS5=7891）：分别填写",
+            f"PROXY_HTTP_PORT={values['PROXY_HTTP_PORT']}",
+            f"PROXY_SOCKS5_PORT={values['PROXY_SOCKS5_PORT']}",
+        ]
+
+    lines += [
         "",
         "# ── 内部网络配置 ──────────────────────────────────────────",
         f"INTERNAL_SUBNET={values['INTERNAL_SUBNET']}",
         f"RELAY_IP={values['RELAY_IP']}",
+        "",
+        "# 代理中继对内网监听的端口（容器内 HTTP_PROXY 指向此端口）",
         f"RELAY_LISTEN_PORT={values['RELAY_LISTEN_PORT']}",
+        "",
+        "# 代理中继镜像",
         f"RELAY_IMAGE={values['RELAY_IMAGE']}",
         "",
     ]
@@ -102,27 +135,61 @@ def run_init_wizard(ws: Path) -> None:
 
     # ── 步骤 2：代理配置 ────────────────────────────────
     click.echo("\n── 代理配置 ──────────────────────────────────────")
-    click.echo("容器可通过宿主机代理中继访问互联网（Clash / v2ray / sing-box 等）。")
+    click.echo("容器可通过代理中继访问互联网。")
     click.echo("不需要代理的账号可在 accounts.conf 中设置 PROXY=off 直连。")
 
     use_proxy = click.confirm("是否为容器启用代理中继？", default=False)
 
+    proxy_mode = "host"
+    proxy_host = "host.docker.internal"
+    proxy_http_port = "7890"
+    proxy_socks5_port = "7890"
+    xray_listen_port = "10809"
+    xray_image = "ghcr.io/xtls/xray-core:latest"
+    xray_config_str = ""
+
     if use_proxy:
-        proxy_host = click.prompt("代理地址", default="host.docker.internal")
-        proxy_http_port = click.prompt("代理 HTTP 端口", default="10808")
-        same_port = click.confirm(
-            f"SOCKS5 端口与 HTTP 端口相同（{proxy_http_port}）",
-            default=True,
-        )
-        proxy_socks5_port = proxy_http_port if same_port else click.prompt(
-            "代理 SOCKS5 端口",
-            default="10808",
-        )
+        click.echo()
+        click.echo("  代理模式：")
+        click.echo("    [1] 宿主机代理 (host) — 转发至宿主机运行的 Clash / V2Ray")
+        click.echo("    [2] Xray 容器  (xray) — 启动独立 Xray 容器（适合无 GUI 服务器）")
+        mode_choice = click.prompt("请选择", default="1", type=click.Choice(["1", "2"]))
+        proxy_mode = "xray" if mode_choice == "2" else "host"
+
+        if proxy_mode == "host":
+            proxy_host = click.prompt("代理地址", default="host.docker.internal")
+            proxy_http_port = click.prompt("代理 HTTP 端口", default="10808")
+            same_port = click.confirm(
+                f"SOCKS5 端口与 HTTP 端口相同（{proxy_http_port}）",
+                default=True,
+            )
+            proxy_socks5_port = proxy_http_port if same_port else click.prompt(
+                "代理 SOCKS5 端口",
+                default="10808",
+            )
+        else:
+            click.echo()
+            xray_listen_port = click.prompt(
+                "Xray HTTP 入站端口（需与 xray/config.json 中 inbounds[0].port 一致）",
+                default="10809",
+            )
+            xray_image = click.prompt("Xray 镜像", default="ghcr.io/xtls/xray-core:latest")
+            default_xray_cfg = str(ws / "xray" / "config.json")
+            xray_config_str = click.prompt("Xray 配置文件路径", default=default_xray_cfg)
+            xray_config_path = Path(xray_config_str).expanduser()
+            xray_config_path.parent.mkdir(parents=True, exist_ok=True)
+            if not xray_config_path.exists():
+                tpl = _data_file("xray-config.json.example")
+                if tpl.exists():
+                    shutil.copy2(str(tpl), str(xray_config_path))
+                    click.secho(f"✓ Xray 配置模板已创建：{xray_config_path}", fg="green")
+                    click.secho("  请编辑该文件填入服务器信息，然后执行 coderfleet apply", fg="yellow")
+                else:
+                    click.secho(f"  请在 {xray_config_path} 创建 Xray 配置文件后执行 coderfleet apply", fg="yellow")
+            else:
+                click.secho(f"  使用已有 Xray 配置：{xray_config_path}", fg="cyan")
     else:
-        proxy_host = "host.docker.internal"
-        proxy_http_port = "7890"
-        proxy_socks5_port = "7890"
-        click.secho("  跳过代理配置。如需启用，在 config.conf 修改端口，账号添加 PROXY=relay 即可。", fg="yellow")
+        click.secho("  跳过代理配置。如需启用，在 config.conf 修改，账号添加 PROXY=relay 即可。", fg="yellow")
 
     # ── 步骤 3：镜像配置 ────────────────────────────────
     click.echo("\n── Docker 镜像配置 ───────────────────────────────")
@@ -137,19 +204,25 @@ def run_init_wizard(ws: Path) -> None:
     build_platform = click.prompt("构建平台", default=default_platform)
 
     # ── 步骤 4：写入 config.conf ─────────────────────────
-    relay_listen_port = proxy_http_port   # relay 监听同一端口转发给宿主机
-    values = {
+    values: dict[str, str] = {
         "IMAGE_NAME":       image_name,
         "IMAGE_TAG":        image_tag,
         "BUILD_PLATFORM":   build_platform,
-        "PROXY_HOST":       proxy_host,
-        "PROXY_HTTP_PORT":  proxy_http_port,
-        "PROXY_SOCKS5_PORT": proxy_socks5_port,
+        "PROXY_MODE":       proxy_mode,
         "INTERNAL_SUBNET":  "172.21.0.0/16",
         "RELAY_IP":         "172.21.0.2",
-        "RELAY_LISTEN_PORT": relay_listen_port,
+        "RELAY_LISTEN_PORT": "10808",
         "RELAY_IMAGE":      "gogost/gost:3",
     }
+    if proxy_mode == "xray":
+        values["XRAY_IP"]           = "172.21.0.3"
+        values["XRAY_LISTEN_PORT"]  = xray_listen_port
+        values["XRAY_IMAGE"]        = xray_image
+        values["XRAY_CONFIG"]       = xray_config_str
+    else:
+        values["PROXY_HOST"]        = proxy_host
+        values["PROXY_HTTP_PORT"]   = proxy_http_port
+        values["PROXY_SOCKS5_PORT"] = proxy_socks5_port
     _write_config(ws, values)
     click.secho("✓ config.conf 已生成", fg="green")
 
