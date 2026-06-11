@@ -4,10 +4,12 @@ import asyncio
 import fcntl
 import os
 import pty
+import shlex
 import signal
 import struct
 import termios
 from dataclasses import dataclass
+from pathlib import Path
 
 from coderfleet.server import docker_mgr
 from coderfleet.server.models import Account, Project
@@ -79,18 +81,7 @@ class TerminalSession:
     async def read(self) -> bytes:
         if self.master_fd is None:
             return b""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._read_once)
-
-    def _read_once(self) -> bytes:
-        if self.master_fd is None:
-            return b""
-        try:
-            return os.read(self.master_fd, 4096)
-        except BlockingIOError:
-            return b""
-        except OSError:
-            return b""
+        return await _read_pty_fd(self.master_fd)
 
     def write(self, data: str) -> None:
         if self.master_fd is None or not data:
@@ -126,4 +117,168 @@ class TerminalSession:
             try:
                 os.close(master_fd)
             except OSError:
+                pass
+
+
+async def _read_pty_fd(master_fd: int) -> bytes:
+    """Event-driven PTY read via epoll/kqueue (zero CPU when idle).
+
+    Uses asyncio's add_reader so the coroutine is suspended until the kernel
+    signals that data is available, instead of spinning in a poll loop.
+    Falls back to a 20 ms sleep on platforms without selector-based event
+    loops (e.g. Windows ProactorEventLoop).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        fut: asyncio.Future[None] = loop.create_future()
+
+        def _on_readable() -> None:
+            loop.remove_reader(master_fd)
+            if not fut.done():
+                fut.set_result(None)
+
+        loop.add_reader(master_fd, _on_readable)
+        try:
+            await fut
+        except asyncio.CancelledError:
+            loop.remove_reader(master_fd)
+            raise
+    except NotImplementedError:
+        await asyncio.sleep(0.02)
+
+    try:
+        return os.read(master_fd, 4096)
+    except (BlockingIOError, OSError):
+        return b""
+
+
+async def is_tmux_session_alive(container_name: str, session_name: str) -> bool:
+    """Return True if the named tmux session exists inside the container."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "exec", container_name,
+            "tmux", "has-session", "-t", session_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+async def setup_tmux_session(
+    container_name: str,
+    session_name: str,
+    workdir: str,
+    log_path_in_container: str,
+) -> None:
+    """
+    Create the tmux session (if it doesn't exist) and wire up pipe-pane for
+    persistent transcript logging.  Safe to call on every reconnect.
+    """
+    # Create session detached if it doesn't exist yet.
+    # Pass locale and TERM so bash readline inside the session handles UTF-8 properly.
+    create_cmd = (
+        f"tmux has-session -t {shlex.quote(session_name)} 2>/dev/null || "
+        f"tmux new-session -d -s {shlex.quote(session_name)} -c {shlex.quote(workdir)} "
+        f"-e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 -e TERM=xterm-256color"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "exec", container_name, "bash", "-c", create_cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.wait_for(proc.wait(), timeout=10)
+
+    # Ensure log directory exists and enable pipe-pane (idempotent)
+    log_dir = str(Path(log_path_in_container).parent)
+    pipe_cmd = (
+        f"mkdir -p {shlex.quote(log_dir)} && "
+        f"tmux pipe-pane -o -t {shlex.quote(session_name)} "
+        f"'cat >> {shlex.quote(log_path_in_container)} 2>/dev/null'"
+    )
+    proc2 = await asyncio.create_subprocess_exec(
+        "docker", "exec", container_name, "bash", "-c", pipe_cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.wait_for(proc2.wait(), timeout=10)
+
+
+class TmuxTerminalSession:
+    """
+    Like TerminalSession but attaches to a named tmux session inside a container.
+    Closing this session detaches from tmux without killing the running process.
+    """
+
+    def __init__(self, container_name: str, session_name: str, workdir: str):
+        self.container_name = container_name
+        self.session_name   = session_name
+        self.workdir        = workdir
+        self.master_fd: int | None = None
+        self.child_pid: int | None = None
+
+    def start(self) -> None:
+        if self.master_fd is not None or self.child_pid is not None:
+            raise RuntimeError("tmux terminal session already started")
+
+        # tmux new-session -A: create if absent, attach if present.
+        # Pass TERM and locale so xterm-256color features and UTF-8 input work correctly.
+        command = [
+            "docker", "exec", "-it",
+            "-e", "TERM=xterm-256color",
+            "-e", "LANG=C.UTF-8",
+            "-e", "LC_ALL=C.UTF-8",
+            self.container_name,
+            "tmux", "new-session", "-A", "-s", self.session_name,
+        ]
+        child_pid, master_fd = pty.fork()
+        if child_pid == 0:
+            os.execvp(command[0], command)
+        self.child_pid = child_pid
+        self.master_fd = master_fd
+        os.set_blocking(master_fd, False)
+
+    async def read(self) -> bytes:
+        if self.master_fd is None:
+            return b""
+        return await _read_pty_fd(self.master_fd)
+
+    def write(self, data: str) -> None:
+        if self.master_fd is None or not data:
+            return
+        os.write(self.master_fd, data.encode("utf-8", errors="ignore"))
+
+    def resize(self, cols: int, rows: int) -> None:
+        if self.master_fd is None:
+            return
+        resize_pty(self.master_fd, cols, rows)
+
+    def close(self) -> None:
+        """
+        Detach from tmux (Ctrl-B d) so the session keeps running, then
+        close our end of the pty.  We do NOT send SIGHUP.
+        """
+        master_fd = self.master_fd
+        child_pid = self.child_pid
+        self.master_fd = None
+        self.child_pid = None
+
+        if master_fd is not None:
+            # Send tmux detach key sequence (prefix + d)
+            try:
+                os.write(master_fd, b"\x02d")
+            except OSError:
+                pass
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+        # The docker exec process exits naturally after detach; just reap it.
+        if child_pid is not None:
+            try:
+                os.waitpid(child_pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
                 pass

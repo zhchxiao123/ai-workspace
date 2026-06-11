@@ -34,6 +34,7 @@ from coderfleet.server.models import (
     BoardCard,
     BoardCardStatus,
     Conversation,
+    ConversationMode,
     ConversationStatus,
     LogicalProject,
     LogicalProjectEntry,
@@ -73,8 +74,8 @@ class Scheduler:
         self.templates_dir  = workspace_dir / "workflow_templates"
         self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
         self.schedules_dir  = workspace_dir / "schedules"
-        # task_id → asyncio.Task（后台运行的协程）
         self.digests_dir    = workspace_dir / "digests"
+        # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
         self._push_manager = None  # set by main.py after both are initialized
@@ -1403,6 +1404,43 @@ class Scheduler:
         conversation.save(self.conversations_dir)
         return conversation
 
+    def create_terminal_conversation(
+        self,
+        name: str,
+        project_name: str,
+    ) -> Conversation:
+        """
+        Create a Conversation with mode=terminal backed by a named tmux session.
+        The tmux session is not started here — it is created lazily on first WS connect.
+        """
+        project = self.find_project_by_name(project_name)
+        if project is None:
+            raise ValueError(f"项目 '{project_name}' 不存在")
+        acc = next((a for a in self.get_accounts() if a.name == project.account), None)
+        if acc is None:
+            raise ValueError(f"账号 '{project.account}' 不存在")
+        if not docker_mgr.is_container_running(project.container_name(acc.type)):
+            raise RuntimeError(f"容器 {project.container_name(acc.type)} 未运行")
+
+        conv_id      = self.new_conversation_id()
+        # Use last 8 chars of conv_id for a short, unique tmux session name
+        tmux_session = f"cf-{conv_id[-9:]}"
+        conversation = Conversation(
+            id           = conv_id,
+            name         = name.strip() or f"Terminal {datetime.now().strftime('%m/%d %H:%M')}",
+            account      = acc.name,
+            type         = acc.type,
+            project      = project.path,
+            project_name = project.name,
+            mode         = ConversationMode.terminal,
+            tmux_session = tmux_session,
+        )
+        conversation.save(self.conversations_dir)
+        return conversation
+
+    def get_terminal_log_path(self, project_root: Path, conv_id: str) -> Path:
+        return project_root / ".coderfleet-terminals" / f"{conv_id}.log"
+
     def _write_log_header(self, log_path: Path, task: Task, acc: Account, container_workdir: str = "", container_name: str = "") -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
@@ -1711,6 +1749,13 @@ class Scheduler:
             return None
         return Path(project.path)
 
+    def _get_project_root_by_name(self, project_name: str) -> Path:
+        """返回按名称查找的项目在宿主机的根目录（不存在时返回临时路径，不抛出异常）。"""
+        project = self.find_project_by_name(project_name)
+        if project is None:
+            return Path("/tmp")
+        return Path(project.path)
+
     @staticmethod
     def _host_task_log(project_root: Path, task_id: str) -> Path:
         return project_root / ".coderfleet-tasks" / f"{task_id}.log"
@@ -1866,6 +1911,16 @@ class Scheduler:
         if task is None:
             raise ValueError(f"任务 '{task_id}' 不存在")
         task.archived = archived
+        task.save(self.tasks_dir)
+        return task
+
+    def update_task_prompt(self, task_id: str, new_prompt: str) -> Task:
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+        if task.status not in (TaskStatus.pending, TaskStatus.scheduled):
+            raise RuntimeError(f"只能修改 pending/scheduled 状态的任务，当前状态：{task.status.value}")
+        task.prompt = new_prompt.strip()
         task.save(self.tasks_dir)
         return task
 

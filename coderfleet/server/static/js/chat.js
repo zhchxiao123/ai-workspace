@@ -106,15 +106,17 @@ function renderConversations(convs, projects, tasks) {
 
     const items = [];
     projConvs.forEach(c => {
-      const convTasks = tasks.filter(t => t.conversation_id === c.id)
+      const isTerminal = c.mode === 'terminal';
+      const convTasks = isTerminal ? [] : tasks.filter(t => t.conversation_id === c.id)
         .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
-      const latestStatus = convTasks[0]?.status || 'done';
+      const latestStatus = isTerminal ? 'terminal' : (convTasks[0]?.status || 'done');
       items.push({
         type: 'conversation',
         id: c.id,
         name: c.name || c.id,
         time: c.updated || c.created || 0,
         status: latestStatus,
+        mode: c.mode || 'chat',
       });
     });
     projTasks.forEach(t => {
@@ -154,6 +156,11 @@ function renderConversations(convs, projects, tasks) {
         <button class="proj-dots-btn" onclick="event.stopPropagation(); openProjMenu(event, '${encodedProjectName}', ${isPinned})" title="更多操作" aria-label="更多操作">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
+        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewTerminalConversation('${esc(proj.name)}')" title="新建终端会话" aria-label="新建终端会话">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+          </svg>
+        </button>
         <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewChat({ projectName: '${esc(proj.name)}' })" title="新建对话" aria-label="新建对话">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
@@ -177,16 +184,22 @@ function renderConversations(convs, projects, tasks) {
       html += visibleItems.map(item => {
         const isActive = item.id === activeConversationId;
         const displayTime = fmtTimeFriendly(item.time);
+        const isTerminalMode = item.mode === 'terminal';
         const isRunning = item.status === 'running';
         const isPending = item.status === 'pending' || item.status === 'scheduled';
-        const statusBadge = isRunning
+        const modeIcon = isTerminalMode
+          ? `<span class="session-mode-icon" title="终端会话">⌨</span>`
+          : '';
+        const statusBadge = isTerminalMode
+          ? `<span class="session-time">${esc(displayTime)}</span>`
+          : isRunning
           ? `<span class="session-status-dot running" title="运行中"></span>`
           : isPending
           ? `<span class="session-status-dot pending" title="${item.status === 'scheduled' ? '已定时' : '排队中'}"></span>`
           : `<span class="session-time">${esc(displayTime)}</span>`;
         return `
       <div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
-        <span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
+        ${modeIcon}<span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
         ${statusBadge}
         <button class="session-dots-btn" onclick="event.stopPropagation(); openSessionMenu(event, '${esc(item.id)}', '${item.type}')" title="更多操作" aria-label="更多操作">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
@@ -489,9 +502,12 @@ function openProjMenu(event, encodedProjectName, isPinned) {
 }
 
 function openSessionMenu(event, itemId, itemType) {
+  // Capture the exact element that was clicked so rename targets the right DOM node,
+  // not the duplicate in the "最近访问" section which querySelector would find first.
+  const clickedItem = event.currentTarget.closest('.chat-session-item');
   const items = [];
   if (itemType === 'conversation') {
-    items.push({ label: '重命名', icon: _menuIcons.rename, action: () => inlineRenameConversation(itemId) });
+    items.push({ label: '重命名', icon: _menuIcons.rename, action: () => inlineRenameConversation(itemId, clickedItem) });
     items.push({ sep: true });
     items.push({ label: '归档', icon: _menuIcons.archive, action: () => archiveConversation(itemId) });
     items.push({ label: '删除', icon: _menuIcons.trash, danger: true, action: () => deleteConversation(itemId) });
@@ -502,8 +518,10 @@ function openSessionMenu(event, itemId, itemType) {
   openCtxMenu(event.currentTarget, items);
 }
 
-async function inlineRenameConversation(convId) {
-  const itemEl = document.querySelector(`.chat-session-item[data-item-id="${CSS.escape(convId)}"]`);
+async function inlineRenameConversation(convId, itemEl) {
+  if (!itemEl) {
+    itemEl = document.querySelector(`.chat-session-item[data-item-id="${CSS.escape(convId)}"]`);
+  }
   if (!itemEl) return;
   const nameSpan = itemEl.querySelector('.session-name');
   if (!nameSpan) return;
@@ -611,6 +629,11 @@ function renderEmptyChatState() {
   const workspace = document.getElementById('chat-workspace');
   if (!workspace) return;
 
+  // Show chat workspace, hide terminal workspaces
+  workspace.style.display = '';
+  const termWs = document.getElementById('terminal-workspaces');
+  if (termWs) termWs.style.display = 'none';
+
   const projectLabel = chatNewSessionProject || '未指定项目';
   currentChatProjectName = chatNewSessionProject;
   pendingImages = [];
@@ -695,10 +718,126 @@ function bindChatViewportScroll() {
   }, { passive: true });
 }
 
+// 新建终端对话
+async function startNewTerminalConversation(projectName) {
+  if (!projectName) return;
+  const now = new Date();
+  const name = `Terminal ${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  try {
+    const r = await fetch(`${API}/api/conversations/terminal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, project_name: projectName }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert(`创建终端会话失败：${err.detail || r.status}`);
+      return;
+    }
+    const conv = await r.json();
+    await loadConversations(false);
+    activeConversationId = conv.id;
+    activeTabId = upsertConversationTab(conv.id);
+    renderTopbarTabs();
+    await loadConversations(true);
+  } catch (e) {
+    alert(`创建终端会话失败：${e.message}`);
+  }
+}
+
+// 渲染终端对话工作区
+function renderTerminalConversationWorkspace(conv) {
+  currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
+
+  // Persistent container: hide chat workspace, show terminal-workspaces panel.
+  // Terminal conversation DOMs live here and are NEVER destroyed on tab switches —
+  // only show/hidden — so the xterm instance and WebSocket stay alive.
+  const chatWs  = document.getElementById('chat-workspace');
+  const termWs  = document.getElementById('terminal-workspaces');
+  if (!termWs) return;
+  if (chatWs)  chatWs.style.display  = 'none';
+  termWs.style.display = 'flex';
+
+  // Hide all other terminal conv workspaces (only one visible at a time)
+  termWs.querySelectorAll('.terminal-conv-workspace').forEach(el => { el.style.display = 'none'; });
+
+  // Check if this conversation's container already exists
+  let convWs = document.getElementById(`terminal-conv-ws-${conv.id}`);
+  if (convWs) {
+    convWs.style.display = 'flex';
+    const ctx = convTerminalContexts[conv.id];
+    if (ctx && ctx.socket &&
+        (ctx.socket.readyState === WebSocket.OPEN || ctx.socket.readyState === WebSocket.CONNECTING)) {
+      // Still connected — just resize/focus, no reconnect needed
+      resizeConvTerminal(ctx);
+      ctx.terminal?.focus();
+      return;
+    }
+    // Container exists but socket died — reconnect
+    const mount = document.getElementById(`conv-terminal-container-${conv.id}`);
+    if (mount) connectConversationTerminal(conv.id, mount);
+    return;
+  }
+
+  // First time: create persistent workspace for this terminal conversation
+  convWs = document.createElement('div');
+  convWs.id        = `terminal-conv-ws-${conv.id}`;
+  convWs.className = 'terminal-conv-workspace';
+  convWs.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;width:100%;';
+  convWs.innerHTML = `
+<div class="chat-main-header">
+  <div class="chat-main-title-area">
+    <div class="chat-main-title" title="${esc(conv.name)}">
+      <span style="margin-right:6px;opacity:.7">⌨</span>${esc(conv.name)}
+    </div>
+    <div class="chat-main-subtitle">
+      项目: <strong style="color:var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
+      账号: <span>${esc(conv.account || '未指定')}</span> ·
+      活跃: <span>${fmtTime(conv.updated)}</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;" id="chat-header-actions">
+    <span class="status-dot killed" id="conv-terminal-dot-${esc(conv.id)}" title="未连接" style="width:8px;height:8px;"></span>
+    <span id="conv-terminal-status-${esc(conv.id)}" style="font-size:11px;color:var(--text-3);">连接中...</span>
+    <button class="btn" style="font-size:11px;padding:3px 8px;" onclick="reconnectConversationTerminal(${JSON.stringify(conv.id)})" title="重新连接">重连</button>
+  </div>
+</div>
+<div style="flex:1;min-height:0;overflow:hidden;background:#1a1b1e;" id="conv-terminal-container-${esc(conv.id)}"></div>
+`;
+  termWs.appendChild(convWs);
+
+  requestAnimationFrame(() => {
+    const mount = document.getElementById(`conv-terminal-container-${conv.id}`);
+    if (mount) connectConversationTerminal(conv.id, mount);
+  });
+}
+
+function reconnectConversationTerminal(convId) {
+  const ctx = convTerminalContexts[convId];
+  if (ctx) {
+    ctx.terminal?.dispose();
+    ctx.terminal = null;
+    ctx.fitAddon = null;
+    disconnectConversationTerminal(convId, false);
+  }
+  const mount = document.getElementById(`conv-terminal-container-${convId}`);
+  if (mount) connectConversationTerminal(convId, mount);
+}
+
 // 渲染右侧会话主工作区
 async function renderChatWorkspace(conv) {
   const workspace = document.getElementById('chat-workspace');
   if (!workspace) return;
+
+  // Terminal-mode conversations get a full-height xterm, not chat bubbles
+  if (conv.mode === 'terminal') {
+    return renderTerminalConversationWorkspace(conv);
+  }
+
+  // Show chat workspace, hide persistent terminal workspaces panel
+  workspace.style.display = '';
+  const termWs = document.getElementById('terminal-workspaces');
+  if (termWs) termWs.style.display = 'none';
 
   currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
   pendingImages = [];
@@ -777,6 +916,19 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
     const runningCount = convTasks.filter(t => t.status === 'running').length;
     const pendingCount = convTasks.filter(t => t.status === 'pending').length;
     const scheduledCount = convTasks.filter(t => t.status === 'scheduled').length;
+
+    // 渲染排队面板（只含 pending/scheduled 且排好序的任务）
+    const queuedTasks = convTasks
+      .filter(t => t.status === 'pending' || t.status === 'scheduled')
+      .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
+    renderQueuePanel(queuedTasks);
+
+    // 若队列已满，禁用发送按钮
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (sendBtn) {
+      sendBtn.disabled = queuedTasks.length >= CHAT_MAX_QUEUE;
+      sendBtn.title = queuedTasks.length >= CHAT_MAX_QUEUE ? '队列已满，请等待执行或删除队列中的任务后再发送' : '';
+    }
 
     let statusHtml = '';
     if (runningCount > 0) {
@@ -878,12 +1030,14 @@ function _isProjectAccountBusy(projectName) {
 }
 
 // 乐观 UI：无需整页重渲就地追加用户气泡 + 等待中响应区
-// isPending: true → 排队中占位；false → 执行中占位（会在首条 SSE 数据后自动清除）
+// isPending: true → 任务进入排队，只加用户气泡 + 刷新队列面板，不加占位 bubble，不开 SSE
+// isPending: false → 立即执行，加用户气泡 + 执行中占位 + 开 SSE
 // 返回 true 表示操作成功（已找到 chat-content）
 function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPending = false) {
   const chatContent = document.getElementById('chat-content');
   if (!chatContent) return false;
 
+  // 用户气泡（无论是否 pending 都要展示）
   const userWrap = document.createElement('div');
   userWrap.className = 'timeline-node-wrapper user-wrapper';
   userWrap.innerHTML = `
@@ -897,32 +1051,60 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
     </div>`;
   chatContent.appendChild(userWrap);
 
-  const logWrap = document.createElement('div');
-  logWrap.style.marginBottom = '24px';
-  chatContent.appendChild(logWrap);
-
-  const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName);
-  if (isPending) {
-    localRenderer.renderPending();
-  } else {
-    localRenderer.renderExecuting();
-  }
-  chatRenderer = localRenderer;
   currentChatTaskId = taskId;
 
-  const headerActions = document.getElementById('chat-header-actions');
-  if (headerActions) {
-    headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">终止执行</button>`;
-  }
-  const statusText = document.getElementById('chat-status-text');
-  if (statusText) {
-    statusText.innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
+  if (isPending) {
+    // 排队中：不在聊天气泡区显示占位，改由输入框上方的队列面板管理
+    const headerActions = document.getElementById('chat-header-actions');
+    if (headerActions) {
+      // 保留原有运行中任务的 "终止执行" 按钮不覆盖，只在没有按钮时补上 "取消排队"
+      if (!headerActions.querySelector('.btn.danger')) {
+        headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">取消排队</button>`;
+      }
+    }
+    const statusText = document.getElementById('chat-status-text');
+    if (statusText) {
+      const pendingCount = (tasksCache || []).filter(
+        t => t.conversation_id === activeConversationId && (t.status === 'pending' || t.status === 'scheduled')
+      ).length;
+      const runningCount = (tasksCache || []).filter(
+        t => t.conversation_id === activeConversationId && t.status === 'running'
+      ).length;
+      if (runningCount > 0) {
+        statusText.innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span> <span style="color: var(--text-2); font-size: 11px;">(${pendingCount}个任务在排队...)</span>`;
+      } else {
+        statusText.innerHTML = `<span style="color: var(--text-2);">● 任务在排队中 (${pendingCount}个)</span>`;
+      }
+    }
+    // 从 tasksCache 刷新队列面板（调用前调用方已把新任务 push 进 tasksCache）
+    _refreshQueuePanel();
+    scrollToBottomAndResume();
+  } else {
+    // 立即执行：加 "执行中" 占位，开 SSE
+    const logWrap = document.createElement('div');
+    logWrap.style.marginBottom = '24px';
+    chatContent.appendChild(logWrap);
+
+    const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName);
+    localRenderer.renderExecuting();
+    chatRenderer = localRenderer;
+
+    const headerActions = document.getElementById('chat-header-actions');
+    if (headerActions) {
+      headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">终止执行</button>`;
+    }
+    const statusText = document.getElementById('chat-status-text');
+    if (statusText) {
+      statusText.innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
+    }
+    renderQueuePanel([]);
+
+    scrollToBottomAndResume();
+    // tail=50：对刚创建的任务，日志文件极短，tail=50 等同于从头读取，
+    // 确保 SSE 能拿到日志头部元数据块（id/account/project 等）。
+    startChatFollow(taskId, 0, 50);
   }
 
-  scrollToBottomAndResume();
-  // tail=50：对刚创建的任务，日志文件极短，tail=50 等同于从头读取，
-  // 确保 SSE 能拿到日志头部元数据块（id/account/project 等）。
-  startChatFollow(taskId, 0, 50);
   return true;
 }
 
@@ -939,6 +1121,17 @@ async function sendChatMessage() {
   if (chatUploadingImages > 0) {
     alert('图片还在上传中，请稍后再发送');
     return;
+  }
+
+  // 前端也检查队列是否已满（防止按钮状态不同步的情况）
+  if (activeConversationId && !activeConversationId.startsWith('task-')) {
+    const pendingInConv = (tasksCache || []).filter(
+      t => t.conversation_id === activeConversationId && (t.status === 'pending' || t.status === 'scheduled')
+    );
+    if (pendingInConv.length >= CHAT_MAX_QUEUE) {
+      alert(`队列已满（最多 ${CHAT_MAX_QUEUE} 条），请等待任务执行或删除队列中的任务后再发送`);
+      return;
+    }
   }
 
   const sendBtn = document.getElementById('chat-send-btn');
@@ -1007,8 +1200,10 @@ async function sendChatMessage() {
       sendBtn.disabled = false;
       sendBtn.textContent = '发送';
 
-      // 发送前判断账号状态，决定占位态（排队 or 执行中）
-      const willPend1 = _isProjectAccountBusy(currentChatProjectName);
+      // 把新任务加入本地缓存，让队列面板立即读到（无需等待 loadConversations 回调）
+      if (!tasksCache.find(t => t.id === taskData.id)) tasksCache.push(taskData);
+      // 用服务端返回的实际状态决定占位态（比 _isProjectAccountBusy 更准确）
+      const willPend1 = taskData.status === 'pending' || taskData.status === 'scheduled';
       // 清空占位文字，就地渲染用户气泡，避免整页重建导致的闪烁
       const chatContent = document.getElementById('chat-content');
       if (chatContent) chatContent.innerHTML = '';
@@ -1094,8 +1289,10 @@ async function sendChatMessage() {
     sendBtn.disabled = false;
     sendBtn.textContent = '发送';
 
-    // 发送前判断账号状态，决定占位态（排队 or 执行中）
-    const willPend = _isProjectAccountBusy(currentChatProjectName);
+    // 把新任务加入本地缓存，让队列面板立即读到（无需等待 loadConversations 回调）
+    if (!tasksCache.find(t => t.id === data.id)) tasksCache.push(data);
+    // 用服务端返回的实际状态决定占位态（比 _isProjectAccountBusy 更准确）
+    const willPend = data.status === 'pending' || data.status === 'scheduled';
     // 就地追加气泡，避免整页重建导致的闪烁；fallback 到完整重载
     if (!_appendOptimisticUserMessage(promptText, snapshotPaths, data.id, willPend)) {
       await selectConversation(convId);
@@ -1122,6 +1319,7 @@ function startChatFollow(taskId, skipBytes = 0, tail = 0) {
     if (e.data === '[DONE]') {
       stopChatFollow();
       if (activeConversationId) {
+        // 任务完成后刷新（会更新队列面板和头部按钮）
         selectConversation(activeConversationId);
       }
       return;
@@ -1227,12 +1425,156 @@ async function deleteOneOff(itemId) {
   }
 }
 
+// ── 任务排队面板 ────────────────────────────────────────────
+
+const CHAT_MAX_QUEUE = 3;
+
+function renderQueuePanel(pendingTasks) {
+  const container = document.getElementById('chat-queue-panel');
+  if (!container) return;
+  if (!pendingTasks || pendingTasks.length === 0) {
+    container.innerHTML = '';
+    container.style.display = 'none';
+    return;
+  }
+
+  const isFull = pendingTasks.length >= CHAT_MAX_QUEUE;
+  const editIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+  const trashIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>`;
+
+  let html = `<div class="chat-queue-header">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    等待队列 (${pendingTasks.length}/${CHAT_MAX_QUEUE})
+    ${isFull ? `<span class="chat-queue-full-tip">队列已满，请执行或删除后再发送</span>` : ''}
+  </div>`;
+
+  pendingTasks.forEach((task, idx) => {
+    const escapedPrompt = esc(task.prompt || '');
+    const escapedId = esc(task.id);
+    html += `
+    <div class="chat-queue-item" data-queue-task-id="${escapedId}">
+      <span class="chat-queue-pos">${idx + 1}</span>
+      <span class="chat-queue-text" title="${escapedPrompt}">${escapedPrompt}</span>
+      <div class="chat-queue-actions">
+        <button class="chat-queue-action-btn" title="编辑" onclick="startQueueItemEdit('${escapedId}', this)">${editIcon}</button>
+        <button class="chat-queue-action-btn danger" title="删除" onclick="deleteQueuedTask('${escapedId}')">${trashIcon}</button>
+      </div>
+    </div>`;
+  });
+
+  container.innerHTML = html;
+  container.style.display = 'block';
+}
+
+function startQueueItemEdit(taskId, btn) {
+  const item = btn.closest('.chat-queue-item');
+  if (!item) return;
+  const textSpan = item.querySelector('.chat-queue-text');
+  if (!textSpan) return;
+
+  const currentText = textSpan.title || textSpan.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'chat-queue-edit-input';
+  input.value = currentText;
+  textSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const saveEdit = async () => {
+    const newPrompt = input.value.trim();
+    input.removeEventListener('blur', saveEdit);
+    if (!newPrompt || newPrompt === currentText) {
+      _refreshQueuePanel();
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: newPrompt }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert('修改失败: ' + (d.detail || r.statusText));
+      } else {
+        const t = tasksCache.find(t => t.id === taskId);
+        if (t) t.prompt = newPrompt;
+      }
+    } catch (e) {
+      alert('修改失败: ' + e.message);
+    }
+    _refreshQueuePanel();
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+    if (e.key === 'Escape') { _refreshQueuePanel(); }
+  });
+  input.addEventListener('blur', saveEdit);
+}
+
+async function deleteQueuedTask(taskId) {
+  try {
+    const r = await fetch(`${API}/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert('删除失败: ' + (d.detail || r.statusText));
+      return;
+    }
+    // Remove from tasksCache
+    const idx = tasksCache.findIndex(t => t.id === taskId);
+    if (idx !== -1) tasksCache.splice(idx, 1);
+    _refreshQueuePanel();
+    // Update sidebar + status text
+    loadConversations(false);
+    loadTasks();
+  } catch (e) {
+    alert('删除失败: ' + e.message);
+  }
+}
+
+function _refreshQueuePanel() {
+  if (!activeConversationId) return;
+  const convTasks = tasksCache.filter(t => t.conversation_id === activeConversationId);
+  const pendingTasks = convTasks
+    .filter(t => t.status === 'pending' || t.status === 'scheduled')
+    .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
+  renderQueuePanel(pendingTasks);
+
+  // 同步发送按钮状态（始终更新，不受当前 disabled 值干扰）
+  const sendBtn = document.getElementById('chat-send-btn');
+  if (sendBtn && sendBtn.textContent !== '发送中...' && sendBtn.textContent !== '建会话...') {
+    const isFull = pendingTasks.length >= CHAT_MAX_QUEUE;
+    sendBtn.disabled = isFull;
+    sendBtn.title = isFull ? '队列已满，请等待执行或删除队列中的任务后再发送' : '';
+  }
+
+  // 同步状态文字
+  const statusText = document.getElementById('chat-status-text');
+  if (statusText) {
+    const runningCount = convTasks.filter(t => t.status === 'running').length;
+    if (runningCount > 0) {
+      let s = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
+      if (pendingTasks.length > 0) {
+        s += ` <span style="color: var(--text-2); font-size: 11px;">(${pendingTasks.length}个任务在排队...)</span>`;
+      }
+      statusText.innerHTML = s;
+    } else if (pendingTasks.length > 0) {
+      statusText.innerHTML = `<span style="color: var(--text-2);">● 任务在排队中 (${pendingTasks.length}个)</span>`;
+    } else {
+      statusText.innerHTML = `<span style="color: var(--text-2);">就绪</span>`;
+    }
+  }
+}
+
 // ── 图片上传 ──────────────────────────────────────────────
 
 function buildChatInputHTML(placeholder, hint) {
   const attachIcon = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`;
   return `
 <div class="chat-input-container">
+  <div id="chat-queue-panel" class="chat-queue-panel" style="display:none;"></div>
   <div class="chat-input-composer">
     <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
     <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>

@@ -41,6 +41,70 @@ function createEnhancedTerminal(mountEl) {
 
   terminal.open(mountEl);
 
+  // ── IME 中文/日文/韩文输入法支持 ──────────────────────
+  // xterm.js 在部分浏览器/IME（fcitx、ibus、搜狗等）下存在竞态：
+  // xterm 自身的 compositionend 处理可能未能通过 onData 发出最终组合字符。
+  //
+  // 两步去重策略：
+  //   1. imeFilter 记录 xterm 自己触发的 onData（_imeXtermSent）并放行
+  //   2. compositionend 的 rAF 里检查：若 xterm 已发则跳过；
+  //      若未发则直接调用外层发送回调，避免 terminal.paste() 再触发
+  //      xterm 输入链造成重复。
+  let _imeComposing       = false;
+  let _imeLastData        = '';
+  let _imeSendData        = null;
+  const _imeXtermSent     = [];   // [{text, ts}]
+
+  const _imeXtermClearOld = () => {
+    const cutoff = Date.now() - 300;
+    while (_imeXtermSent.length && _imeXtermSent[0].ts < cutoff) _imeXtermSent.shift();
+  };
+
+  const _imeRememberSent = (text) => {
+    if (!/[^\x00-\x7F]/.test(text)) return;
+    _imeXtermClearOld();
+    _imeXtermSent.push({ text, ts: Date.now() });
+  };
+
+  // textarea 在 terminal.open() 之后同步创建，可以直接访问
+  const _ta = terminal.textarea;
+  if (_ta) {
+    _ta.addEventListener('compositionstart', () => {
+      _imeComposing = true;
+      _imeLastData  = '';
+    }, true);
+
+    _ta.addEventListener('compositionupdate', (e) => {
+      _imeLastData = e.data || '';
+    }, true);
+
+    _ta.addEventListener('compositionend', (e) => {
+      _imeComposing = false;
+      const composed = e.data || _imeLastData;
+      _imeLastData = '';
+      if (!composed) return;
+
+      // rAF 让 xterm 自身的 compositionend → setTimeout(0) → input 事件链先跑完
+      // 注意：浏览器的 input 事件有时会在 rAF 之后才到（可达 100ms+），
+      // 所以这里【不删除】_imeXtermSent 里的记录，让它在 300ms 后自然过期。
+      // 这样 imeFilter 的 300ms 窗口才能拦截住所有迟到的重复 onData 调用。
+      requestAnimationFrame(() => {
+        _imeXtermClearOld();
+        const found = _imeXtermSent.some(p => p.text === composed);
+        if (found) {
+          // xterm 已发出（记录保留 300ms，用于拦截迟到的 input 事件重复）
+          return;
+        }
+        // xterm 未发送（IME 竞态失败）— 由我们直接兜底发送；
+        // 也先加入 sent 列表，防止后续迟到的 xterm onData 造成二次发送。
+        // 不使用 terminal.paste()，因为 paste 会再次进入 xterm 输入链，
+        // 在部分浏览器/输入法组合下会和原生 composition/input 事件互相重复。
+        _imeRememberSent(composed);
+        if (typeof _imeSendData === 'function') _imeSendData(composed);
+      });
+    }, true);
+  }
+
   // ── 选中自动复制（Linux 终端惯例）──────────────────────
   terminal.onSelectionChange(() => {
     const text = terminal.getSelection();
@@ -50,6 +114,12 @@ function createEnhancedTerminal(mountEl) {
   // ── 键盘快捷键 ─────────────────────────────────────────
   terminal.attachCustomKeyEventHandler(e => {
     if (e.type !== 'keydown') return true;
+
+    // 屏蔽 IME 组合期间的 keydown，防止拼音原始字母被发送到后端
+    // e.isComposing：W3C 标准，主流浏览器支持
+    // keyCode 229：部分浏览器在 IME 处理键时发送的 Process 键值
+    // _imeComposing：自己追踪的补充标志（Firefox 等顺序不同时保底）
+    if (e.isComposing || e.keyCode === 229 || _imeComposing) return false;
 
     // Ctrl+Shift+C：显式复制
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
@@ -136,7 +206,25 @@ function createEnhancedTerminal(mountEl) {
     setTimeout(() => document.addEventListener('click', _closeTermCtxMenu, { once: true }), 0);
   });
 
-  return { terminal, fitAddon, searchAddon };
+  // imeFilter(fn) 包装 onData 回调，与上面 IME 逻辑配合去重
+  const imeFilter = (fn) => {
+    _imeSendData = fn;
+    return (data) => {
+      // 这是 xterm 自身触发的 onData
+      if (/[^\x00-\x7F]/.test(data)) {
+        _imeXtermClearOld();
+        // 浏览器会对同一次 compositionend 触发多次 onData（compositionend + input 事件）
+        // 且 input 事件可能比 rAF 更晚到（100ms+），所以用 300ms 窗口去重。
+        // 关键：_imeXtermSent 里的记录在 rAF 里【不删除】，保留到自然过期（300ms）。
+        const existing = _imeXtermSent.find(p => p.text === data && Date.now() - p.ts < 300);
+        if (existing) return;   // 300ms 内同文本已发过 → 重复，丢弃
+        _imeRememberSent(data);
+      }
+      fn(data);
+    };
+  };
+
+  return { terminal, fitAddon, searchAddon, imeFilter };
 }
 
 // ── 内部工具函数 ────────────────────────────────────────────

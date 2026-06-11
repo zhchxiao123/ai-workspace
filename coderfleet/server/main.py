@@ -42,6 +42,7 @@ from coderfleet.server.models import (
     BoardCardStatus,
     BoardResponse,
     Conversation,
+    ConversationMode,
     ConversationResponse,
     ConversationStatus,
     LogicalProject,
@@ -62,12 +63,19 @@ from coderfleet.server.models import (
     TaskStatus,
     TemplateCreateRequest,
     TemplateRunRequest,
+    TerminalConversationCreateRequest,
     WorkflowTemplateResponse,
 )
 from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
-from coderfleet.server.terminal import TerminalSession, resolve_terminal_target
+from coderfleet.server.terminal import (
+    TerminalSession,
+    TmuxTerminalSession,
+    is_tmux_session_alive,
+    resolve_terminal_target,
+    setup_tmux_session,
+)
 from coderfleet.server.push_manager import PushManager
 from coderfleet.server.digest import (
     build_generate_prompt,
@@ -748,6 +756,20 @@ async def create_task(req: TaskCreateRequest):
       3. type 指定    → 找对应类型的空闲账号
       4. 都不指定     → 找第一个空闲账号
     """
+    # 每个会话最多允许 3 条 pending/scheduled 排队任务
+    MAX_PENDING_PER_CONV = 3
+    if req.conversation_id:
+        pending_count = sum(
+            1 for t in scheduler.list_tasks()
+            if t.conversation_id == req.conversation_id
+            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
+        )
+        if pending_count >= MAX_PENDING_PER_CONV:
+            raise HTTPException(
+                status_code=429,
+                detail=f"队列已满，最多支持 {MAX_PENDING_PER_CONV} 条排队任务，请等待执行或删除队列中的任务后再发送",
+            )
+
     try:
         task = await scheduler.submit(
             prompt         = req.prompt,
@@ -1129,8 +1151,6 @@ async def project_terminal(websocket: WebSocket, project_name: str):
                         "type": "output",
                         "data": data.decode("utf-8", errors="replace"),
                     })
-                else:
-                    await asyncio.sleep(0.02)
 
         async def pump_input() -> None:
             assert session is not None
@@ -1210,6 +1230,201 @@ async def create_conversation(req: ConversationCreateRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return ConversationResponse.from_conversation(conversation)
+
+
+@app.post("/api/conversations/terminal", response_model=ConversationResponse, status_code=201)
+async def create_terminal_conversation(req: TerminalConversationCreateRequest):
+    """Create a new terminal-mode conversation backed by a persistent tmux session."""
+    try:
+        conv = scheduler.create_terminal_conversation(
+            name         = req.name,
+            project_name = req.project_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return ConversationResponse.from_conversation(conv)
+
+
+async def _replay_terminal_log(websocket: WebSocket, log_path: "Path", lines: int = 300) -> None:
+    """Send the last N lines of the terminal transcript to a newly attached client."""
+    try:
+        if not log_path.exists():
+            return
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        tail = "\r\n".join(text.splitlines()[-lines:])
+        if tail:
+            await websocket.send_json({"type": "history", "data": tail + "\r\n"})
+    except Exception:
+        pass
+
+
+@app.websocket("/api/conversations/{conv_id}/terminal")
+async def conversation_terminal(websocket: WebSocket, conv_id: str):
+    """Attach to the persistent tmux session for a terminal-mode conversation."""
+    if not _is_allowed_terminal_origin(
+        websocket.headers.get("origin"),
+        websocket.headers.get("host"),
+    ):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    session: TmuxTerminalSession | None = None
+
+    try:
+        conv = scheduler.get_conversation(conv_id)
+        if conv is None or conv.mode != ConversationMode.terminal:
+            await websocket.send_json({
+                "type": "status", "state": "error",
+                "message": "非终端对话或会话不存在",
+            })
+            await websocket.close(code=1008)
+            return
+
+        project = scheduler.find_project_by_name(conv.project_name)
+        if project is None:
+            await websocket.send_json({
+                "type": "status", "state": "error",
+                "message": f"项目 '{conv.project_name}' 不存在",
+            })
+            await websocket.close(code=1008)
+            return
+
+        from coderfleet.server.models import AccountType as _AT
+        acc = next((a for a in scheduler.get_accounts() if a.name == conv.account), None)
+        if acc is None:
+            await websocket.send_json({
+                "type": "status", "state": "error",
+                "message": f"账号 '{conv.account}' 不存在",
+            })
+            await websocket.close(code=1008)
+            return
+
+        container_name = project.container_name(acc.type)
+        from coderfleet.server import docker_mgr as _dm
+        if not _dm.is_container_running(container_name):
+            await websocket.send_json({
+                "type": "status", "state": "error",
+                "message": f"容器 {container_name} 未运行，请先启动容器",
+            })
+            await websocket.close(code=1008)
+            return
+
+        workdir = scheduler.container_workdir_for_project(project, project.path)
+        log_path_in_container = f"/workspace/.coderfleet-terminals/{conv.id}.log"
+        host_log_path = scheduler._get_project_root_by_name(conv.project_name) / ".coderfleet-terminals" / f"{conv.id}.log"
+
+        # Replay transcript before attaching so user sees prior history
+        await _replay_terminal_log(websocket, host_log_path)
+
+        # Ensure tmux session exists and pipe-pane is active
+        try:
+            await setup_tmux_session(
+                container_name        = container_name,
+                session_name          = conv.tmux_session,
+                workdir               = workdir,
+                log_path_in_container = log_path_in_container,
+            )
+        except Exception as e:
+            await websocket.send_json({
+                "type": "status", "state": "error",
+                "message": f"初始化 tmux 会话失败：{e}",
+            })
+            await websocket.close(code=1008)
+            return
+
+        session = TmuxTerminalSession(
+            container_name = container_name,
+            session_name   = conv.tmux_session,
+            workdir        = workdir,
+        )
+        session.start()
+        conv.touch(scheduler.conversations_dir)
+
+        await websocket.send_json({
+            "type": "status",
+            "state": "connected",
+            "message": f"已连接 {container_name} · tmux:{conv.tmux_session}",
+        })
+
+        async def pump_output() -> None:
+            assert session is not None
+            while True:
+                data = await session.read()
+                if data:
+                    await websocket.send_json({
+                        "type": "output",
+                        "data": data.decode("utf-8", errors="replace"),
+                    })
+
+        async def pump_input() -> None:
+            assert session is not None
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                msg_type = message.get("type")
+                if msg_type == "input":
+                    session.write(str(message.get("data", "")))
+                elif msg_type == "resize":
+                    try:
+                        cols = int(message.get("cols", 0))
+                        rows = int(message.get("rows", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    session.resize(cols=cols, rows=rows)
+
+        output_task = asyncio.create_task(pump_output())
+        input_task  = asyncio.create_task(pump_input())
+        done, pending = await asyncio.wait(
+            {output_task, input_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+        for t in done:
+            t.result()
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "status", "state": "error", "message": str(e),
+            })
+        except Exception:
+            pass
+    finally:
+        if session is not None:
+            session.close()   # detach, not kill
+        try:
+            await websocket.send_json({
+                "type": "status", "state": "disconnected",
+                "message": "已断开连接（tmux 会话继续运行）",
+            })
+        except Exception:
+            pass
+
+
+@app.get("/api/conversations/{conv_id}/terminal/status")
+async def terminal_conversation_status(conv_id: str):
+    """Check whether the backing tmux session is alive."""
+    conv = scheduler.get_conversation(conv_id)
+    if conv is None or conv.mode != ConversationMode.terminal:
+        raise HTTPException(status_code=404, detail="非终端对话")
+    project = scheduler.find_project_by_name(conv.project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{conv.project_name}' 不存在")
+    acc = next((a for a in scheduler.get_accounts() if a.name == conv.account), None)
+    if acc is None:
+        raise HTTPException(status_code=404, detail=f"账号 '{conv.account}' 不存在")
+    container_name = project.container_name(acc.type)
+    alive = await is_tmux_session_alive(container_name, conv.tmux_session)
+    return {"alive": alive, "tmux_session": conv.tmux_session, "container": container_name}
 
 
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
@@ -1300,16 +1515,27 @@ async def kill_task(task_id: str):
 
 
 class TaskUpdate(BaseModel):
-    archived: bool
+    archived: Optional[bool] = None
+    prompt: Optional[str] = None
 
 
 @app.patch("/api/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(task_id: str, body: TaskUpdate):
-    try:
-        task = scheduler.archive_task(task_id, body.archived)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return TaskResponse.from_task(task)
+    if body.prompt is not None:
+        try:
+            task = scheduler.update_task_prompt(task_id, body.prompt)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return TaskResponse.from_task(task)
+    if body.archived is not None:
+        try:
+            task = scheduler.archive_task(task_id, body.archived)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return TaskResponse.from_task(task)
+    raise HTTPException(status_code=400, detail="请提供 archived 或 prompt 字段")
 
 
 @app.post("/api/tasks/{task_id}/retry", response_model=TaskResponse)

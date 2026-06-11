@@ -2,6 +2,175 @@ function terminalWsUrl(projectName) {
   return wsUrl(`${API}/api/projects/${encodeURIComponent(projectName)}/terminal`);
 }
 
+function conversationTerminalWsUrl(convId) {
+  return wsUrl(`${API}/api/conversations/${encodeURIComponent(convId)}/terminal`);
+}
+
+// ── 终端对话（conv mode=terminal）────────────────────────────
+// One context per conversation-terminal; keyed by convId.
+const convTerminalContexts = {};
+
+function getOrCreateConvTerminalContext(convId) {
+  if (!convTerminalContexts[convId]) {
+    convTerminalContexts[convId] = {
+      convId,
+      socket: null,
+      terminal: null,
+      fitAddon: null,
+      connected: false,
+      inputReady: false,   // blocked until after initialization (history replay + tmux handshake)
+      resizeTimer: null,
+      lastState: 'closed',
+      mountEl: null,
+    };
+  }
+  return convTerminalContexts[convId];
+}
+
+function connectConversationTerminal(convId, mountEl) {
+  const ctx = getOrCreateConvTerminalContext(convId);
+
+  // Already connected AND the terminal is still mounted to a live DOM node — just refocus.
+  // If the user switched away and back, workspace.innerHTML was replaced, destroying the old
+  // container. In that case document.contains(ctx.mountEl) is false even though the socket
+  // is still OPEN, so we fall through and remount.
+  if (ctx.socket && (ctx.socket.readyState === WebSocket.OPEN || ctx.socket.readyState === WebSocket.CONNECTING)) {
+    if (ctx.mountEl === mountEl && document.contains(ctx.mountEl)) {
+      resizeConvTerminal(ctx);
+      ctx.terminal?.focus();
+      return;
+    }
+    // Socket alive but DOM was replaced — dispose stale terminal before reconnecting.
+    ctx.terminal?.dispose();
+    ctx.terminal = null;
+    ctx.fitAddon = null;
+  }
+
+  disconnectConversationTerminal(convId, false);
+  ctx.mountEl = mountEl;
+
+  if (!mountEl || !window.Terminal || !window.FitAddon) {
+    if (mountEl) mountEl.innerHTML = '<div style="color:red;padding:12px">终端资源未加载，请刷新页面</div>';
+    return;
+  }
+
+  mountEl.innerHTML = '';
+  const { terminal, fitAddon, imeFilter } = createEnhancedTerminal(mountEl);
+  ctx.terminal = terminal;
+  ctx.fitAddon = fitAddon;
+  ctx.inputReady = false;
+  terminal.onData(imeFilter(data => {
+    if (!ctx.inputReady) return;   // block during history replay and tmux handshake
+    if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+      ctx.socket.send(JSON.stringify({ type: 'input', data }));
+    }
+  }));
+
+  const socket = new WebSocket(conversationTerminalWsUrl(convId));
+  ctx.socket = socket;
+
+  socket.addEventListener('open', () => {
+    if (ctx.socket !== socket) return;
+    resizeConvTerminal(ctx);
+    terminal.focus();
+    updateConvTerminalStatusBar(convId, 'connecting', '连接中...');
+  });
+
+  socket.addEventListener('message', event => {
+    if (ctx.socket !== socket) return;
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    if (msg.type === 'output') {
+      terminal.write(String(msg.data || ''));
+    } else if (msg.type === 'history') {
+      // Replay historical transcript before the live stream starts
+      terminal.write('\x1b[?25l');           // hide cursor during replay
+      terminal.write(String(msg.data || ''));
+      terminal.write('\x1b[?25h');           // restore cursor
+    } else if (msg.type === 'status') {
+      ctx.connected = msg.state === 'connected';
+      ctx.lastState = msg.state;
+      updateConvTerminalStatusBar(convId, msg.state, msg.message);
+      if (msg.state === 'connected') {
+        // Unblock user input after a brief delay.  This prevents xterm.js
+        // initialization responses (triggered by escape sequences in the
+        // history replay) from being forwarded to bash as garbage input.
+        // The 200 ms window covers history-replay onData + the initial
+        // tmux→xterm capability handshake that happens right after attach.
+        setTimeout(() => { ctx.inputReady = true; }, 200);
+      } else {
+        ctx.inputReady = false;
+        if (msg.state === 'error') {
+          terminal.writeln(`\r\n\x1b[31m${msg.message || '连接失败'}\x1b[0m`);
+        } else if (msg.state === 'disconnected') {
+          terminal.writeln('\r\n\x1b[33m[已断开，tmux 会话保持运行]\x1b[0m');
+        }
+      }
+    }
+  });
+
+  socket.addEventListener('close', () => {
+    if (ctx.socket !== socket) return;
+    ctx.connected = false;
+    if (ctx.lastState !== 'error') ctx.lastState = 'closed';
+    updateConvTerminalStatusBar(convId, 'closed');
+  });
+
+  socket.addEventListener('error', () => {
+    if (ctx.socket !== socket) return;
+    ctx.connected = false;
+    ctx.lastState = 'error';
+    updateConvTerminalStatusBar(convId, 'error');
+  });
+
+  // Resize on window resize
+  window.addEventListener('resize', () => resizeConvTerminal(ctx));
+}
+
+function resizeConvTerminal(ctx) {
+  if (!ctx.terminal || !ctx.fitAddon) return;
+  clearTimeout(ctx.resizeTimer);
+  ctx.resizeTimer = setTimeout(() => {
+    try {
+      ctx.fitAddon.fit();
+      if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
+        ctx.socket.send(JSON.stringify({
+          type: 'resize',
+          cols: ctx.terminal.cols,
+          rows: ctx.terminal.rows,
+        }));
+      }
+    } catch {}
+  }, 30);
+}
+
+function disconnectConversationTerminal(convId, dispose = true) {
+  const ctx = convTerminalContexts[convId];
+  if (!ctx) return;
+  const socket = ctx.socket;
+  ctx.socket = null;
+  ctx.connected = false;
+  if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+  if (dispose) {
+    ctx.terminal?.dispose();
+    ctx.terminal = null;
+    ctx.fitAddon = null;
+    if (ctx.mountEl) { ctx.mountEl.innerHTML = ''; ctx.mountEl = null; }
+    delete convTerminalContexts[convId];
+  }
+  clearTimeout(ctx.resizeTimer);
+}
+
+function updateConvTerminalStatusBar(convId, state, message) {
+  const dot = document.getElementById(`conv-terminal-dot-${convId}`);
+  const txt = document.getElementById(`conv-terminal-status-${convId}`);
+  if (dot) {
+    dot.className = `status-dot ${state === 'connected' ? 'running' : state === 'error' ? 'failed' : 'killed'}`;
+    dot.title = message || state;
+  }
+  if (txt) txt.textContent = message || (state === 'connected' ? '已连接' : state === 'error' ? '错误' : '已断开');
+}
+
 function createProjectTerminalContext() {
   return {
     projectName: '',
@@ -32,15 +201,15 @@ function ensureProjectTerminalMounted() {
   if (!mount || !window.Terminal || !window.FitAddon) return false;
   if (terminalContext.terminal) return true;
   mount.innerHTML = '';
-  const { terminal, fitAddon } = createEnhancedTerminal(mount);
+  const { terminal, fitAddon, imeFilter } = createEnhancedTerminal(mount);
   terminalContext.terminal = terminal;
   terminalContext.fitAddon = fitAddon;
-  terminal.onData(data => {
+  terminal.onData(imeFilter(data => {
     const socket = terminalContext.socket;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'input', data }));
     }
-  });
+  }));
   resizeProjectTerminal();
   return true;
 }
@@ -301,6 +470,14 @@ function closeTab(tabId) {
   const idx = topbarTabs.findIndex(t => t.id === tabId);
   if (idx === -1) return;
 
+  // Detach terminal conv WS (keeps tmux session alive on server) and
+  // remove the persistent DOM container created by renderTerminalConversationWorkspace
+  if (tabId.startsWith('conversation-')) {
+    const convId = conversationIdFromTabId(tabId);
+    disconnectConversationTerminal(convId, true);
+    document.getElementById(`terminal-conv-ws-${convId}`)?.remove();
+  }
+
   topbarTabs.splice(idx, 1);
 
   // 如果关闭的是当前激活的 Tab，则自动切回前一个 Tab 或者是 'chat'
@@ -560,15 +737,15 @@ function ensureBottomTerminalMounted() {
   mount.appendChild(pane);
   context.mountEl = pane;
   showActiveBottomTerminalMount();
-  const { terminal, fitAddon } = createEnhancedTerminal(pane);
+  const { terminal, fitAddon, imeFilter } = createEnhancedTerminal(pane);
   context.terminal = terminal;
   context.fitAddon = fitAddon;
-  context.terminal.onData(data => {
+  context.terminal.onData(imeFilter(data => {
     const socket = context.socket;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'input', data }));
     }
-  });
+  }));
   resizeBottomTerminal();
   return true;
 }

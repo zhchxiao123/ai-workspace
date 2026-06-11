@@ -50,6 +50,7 @@ projects.conf
 core
 
 .coderfleet-uploads
+.coderfleet-terminals
 .*-uploads
 
 server.log

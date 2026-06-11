@@ -25,6 +25,11 @@ class ConversationStatus(str, Enum):
     archived = "archived"
 
 
+class ConversationMode(str, Enum):
+    chat     = "chat"
+    terminal = "terminal"
+
+
 class BoardCardStatus(str, Enum):
     planned    = "planned"
     todo       = "todo"
@@ -90,6 +95,8 @@ class Conversation(BaseModel):
     project_name:      str = ""
     native_session_id: str = ""
     status:            ConversationStatus = ConversationStatus.active
+    mode:              ConversationMode   = ConversationMode.chat
+    tmux_session:      str = ""
     created:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     last_task_id:      str = ""
@@ -399,6 +406,8 @@ class ConversationResponse(BaseModel):
     project_name:      str = ""
     native_session_id: str
     status:            ConversationStatus
+    mode:              ConversationMode = ConversationMode.chat
+    tmux_session:      str = ""
     created:           str
     updated:           str
     last_task_id:      str
@@ -414,6 +423,8 @@ class ConversationResponse(BaseModel):
             project_name      = c.project_name,
             native_session_id = c.native_session_id,
             status            = c.status,
+            mode              = c.mode,
+            tmux_session      = c.tmux_session,
             created           = c.created,
             updated           = c.updated,
             last_task_id      = c.last_task_id,
@@ -867,6 +878,11 @@ class ScheduleResponse(BaseModel):
     @classmethod
     def from_schedule(cls, s: "Schedule") -> "ScheduleResponse":
         return cls(**s.model_dump())
+
+
+class TerminalConversationCreateRequest(BaseModel):
+    name:         str
+    project_name: str
 
 
 class ScheduleCreateRequest(BaseModel):
