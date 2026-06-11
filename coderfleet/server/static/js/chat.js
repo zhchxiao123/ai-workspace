@@ -58,6 +58,8 @@ async function loadConversations(renderWorkspace = true) {
 
 // 以项目大标题分组渲染会话列表
 function renderConversations(convs, projects, tasks) {
+  // Skip sidebar rerender while user is typing in a rename input to prevent accidental auto-save.
+  if (_isRenamingConversation) return;
   const list = document.getElementById('chat-history-list');
   const activeQuery = chatSearchQuery.trim();
   if (activeQuery) {
@@ -534,8 +536,10 @@ async function inlineRenameConversation(convId, itemEl) {
   nameSpan.replaceWith(input);
   input.focus();
   input.select();
+  _isRenamingConversation = true;
 
   const commit = async () => {
+    _isRenamingConversation = false;
     const newName = input.value.trim();
     input.removeEventListener('blur', commit);
     if (!newName || newName === oldName) {
@@ -561,7 +565,7 @@ async function inlineRenameConversation(convId, itemEl) {
 
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { rerenderChatProjectList(); }
+    if (e.key === 'Escape') { _isRenamingConversation = false; rerenderChatProjectList(); }
   });
   input.addEventListener('blur', commit);
 }
@@ -1480,8 +1484,10 @@ function startQueueItemEdit(taskId, btn) {
   textSpan.replaceWith(input);
   input.focus();
   input.select();
+  _isEditingQueueItem = true;
 
   const saveEdit = async () => {
+    _isEditingQueueItem = false;
     const newPrompt = input.value.trim();
     input.removeEventListener('blur', saveEdit);
     if (!newPrompt || newPrompt === currentText) {
@@ -1509,7 +1515,7 @@ function startQueueItemEdit(taskId, btn) {
 
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
-    if (e.key === 'Escape') { _refreshQueuePanel(); }
+    if (e.key === 'Escape') { _isEditingQueueItem = false; _refreshQueuePanel(); }
   });
   input.addEventListener('blur', saveEdit);
 }
@@ -1536,6 +1542,7 @@ async function deleteQueuedTask(taskId) {
 
 function _refreshQueuePanel() {
   if (!activeConversationId) return;
+  if (_isEditingQueueItem) return;
   const convTasks = tasksCache.filter(t => t.conversation_id === activeConversationId);
   const pendingTasks = convTasks
     .filter(t => t.status === 'pending' || t.status === 'scheduled')
