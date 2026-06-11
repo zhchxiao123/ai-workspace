@@ -533,6 +533,7 @@ async function inlineRenameConversation(convId, itemEl) {
   input.type = 'text';
   input.value = oldName;
   input.className = 'session-rename-input';
+  input.addEventListener('click', e => e.stopPropagation());
   nameSpan.replaceWith(input);
   input.focus();
   input.select();
