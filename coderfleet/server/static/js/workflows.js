@@ -29,7 +29,7 @@ async function loadWorkflows() {
 
   try {
     const [pipelines, tasks] = await Promise.all([
-      fetch(`${API}/api/pipelines`).then(r => r.json()),
+      fetch(`${API}/api/workflow-runs`).then(r => r.json()),
       fetch(`${API}/api/tasks?limit=300`).then(r => r.json()).catch(() => []),
     ]);
     const templatePipelines = pipelines.filter(p => p.template_id);
@@ -78,10 +78,10 @@ function renderPipelineList(pipelines, tasks) {
   let filtered = pipelines;
   if (wfRunsFilter !== 'all') {
     filtered = pipelines.filter(p => {
-      const pTasks = tasks.filter(t => p.task_ids.includes(t.id));
-      if (wfRunsFilter === 'running') return pTasks.some(t => t.status === 'running');
-      if (wfRunsFilter === 'failed')  return pTasks.some(t => t.status === 'failed');
-      if (wfRunsFilter === 'done')    return pTasks.length > 0 && pTasks.every(t => t.status === 'done');
+      const st = p.status || 'running';
+      if (wfRunsFilter === 'running') return st === 'running';
+      if (wfRunsFilter === 'failed')  return st === 'failed' || st === 'partial';
+      if (wfRunsFilter === 'done')    return st === 'succeeded';
       return true;
     });
   }
@@ -95,22 +95,30 @@ function renderPipelineList(pipelines, tasks) {
   }
 
   list.innerHTML = filtered.map(p => {
-    const pTasks = tasks.filter(t => p.task_ids.includes(t.id));
-    const running = pTasks.some(t => t.status === 'running');
-    const failed  = pTasks.some(t => t.status === 'failed');
-    const allDone = pTasks.length > 0 && pTasks.every(t => t.status === 'done');
-    const dot = running ? `<span class="status-dot running"  style="font-size:10px">运行中</span>`
-              : failed  ? `<span class="status-dot failed"   style="font-size:10px">失败</span>`
-              : allDone ? `<span class="status-dot done"     style="font-size:10px">完成</span>`
+    const pTasks = _workflowRunTasks(p, tasks);
+    // 优先使用后端已计算的 status，兼容旧数据回退
+    const status = p.status || (
+      pTasks.some(t => t.status === 'running') ? 'running' :
+      pTasks.every(t => t.status === 'done') && pTasks.length ? 'succeeded' :
+      pTasks.some(t => t.status === 'failed' || t.status === 'killed') ? 'failed' : 'running'
+    );
+    const dot = status === 'running'   ? `<span class="status-dot running" style="font-size:10px">运行中</span>`
+              : status === 'succeeded' ? `<span class="status-dot done"    style="font-size:10px">完成</span>`
+              : status === 'failed'    ? `<span class="status-dot failed"  style="font-size:10px">失败</span>`
+              : status === 'partial'   ? `<span class="status-dot failed"  style="font-size:10px">部分完成</span>`
               : `<span style="color:var(--text-3);font-size:10px">待执行</span>`;
 
     const isActive = activePipelineId === p.id;
+    const errorHint = p.last_error
+      ? `<div style="font-size:10px;color:var(--red,#d44);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.last_error)}">${esc(p.last_error)}</div>`
+      : '';
     return `<div class="pipeline-list-item${isActive ? ' active' : ''}" onclick="openPipeline('${esc(p.id)}')">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
         <span style="font-size:13px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>
         ${dot}
       </div>
       <div style="font-size:11px;color:var(--text-3);margin-top:2px">${pTasks.length} 个任务 · ${fmtTime(p.updated || p.created)}</div>
+      ${errorHint}
     </div>`;
   }).join('');
 }
@@ -127,7 +135,7 @@ async function openPipeline(id) {
 
   try {
     const [pipeline, tasks] = await Promise.all([
-      fetch(`${API}/api/pipelines/${id}`).then(r => r.json()),
+      fetch(`${API}/api/workflow-runs/${id}`).then(r => r.json()),
       fetch(`${API}/api/tasks?limit=300`).then(r => r.json()).catch(() => []),
     ]);
     workflowTasksCache = tasks;
@@ -141,9 +149,61 @@ async function openPipeline(id) {
 }
 
 function _renderActivePipeline(pipeline, allTasks) {
-  const pTasks = allTasks.filter(t => pipeline.task_ids.includes(t.id));
-  _showToolbar(pipeline);
+  const pTasks = _workflowRunTasks(pipeline, allTasks);
+  _showToolbar(pipeline, pTasks);
   renderDag(pipeline, pTasks);
+}
+
+function _workflowStateToTaskStatus(state) {
+  return ({
+    pending: 'pending',
+    waiting_deps: 'scheduled',
+    running: 'running',
+    succeeded: 'done',
+    failed: 'failed',
+    skipped: 'killed',
+    cancelled: 'killed',
+  })[state] || 'pending';
+}
+
+function _workflowNodeDomId(nodeId) {
+  return `node:${nodeId}`;
+}
+
+function _workflowRunTasks(run, allTasks) {
+  const taskMap = new Map((allTasks || []).map(t => [t.id, t]));
+  const nodes = run.node_executions || [];
+  if (!nodes.length) return (allTasks || []).filter(t => (run.task_ids || []).includes(t.id));
+
+  const idByNode = new Map(nodes.map(n => [n.node_id, n.task_id || _workflowNodeDomId(n.node_id)]));
+  return nodes.map(n => {
+    const realTask = n.task_id ? taskMap.get(n.task_id) : null;
+    const status = _workflowStateToTaskStatus(n.state);
+    const deps = (n.depends_on || []).map(dep => idByNode.get(dep)).filter(Boolean);
+    if (realTask) {
+      return {
+        ...realTask,
+        depends_on: deps.length ? deps : (realTask.depends_on || []),
+        workflow_node_id: n.node_id,
+        workflow_node_state: n.state,
+      };
+    }
+    return {
+      id: _workflowNodeDomId(n.node_id),
+      status,
+      account: '等待调度',
+      type: '',
+      prompt: n.actual_prompt || n.name || n.node_id,
+      project: n.resolved_project || n.project_name || '',
+      project_name: n.resolved_project || n.project_name || '',
+      created: run.created,
+      finished: n.finished_at || null,
+      depends_on: deps,
+      workflow_node_id: n.node_id,
+      workflow_node_state: n.state,
+      workflow_placeholder: true,
+    };
+  });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -212,10 +272,42 @@ function renderDag(pipeline, tasks) {
   if (!area) return;
 
   if (!tasks.length) {
+    const status = pipeline.status || 'running';
+    let icon = '◈';
+    let mainText = '';
+    let subHtml = '';
+
+    if (pipeline.last_error) {
+      // 有明确错误信息
+      icon = '⚠';
+      mainText = '执行遇到错误';
+      subHtml = `<div style="margin-top:10px;max-width:440px;background:var(--bg-2);border:1px solid color-mix(in srgb,var(--red,#d44) 30%,transparent);border-radius:8px;padding:10px 14px;text-align:left">
+        <div style="font-size:11px;font-weight:600;color:var(--red,#d44);margin-bottom:6px">错误详情</div>
+        <pre style="font-size:11px;color:var(--text-2);white-space:pre-wrap;word-break:break-all;margin:0">${esc(pipeline.last_error)}</pre>
+      </div>`;
+    } else if (pipeline.template_id) {
+      // 模板运行：任务由后台自动创建，不需要"添加任务"入口
+      if (status === 'running') {
+        icon = '⏳';
+        mainText = '节点正在排队执行中...';
+        subHtml = `<div style="font-size:12px;color:var(--text-3);margin-top:4px">后台正在按模板节点顺序自动提交任务</div>`;
+      } else if (status === 'failed') {
+        icon = '✕';
+        mainText = '执行失败，无任务产出';
+        subHtml = `<div style="font-size:12px;color:var(--text-3);margin-top:4px">可查看服务器日志了解详情，或点击工具栏「恢复运行」重试</div>`;
+      } else {
+        mainText = '暂无任务记录';
+      }
+    } else {
+      // 手动流水线：允许手动添加任务
+      mainText = '工作流暂无任务';
+      subHtml = `<button class="btn primary" style="margin-top:4px" onclick="showAddTaskModal('${esc(pipeline.id)}')">+ 添加第一个任务</button>`;
+    }
+
     area.innerHTML = `<div class="dag-empty">
-      <div style="font-size:36px;opacity:.25;margin-bottom:12px">◈</div>
-      <div style="color:var(--text-2);margin-bottom:16px;font-size:14px">工作流暂无任务</div>
-      <button class="btn primary" onclick="showAddTaskModal('${esc(pipeline.id)}')">+ 添加第一个任务</button>
+      <div style="font-size:32px;opacity:.3;margin-bottom:12px">${icon}</div>
+      <div style="color:var(--text-2);font-size:14px">${mainText}</div>
+      ${subHtml}
     </div>`;
     return;
   }
@@ -314,15 +406,16 @@ function _patchDagNode(task, pipeline) {
 function _patchDagIfRendered(pipeline, tasks) {
   const area = document.getElementById('dag-area');
   const existingNodes = area ? area.querySelectorAll('.dag-node') : [];
-  const pTasks = tasks.filter(t => pipeline.task_ids.includes(t.id));
+  const pTasks = _workflowRunTasks(pipeline, tasks);
   // 节点数量变化（如重试后新增节点）或尚未渲染时，走全量渲染
   if (!area || existingNodes.length === 0 || existingNodes.length !== pTasks.length) {
-    _showToolbar(pipeline);
+    _showToolbar(pipeline, pTasks);
     _renderActivePipeline(pipeline, tasks);
     return;
   }
   // 仅更新状态和时长
   pTasks.forEach(t => _patchDagNode(t, pipeline));
+  _updateToolbarStatus(pipeline, pTasks);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -347,11 +440,52 @@ function _renderDagEmpty() {
 // ══════════════════════════════════════════════════════════════
 //  画布工具栏
 // ══════════════════════════════════════════════════════════════
-function _showToolbar(pipeline) {
+function _showToolbar(pipeline, tasks) {
   const tb   = document.getElementById('dag-toolbar');
   const name = document.getElementById('dag-pipeline-name');
   if (tb)   tb.style.display = '';
   if (name) name.textContent = pipeline.name;
+  _updateToolbarStatus(pipeline, tasks || []);
+}
+
+function _updateToolbarStatus(pipeline, tasks) {
+  const badge      = document.getElementById('dag-status-badge');
+  const progress   = document.getElementById('dag-progress-label');
+  const resumeBtn  = document.getElementById('dag-resume-btn');
+  if (!badge) return;
+
+  // 计算进度：以模板节点总数 vs 已完成任务数
+  const totalNodes = (pipeline.node_runs || []).length || tasks.length;
+  const doneTasks  = tasks.filter(t => t.status === 'done').length;
+
+  // 状态 badge
+  const status = pipeline.status || (
+    tasks.some(t => t.status === 'running') ? 'running' :
+    tasks.every(t => t.status === 'done') && tasks.length ? 'succeeded' :
+    tasks.some(t => t.status === 'failed' || t.status === 'killed') ? 'failed' : 'running'
+  );
+
+  const statusMap = {
+    running:   { text: '运行中', cls: 'status-dot running' },
+    succeeded: { text: '已完成', cls: 'status-dot done' },
+    failed:    { text: '失败',   cls: 'status-dot failed' },
+    partial:   { text: '部分完成', cls: 'status-dot failed' },
+  };
+  const s = statusMap[status] || statusMap.running;
+  badge.className = s.cls;
+  badge.textContent = s.text;
+  badge.style.display = '';
+
+  if (totalNodes > 0) {
+    progress.textContent = `${doneTasks}/${totalNodes} 节点`;
+    progress.style.display = '';
+  } else {
+    progress.style.display = 'none';
+  }
+
+  // Resume 按钮只在 failed / partial 且有源模板时显示
+  const canResume = (status === 'failed' || status === 'partial') && pipeline.template_id;
+  if (resumeBtn) resumeBtn.style.display = canResume ? '' : 'none';
 }
 
 function _hideToolbar() {
@@ -364,7 +498,7 @@ async function confirmDeletePipeline() {
   const p = pipelinesCache.find(p => p.id === activePipelineId);
   if (!confirm(`确定要删除工作流「${p?.name || activePipelineId}」？任务本身不会被删除。`)) return;
   try {
-    const r = await fetch(`${API}/api/pipelines/${activePipelineId}`, { method: 'DELETE' });
+    const r = await fetch(`${API}/api/workflow-runs/${activePipelineId}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) throw new Error(r.statusText);
     activePipelineId = null;
     localStorage.removeItem('coderfleet.activePipelineId');
@@ -372,6 +506,23 @@ async function confirmDeletePipeline() {
     closeWorkflowDetail();
     await loadWorkflows();
   } catch (e) { alert('删除失败：' + e.message); }
+}
+
+async function resumePipeline() {
+  if (!activePipelineId) return;
+  const btn = document.getElementById('dag-resume-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '恢复中...'; }
+  try {
+    const r = await fetch(`${API}/api/workflow-runs/${activePipelineId}/resume`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    closeWorkflowDetail();
+    await openPipeline(activePipelineId);
+  } catch (e) {
+    alert('恢复失败：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ 恢复运行'; }
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -392,15 +543,56 @@ async function _openWorkflowDetail(taskId) {
   detail.innerHTML = `<div style="padding:20px;color:var(--text-3);font-size:12px">加载中...</div>`;
 
   try {
-    const [task, logText] = await Promise.all([
+    const pipeline = pipelinesCache.find(p => p.id === activePipelineId);
+    const nodeExec = pipeline?.node_executions?.find(n => n.task_id === taskId || _workflowNodeDomId(n.node_id) === taskId);
+    if (nodeExec && !nodeExec.task_id) {
+      detail.innerHTML = `
+        <div class="workflow-detail-header">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px">${esc(nodeExec.name || nodeExec.node_id)}</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;font-size:11px;align-items:center">
+              <span class="status-dot ${_workflowStateToTaskStatus(nodeExec.state)}">${statusLabel(_workflowStateToTaskStatus(nodeExec.state))}</span>
+              <span style="color:var(--text-3)">${esc(nodeExec.state)}</span>
+            </div>
+            <div class="workflow-detail-meta">
+              执行项目: ${esc(nodeExec.resolved_project || nodeExec.project_name || '等待解析')} · 目标: ${esc(_templateNodeTargetLabel(nodeExec))}
+            </div>
+            ${nodeExec.actual_prompt ? `<div class="workflow-detail-meta" style="margin-top:4px">
+              <span style="color:var(--text-3)">实际 Prompt：</span>
+              <div style="font-size:11px;margin-top:3px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto;background:color-mix(in srgb,var(--bg) 80%,transparent);border-radius:4px;padding:4px 6px">${esc(nodeExec.actual_prompt)}</div>
+            </div>` : ''}
+          </div>
+          <button class="close-btn" onclick="closeWorkflowDetail()">✕</button>
+        </div>
+        <div style="padding:14px;font-size:12px;color:var(--text-3)">底层任务尚未创建。节点进入运行后会在这里显示日志和输出。</div>`;
+      return;
+    }
+
+    const [task, logText, outputData] = await Promise.all([
       fetch(`${API}/api/tasks/${taskId}`).then(r => r.json()),
       fetch(`${API}/api/tasks/${taskId}/logs`).then(r => r.text()).catch(() => ''),
+      fetch(`${API}/api/tasks/${taskId}/output`).then(r => r.json()).catch(() => ({ text: '' })),
     ]);
     const dur = fmtDuration(task.created, task.finished);
-    const pipeline = pipelinesCache.find(p => p.id === activePipelineId);
     const nodeRun = pipeline?.node_runs?.find(n => n.task_id === taskId);
+    const outputText = outputData?.text || '';
 
     const canRetry = task.status === 'failed' || task.status === 'killed';
+    const outputHtml = (task.status === 'done' && outputText) ? `
+      <div class="workflow-output-section" id="workflow-output-section">
+        <div class="workflow-output-header" onclick="_toggleOutputSection()">
+          <span style="font-size:11px;font-weight:600;color:var(--text-2)">节点输出</span>
+          <span id="workflow-output-toggle" style="font-size:10px;color:var(--text-3)">▲ 收起</span>
+        </div>
+        <div id="workflow-output-body" style="font-size:11px;white-space:pre-wrap;word-break:break-all;color:var(--text-1);max-height:160px;overflow:auto;padding:8px">
+          ${esc(outputText.slice(0, 2000))}${outputText.length > 2000 ? '\n…（已截断）' : ''}
+        </div>
+        <div style="display:flex;gap:6px;padding:4px 8px 6px">
+          <button class="btn" style="font-size:10px;padding:2px 8px" onclick="_copyOutput(${JSON.stringify(outputText)})">复制</button>
+          ${outputText.length > 2000 ? `<span style="font-size:10px;color:var(--text-3);line-height:1.8">${outputText.length} 字符</span>` : ''}
+        </div>
+      </div>` : '';
+
     detail.innerHTML = `
       <div class="workflow-detail-header">
         <div style="flex:1;min-width:0">
@@ -422,6 +614,7 @@ async function _openWorkflowDetail(taskId) {
         </div>
         <button class="close-btn" onclick="closeWorkflowDetail()">✕</button>
       </div>
+      ${outputHtml}
       <div style="flex:1;overflow:auto;min-height:0" id="workflow-log-content"></div>`;
 
     const logEl = document.getElementById('workflow-log-content');
@@ -432,6 +625,26 @@ async function _openWorkflowDetail(taskId) {
   } catch (e) {
     detail.innerHTML = `<div style="padding:16px;color:var(--red)">加载失败：${esc(e.message)}</div>`;
   }
+}
+
+function _toggleOutputSection() {
+  const body   = document.getElementById('workflow-output-body');
+  const toggle = document.getElementById('workflow-output-toggle');
+  if (!body) return;
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? '' : 'none';
+  if (toggle) toggle.textContent = collapsed ? '▲ 收起' : '▼ 展开';
+}
+
+function _copyOutput(text) {
+  navigator.clipboard.writeText(text).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
 }
 
 async function retryWorkflowTask(taskId) {
@@ -656,45 +869,6 @@ async function spawnSubtaskFromLog() {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
-//  新建工作流弹窗
-// ══════════════════════════════════════════════════════════════
-function showNewPipelineModal() {
-  const modal = document.getElementById('new-pipeline-modal');
-  if (!modal) return;
-  document.getElementById('new-pipeline-name').value = '';
-  modal.style.display = 'flex';
-  setTimeout(() => document.getElementById('new-pipeline-name').focus(), 50);
-}
-
-function closeNewPipelineModal(e) {
-  if (e && e.target !== document.getElementById('new-pipeline-modal')) return;
-  document.getElementById('new-pipeline-modal').style.display = 'none';
-}
-
-async function submitNewPipeline() {
-  const name = document.getElementById('new-pipeline-name').value.trim();
-  if (!name) { alert('请输入工作流名称'); return; }
-  const btn = document.getElementById('new-pipeline-submit-btn');
-  btn.disabled = true; btn.textContent = '创建中...';
-  try {
-    const r = await fetch(`${API}/api/pipelines`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || r.statusText);
-    closeNewPipelineModal();
-    activePipelineId = data.id;
-    localStorage.setItem('coderfleet.activePipelineId', data.id);
-    await loadWorkflows();
-    showAddTaskModal(data.id);
-  } catch (e) {
-    alert('创建失败：' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '创建';
-  }
-}
 
 // ══════════════════════════════════════════════════════════════
 //  辅助
@@ -1089,11 +1263,41 @@ function addTemplateNode() {
 }
 
 // ── 节点属性面板 ─────────────────────────────────────────
+
+// 从 Drawflow 当前连线中动态读取该节点的上游 node_id 列表
+function _getNodeUpstreamIds(dfId) {
+  if (!dfEditor) return [];
+  const exported = dfEditor.export().drawflow.Home.data || {};
+  const idMap = {};
+  Object.entries(exported).forEach(([id, n]) => {
+    idMap[id] = n.data?.node_id || `node-${id}`;
+  });
+  const node = exported[String(dfId)];
+  if (!node) return [];
+  return Object.values(node.inputs || {})
+    .flatMap(inp => inp.connections.map(c => idMap[c.node]).filter(Boolean));
+}
+
 function _openNodeDetail(dfId) {
   const node = dfEditor?.getNodeFromId(dfId);
   if (!node) return;
   const d = _normalizeTemplateNodeData(node.data);
   node.data = d;
+
+  // 动态计算可用变量（来自当前连线的上游节点）
+  const upstreamIds = _getNodeUpstreamIds(dfId);
+  const availableVars = [
+    { v: '{{input}}',  tip: '运行时输入' },
+    ...upstreamIds.map(id => ({ v: `{{steps.${id}.outputs.text}}`, tip: `节点 ${id} 的输出` })),
+  ];
+  const varHintsHtml = `
+    <div class="df-var-hints">
+      <span class="df-var-hints-label">可插入变量</span>
+      ${availableVars.map(({ v, tip }) =>
+        `<code class="df-var-chip" title="${esc(tip)}"
+          onclick="_insertVar(${dfId}, ${JSON.stringify(v)})">${esc(v)}</code>`
+      ).join('')}
+    </div>`;
 
   const panel = document.getElementById('tpl-node-detail');
   if (!panel) return;
@@ -1110,11 +1314,10 @@ function _openNodeDetail(dfId) {
           oninput="_updateNodeField(${dfId}, 'name', this.value)">
       </div>
       <div class="form-group">
-        <label>Prompt 模板
-          <span style="color:var(--text-3);font-size:11px;font-weight:400">（{{input}} 替换为运行时输入）</span>
-        </label>
+        <label>Prompt 模板</label>
         <textarea id="df-detail-prompt" rows="7" placeholder="描述此节点要完成的任务..."
           oninput="_updateNodeField(${dfId}, 'prompt_tpl', this.value)">${esc(d.prompt_tpl || '')}</textarea>
+        ${varHintsHtml}
       </div>
       <div class="form-group">
         <label>执行目标</label>
@@ -1139,10 +1342,22 @@ function _openNodeDetail(dfId) {
       </div>
       <div class="tpl-detail-hint">
         执行目标决定此节点由哪个项目账号运行；连线用于建立前置依赖。
+        ${upstreamIds.length ? '<br>引用上游输出的节点在上游输出为空时会<strong>阻止执行并报错</strong>，确保数据可靠。' : ''}
       </div>
       <button class="btn danger" style="width:100%;margin-top:8px;font-size:12px"
         onclick="confirmRemoveNode(${dfId})">移除节点</button>
     </div>`;
+}
+
+function _insertVar(dfId, variable) {
+  const ta = document.getElementById('df-detail-prompt');
+  if (!ta) return;
+  const start = ta.selectionStart ?? ta.value.length;
+  const end   = ta.selectionEnd   ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + variable + ta.value.slice(end);
+  ta.selectionStart = ta.selectionEnd = start + variable.length;
+  ta.focus();
+  _updateNodeField(dfId, 'prompt_tpl', ta.value);
 }
 
 function _closeNodeDetail() {

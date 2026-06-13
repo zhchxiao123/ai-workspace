@@ -74,13 +74,13 @@ def _build_codex(prompt, auto, task_id, marker, task_env, session_id, images):
         return (
             f"printf '%s\\n' {ep} | "
             f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-            f"codex exec resume {shlex.quote(session_id)} --json{danger}{imgs}"
+            f"codex exec resume {shlex.quote(session_id)} --json --skip-git-repo-check{danger}{imgs}"
         )
     sandbox = "danger-full-access" if auto else "workspace-write"
     return (
         f"printf '%s\\n' {ep} | "
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-        f"codex exec --json --sandbox {sandbox}{imgs}"
+        f"codex exec --json --skip-git-repo-check --sandbox {sandbox}{imgs}"
     )
 
 

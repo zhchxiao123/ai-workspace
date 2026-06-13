@@ -454,6 +454,9 @@
                 <div class="workflows-canvas-toolbar" id="dag-toolbar" style="display:none">
                   <span class="workflows-canvas-title" id="dag-pipeline-name"></span>
                   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+                    <span id="dag-status-badge" style="font-size:11px;display:none"></span>
+                    <span id="dag-progress-label" style="font-size:11px;color:var(--text-3);display:none"></span>
+                    <button id="dag-resume-btn" class="btn primary" style="font-size:12px;padding:5px 12px;display:none" onclick="resumePipeline()">▶ 恢复运行</button>
                     <button class="btn wf-zoom-btn" title="缩小" onclick="zoomDag(-0.15)">－</button>
                     <span id="dag-zoom-label" style="font-size:11px;color:var(--text-3);min-width:34px;text-align:center">100%</span>
                     <button class="btn wf-zoom-btn" title="放大" onclick="zoomDag(0.15)">＋</button>
@@ -663,25 +666,7 @@
     </div>
   </div>
 
-  <!-- 新建工作流弹窗 -->
-  <div class="modal-backdrop" id="new-pipeline-modal" style="display:none" onclick="closeNewPipelineModal(event)">
-    <div class="modal-sm" onclick="event.stopPropagation()">
-      <div class="section-head">
-        <div><div class="modal-title">新建工作流</div></div>
-        <button class="btn" onclick="closeNewPipelineModal()">关闭</button>
-      </div>
-      <div class="form-group">
-        <label>工作流名称 *</label>
-        <input id="new-pipeline-name" type="text" placeholder="例如：实现登录+代码审查">
-      </div>
-      <div class="flex gap-8">
-        <button class="btn primary" id="new-pipeline-submit-btn" onclick="submitNewPipeline()">创建</button>
-        <button class="btn" onclick="closeNewPipelineModal()">取消</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 统一添加任务弹窗（用于工作流新建任务 / 从日志派生子任务） -->
+  <!-- 统一添加任务弹窗（用于从日志派生子任务 / 手动流水线） -->
   <div class="modal-backdrop" id="add-task-modal" style="display:none" onclick="closeAddTaskModal(event)">
     <div class="modal-sm" onclick="event.stopPropagation()">
       <div class="section-head">

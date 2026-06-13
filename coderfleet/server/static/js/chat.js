@@ -639,6 +639,8 @@ function renderEmptyChatState() {
   const termWs = document.getElementById('terminal-workspaces');
   if (termWs) termWs.style.display = 'none';
 
+  const savedInput = document.getElementById('chat-input')?.value || '';
+
   const projectLabel = chatNewSessionProject || '未指定项目';
   currentChatProjectName = chatNewSessionProject;
   pendingImages = [];
@@ -669,7 +671,13 @@ ${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Ente
   const textarea = document.getElementById('chat-input');
   bindChatTextareaEvents(textarea);
   bindChatViewportScroll();
-  if (textarea) textarea.focus();
+  if (savedInput && textarea) {
+    textarea.value = savedInput;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  } else if (textarea) {
+    textarea.focus();
+  }
 }
 
 // 自适应高度及快捷键发送绑定
@@ -844,6 +852,8 @@ async function renderChatWorkspace(conv) {
   const termWs = document.getElementById('terminal-workspaces');
   if (termWs) termWs.style.display = 'none';
 
+  const savedInput = document.getElementById('chat-input')?.value || '';
+
   currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
   pendingImages = [];
 
@@ -880,6 +890,11 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
 
   const textarea = document.getElementById('chat-input');
   bindChatTextareaEvents(textarea);
+  if (savedInput && textarea) {
+    textarea.value = savedInput;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  }
 
   const chatContent = document.getElementById('chat-content');
   chatContent.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:20px">正在加载会话历史...</div>';

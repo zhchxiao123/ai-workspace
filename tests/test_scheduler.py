@@ -22,6 +22,7 @@ from coderfleet.server.models import (
     Task,
     TaskStatus,
     TemplateNode,
+    WorkflowNodeState,
 )
 from coderfleet.server.scheduler import Scheduler
 
@@ -45,7 +46,7 @@ def test_build_cli_command_uses_headless_codex_exec() -> None:
     )
 
     _assert_detached_command(command, "task-1")
-    assert "codex exec --json --sandbox workspace-write" in command
+    assert "codex exec --json --skip-git-repo-check --sandbox workspace-write" in command
 
 
 def test_build_cli_command_runs_inside_container_workdir() -> None:
@@ -73,7 +74,7 @@ def test_build_cli_command_resumes_codex_thread() -> None:
     )
 
     _assert_detached_command(command, "task-3")
-    assert "codex exec resume thread-123 --json" in command
+    assert "codex exec resume thread-123 --json --skip-git-repo-check" in command
     assert "thread-123" in command
 
 
@@ -99,7 +100,7 @@ def test_build_cli_command_uses_danger_sandbox_for_auto_codex() -> None:
         task_id="task-1",
     )
 
-    assert "codex exec --json --sandbox danger-full-access" in command
+    assert "codex exec --json --skip-git-repo-check --sandbox danger-full-access" in command
 
 
 def test_build_cli_command_uses_headless_claude_permission_modes() -> None:
@@ -503,6 +504,92 @@ def test_run_template_validates_runtime_target_before_creating_pipeline(
         asyncio.run(sched.run_template(tpl.id, "input", project_map={}, default_project=""))
 
     assert sched.list_pipelines() == []
+
+
+def test_run_template_creates_first_class_workflow_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    repo_default = tmp_path / "default"
+    repo_review = tmp_path / "review"
+    repo_default.mkdir()
+    repo_review.mkdir()
+
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [
+            Account(name="acc-default", type=AccountType.codex),
+            Account(name="acc-review", type=AccountType.codex),
+        ],
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_projects",
+        lambda: [
+            Project(name="default-proj", account="acc-default", path=str(repo_default)),
+            Project(name="review-proj", account="acc-review", path=str(repo_review)),
+        ],
+    )
+    monkeypatch.setattr(scheduler_mod.docker_mgr, "is_container_running", lambda _name: True)
+
+    tpl = sched.create_template(
+        "release",
+        "",
+        [
+            TemplateNode(node_id="plan", name="Plan", prompt_tpl="plan {{input}}", target_mode="default"),
+            TemplateNode(
+                node_id="review",
+                name="Review",
+                prompt_tpl="review",
+                target_mode="runtime_role",
+                project_role="reviewer",
+                depends_on=["plan"],
+            ),
+        ],
+    )
+
+    async def _instant_done(task_id: str, **kw) -> "TaskStatus":
+        t = sched.get_task(task_id)
+        if t is not None:
+            t.update_status(TaskStatus.done, sched.tasks_dir)
+        return TaskStatus.done
+
+    monkeypatch.setattr(sched, "_wait_for_task_done", _instant_done)
+    monkeypatch.setattr(sched, "get_log_path", lambda tid: tmp_path / "tasks" / f"{tid}.log")
+
+    async def run_and_wait():
+        pipeline = await sched.run_template(
+            tpl.id,
+            "login",
+            project_map={"reviewer": "review-proj"},
+            default_project="default-proj",
+        )
+        pending = [
+            t for t in asyncio.all_tasks()
+            if t.get_name().startswith(f"pipeline-{pipeline.id}")
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return pipeline
+
+    pipeline = asyncio.run(run_and_wait())
+    run = sched.get_workflow_run_by_legacy_pipeline_id(pipeline.id)
+
+    assert run is not None
+    assert run.id.startswith("run-")
+    assert run.legacy_pipeline_id == pipeline.id
+    assert run.template_id == tpl.id
+    assert run.status == "succeeded"
+    assert [n.node_id for n in run.node_executions] == ["plan", "review"]
+    assert run.node_executions[1].depends_on == ["plan"]
+    assert {n.node_id: n.resolved_project for n in run.node_executions} == {
+        "plan": "default-proj",
+        "review": "review-proj",
+    }
+    assert all(n.state == WorkflowNodeState.succeeded for n in run.node_executions)
+    assert all(n.task_id for n in run.node_executions)
 
 
 def test_conversation_with_running_task_rejects_followup(tmp_path: Path) -> None:

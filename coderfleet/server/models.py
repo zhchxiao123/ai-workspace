@@ -488,15 +488,19 @@ class PipelineNodeRun(BaseModel):
 
 
 class Pipeline(BaseModel):
-    id:            str
-    name:          str
-    project_name:  str = ""
-    task_ids:      list[str] = Field(default_factory=list)
-    node_runs:     list[PipelineNodeRun] = Field(default_factory=list)
-    template_id:   str = ""   # 如果是从模板触发的，记录模板 ID
-    trigger_input: str = ""   # 触发时的原始输入
-    created:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    id:              str
+    name:            str
+    project_name:    str = ""
+    task_ids:        list[str] = Field(default_factory=list)
+    node_runs:       list[PipelineNodeRun] = Field(default_factory=list)
+    template_id:     str = ""
+    trigger_input:   str = ""
+    status:          str = "running"  # running | succeeded | failed | partial
+    last_error:      str = ""        # last unhandled exception message (if any)
+    project_map:     dict[str, str] = Field(default_factory=dict)
+    default_project: str = ""
+    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, pipelines_dir: Path) -> None:
         pipelines_dir.mkdir(parents=True, exist_ok=True)
@@ -529,30 +533,38 @@ class Pipeline(BaseModel):
 
 
 class PipelineResponse(BaseModel):
-    id:            str
-    name:          str
-    project_name:  str = ""
-    task_ids:      list[str] = []
-    node_runs:     list[PipelineNodeRun] = []
-    template_id:   str = ""
-    trigger_input: str = ""
-    created:       str
-    updated:       str
-    tasks:         list[TaskResponse] = []
+    id:              str
+    name:            str
+    project_name:    str = ""
+    task_ids:        list[str] = []
+    node_runs:       list[PipelineNodeRun] = []
+    template_id:     str = ""
+    trigger_input:   str = ""
+    status:          str = "running"
+    last_error:      str = ""
+    project_map:     dict[str, str] = {}
+    default_project: str = ""
+    created:         str
+    updated:         str
+    tasks:           list[TaskResponse] = []
 
     @classmethod
     def from_pipeline(cls, p: Pipeline, tasks: list[Task] = []) -> "PipelineResponse":
         return cls(
-            id            = p.id,
-            name          = p.name,
-            project_name  = p.project_name,
-            task_ids      = p.task_ids,
-            node_runs     = getattr(p, "node_runs", []),
-            template_id   = p.template_id,
-            trigger_input = p.trigger_input,
-            created       = p.created,
-            updated       = p.updated,
-            tasks         = [TaskResponse.from_task(t) for t in tasks],
+            id              = p.id,
+            name            = p.name,
+            project_name    = p.project_name,
+            task_ids        = p.task_ids,
+            node_runs       = getattr(p, "node_runs", []),
+            template_id     = p.template_id,
+            trigger_input   = p.trigger_input,
+            status          = getattr(p, "status", "running"),
+            last_error      = getattr(p, "last_error", ""),
+            project_map     = getattr(p, "project_map", {}),
+            default_project = getattr(p, "default_project", ""),
+            created         = p.created,
+            updated         = p.updated,
+            tasks           = [TaskResponse.from_task(t) for t in tasks],
         )
 
 
@@ -934,6 +946,10 @@ class NodeExecution(BaseModel):
     node_id:           str
     name:              str = ""
     state:             WorkflowNodeState = WorkflowNodeState.pending
+    depends_on:        list[str] = Field(default_factory=list)
+    target_mode:       str = "default"
+    project_name:      str = ""
+    project_role:      str = ""
     task_id:           str = ""           # 当前（或最后一次）关联的 Task id
     attempt_count:     int = 0
     resolved_project:  str = ""
@@ -992,3 +1008,66 @@ class WorkflowRun(BaseModel):
     def touch(self, runs_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")
         self.save(runs_dir)
+
+
+class WorkflowRunResponse(BaseModel):
+    id:                 str
+    template_id:        str = ""
+    template_version:   int = 1
+    name:               str = ""
+    trigger_input:      str = ""
+    status:             str = "running"
+    node_executions:    list[NodeExecution] = []
+    created:            str
+    updated:            str
+    legacy_pipeline_id: str = ""
+    project_map:        dict[str, str] = {}
+    default_project:    str = ""
+    last_error:         str = ""
+    tasks:              list[TaskResponse] = []
+
+    # Compatibility for the current DAG renderer while the frontend moves from
+    # Pipeline-shaped data to WorkflowRun-shaped data.
+    task_ids:           list[str] = []
+    node_runs:          list[PipelineNodeRun] = []
+
+    @classmethod
+    def from_run(
+        cls,
+        run: WorkflowRun,
+        tasks: list[Task] = [],
+        default_project: str = "",
+        last_error: str = "",
+    ) -> "WorkflowRunResponse":
+        task_ids = [n.task_id for n in run.node_executions if n.task_id]
+        node_runs = [
+            PipelineNodeRun(
+                node_id          = n.node_id,
+                node_name        = n.name,
+                task_id          = n.task_id,
+                target_mode      = n.target_mode,
+                project_name     = n.project_name,
+                project_role     = n.project_role,
+                resolved_project = n.resolved_project,
+                actual_prompt    = n.actual_prompt,
+            )
+            for n in run.node_executions
+        ]
+        return cls(
+            id                 = run.id,
+            template_id        = run.template_id,
+            template_version   = run.template_version,
+            name               = run.name,
+            trigger_input      = run.trigger_input,
+            status             = run.status,
+            node_executions    = run.node_executions,
+            created            = run.created,
+            updated            = run.updated,
+            legacy_pipeline_id = run.legacy_pipeline_id,
+            project_map        = run.project_map,
+            default_project    = default_project,
+            last_error         = last_error,
+            tasks              = [TaskResponse.from_task(t) for t in tasks],
+            task_ids           = task_ids,
+            node_runs          = node_runs,
+        )

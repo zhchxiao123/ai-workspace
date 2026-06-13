@@ -46,6 +46,9 @@ from coderfleet.server.models import (
     Task,
     TaskStatus,
     TemplateNode,
+    NodeExecution,
+    WorkflowNodeState,
+    WorkflowRun,
     WorkflowTemplate,
 )
 
@@ -1959,6 +1962,12 @@ class Scheduler:
         rand = random.randint(0, 9999)
         return f"pipe-{ts}-{rand:04d}"
 
+    @staticmethod
+    def new_workflow_run_id() -> str:
+        ts   = datetime.now().strftime("%Y%m%d%H%M%S")
+        rand = random.randint(0, 9999)
+        return f"run-{ts}-{rand:04d}"
+
     def list_pipelines(self) -> list[Pipeline]:
         return Pipeline.load_all(self.pipelines_dir)
 
@@ -1967,6 +1976,171 @@ class Scheduler:
         if not path.exists():
             return None
         return Pipeline.load(path)
+
+    def list_workflow_runs(self) -> list[WorkflowRun]:
+        runs = WorkflowRun.load_all(self.workflow_runs_dir)
+        known_legacy_ids = {r.legacy_pipeline_id for r in runs if r.legacy_pipeline_id}
+        for pipeline in self.list_pipelines():
+            if pipeline.template_id and pipeline.id not in known_legacy_ids:
+                runs.append(self._workflow_run_from_pipeline(pipeline))
+        return sorted(runs, key=lambda r: r.updated, reverse=True)
+
+    def get_workflow_run(self, run_id: str) -> Optional[WorkflowRun]:
+        path = self.workflow_runs_dir / f"{run_id}.json"
+        if path.exists():
+            return WorkflowRun.load(path)
+        pipeline = self.get_pipeline(run_id)
+        if pipeline and pipeline.template_id:
+            return self._workflow_run_from_pipeline(pipeline)
+        for run in WorkflowRun.load_all(self.workflow_runs_dir):
+            if run.legacy_pipeline_id == run_id:
+                return run
+        return None
+
+    def get_workflow_run_by_legacy_pipeline_id(self, pipeline_id: str) -> Optional[WorkflowRun]:
+        for run in WorkflowRun.load_all(self.workflow_runs_dir):
+            if run.legacy_pipeline_id == pipeline_id:
+                return run
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline and pipeline.template_id:
+            return self._workflow_run_from_pipeline(pipeline)
+        return None
+
+    def delete_workflow_run(self, run_id: str) -> None:
+        run = self.get_workflow_run(run_id)
+        if run is None:
+            raise ValueError(f"工作流运行 '{run_id}' 不存在")
+        path = self.workflow_runs_dir / f"{run.id}.json"
+        if path.exists():
+            path.unlink()
+        if run.legacy_pipeline_id:
+            legacy_path = self.pipelines_dir / f"{run.legacy_pipeline_id}.json"
+            if legacy_path.exists():
+                legacy_path.unlink()
+
+    def _workflow_run_from_pipeline(self, pipeline: Pipeline) -> WorkflowRun:
+        task_map = {t.id: t for t in self.list_tasks()}
+        node_executions: list[NodeExecution] = []
+        for nr in pipeline.node_runs:
+            task = task_map.get(nr.task_id)
+            state = WorkflowNodeState.pending
+            started_at = ""
+            finished_at = ""
+            error_message = ""
+            if task:
+                started_at = task.created
+                finished_at = task.finished or ""
+                if task.status == TaskStatus.running:
+                    state = WorkflowNodeState.running
+                elif task.status == TaskStatus.done:
+                    state = WorkflowNodeState.succeeded
+                elif task.status == TaskStatus.killed:
+                    state = WorkflowNodeState.cancelled
+                    error_message = "任务已终止"
+                elif task.status == TaskStatus.failed:
+                    state = WorkflowNodeState.failed
+                    error_message = pipeline.last_error
+                else:
+                    state = WorkflowNodeState.pending
+            node_executions.append(NodeExecution(
+                node_id          = nr.node_id,
+                name             = nr.node_name,
+                state            = state,
+                target_mode      = nr.target_mode,
+                project_name     = nr.project_name,
+                project_role     = nr.project_role,
+                task_id          = nr.task_id,
+                attempt_count    = 1 if nr.task_id else 0,
+                resolved_project = nr.resolved_project,
+                actual_prompt    = nr.actual_prompt,
+                started_at       = started_at,
+                finished_at      = finished_at,
+                error_message    = error_message,
+            ))
+        return WorkflowRun(
+            id                 = pipeline.id,
+            template_id        = pipeline.template_id,
+            name               = pipeline.name,
+            trigger_input      = pipeline.trigger_input,
+            status             = self._workflow_status_from_pipeline_status(pipeline.status),
+            node_executions    = node_executions,
+            created            = pipeline.created,
+            updated            = pipeline.updated,
+            legacy_pipeline_id = pipeline.id,
+            project_map        = pipeline.project_map,
+        )
+
+    @staticmethod
+    def _workflow_status_from_pipeline_status(status: str) -> str:
+        if status == "succeeded":
+            return "succeeded"
+        if status == "partial":
+            return "partial"
+        if status == "failed":
+            return "failed"
+        return "running"
+
+    def _create_workflow_run_for_pipeline(
+        self,
+        pipeline: Pipeline,
+        tpl: WorkflowTemplate,
+        sorted_nodes: list[TemplateNode],
+        resolved_projects: dict[str, str],
+    ) -> WorkflowRun:
+        now = datetime.now().isoformat(timespec="seconds")
+        node_executions = [
+            NodeExecution(
+                node_id          = node.node_id,
+                name             = node.name or node.node_id,
+                state            = WorkflowNodeState.waiting_deps if node.depends_on else WorkflowNodeState.pending,
+                depends_on       = list(node.depends_on or []),
+                target_mode      = getattr(node, "target_mode", "default") or "default",
+                project_name     = getattr(node, "project_name", ""),
+                project_role     = getattr(node, "project_role", ""),
+                resolved_project = resolved_projects.get(node.node_id, ""),
+            )
+            for node in sorted_nodes
+        ]
+        run = WorkflowRun(
+            id                 = self.new_workflow_run_id(),
+            template_id        = tpl.id,
+            template_version   = 1,
+            name               = pipeline.name,
+            trigger_input      = pipeline.trigger_input,
+            status             = "running",
+            node_executions    = node_executions,
+            created            = now,
+            updated            = now,
+            legacy_pipeline_id = pipeline.id,
+            project_map        = dict(pipeline.project_map),
+        )
+        run.save(self.workflow_runs_dir)
+        return run
+
+    def _update_workflow_node(
+        self,
+        pipeline_id: str,
+        node_id: str,
+        **updates,
+    ) -> None:
+        run = self.get_workflow_run_by_legacy_pipeline_id(pipeline_id)
+        if run is None or run.legacy_pipeline_id != pipeline_id:
+            return
+        for node in run.node_executions:
+            if node.node_id == node_id:
+                for key, value in updates.items():
+                    setattr(node, key, value)
+                break
+        run.updated = datetime.now().isoformat(timespec="seconds")
+        run.save(self.workflow_runs_dir)
+
+    def _update_workflow_run_from_pipeline(self, pipeline: Pipeline) -> None:
+        run = self.get_workflow_run_by_legacy_pipeline_id(pipeline.id)
+        if run is None or run.legacy_pipeline_id != pipeline.id:
+            return
+        run.status = self._workflow_status_from_pipeline_status(pipeline.status)
+        run.updated = pipeline.updated
+        run.save(self.workflow_runs_dir)
 
     def create_pipeline(self, name: str, task_ids: list[str] = [], project_name: str = "") -> Pipeline:
         pipeline = Pipeline(
@@ -2003,6 +2177,97 @@ class Scheduler:
         if not path.exists():
             raise ValueError(f"工作流 '{pipeline_id}' 不存在")
         path.unlink()
+
+    async def resume_pipeline(self, pipeline_id: str) -> "Pipeline":
+        """
+        从上次失败/中断的节点恢复执行。
+        已成功的节点不重跑，使用其历史输出继续向下游传递。
+        """
+        from coderfleet.server.log_parser import parse_log
+
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline is None:
+            raise ValueError(f"工作流 '{pipeline_id}' 不存在")
+        if not pipeline.template_id:
+            raise ValueError("此工作流没有关联模板，无法 resume")
+
+        tpl = self.get_template(pipeline.template_id)
+        if tpl is None:
+            raise ValueError(f"源模板 '{pipeline.template_id}' 不存在")
+
+        sorted_nodes = self._topo_sort_nodes(tpl.nodes)
+
+        # ── 重建已成功节点的输出 ─────────────────────────────
+        node_outputs: dict[str, str] = {}
+        succeeded_node_ids: set[str] = set()
+        task_map = {t.id: t for t in self.list_tasks()}
+
+        for nr in pipeline.node_runs:
+            task = task_map.get(nr.task_id)
+            if task and task.status == TaskStatus.done:
+                log_path = self.get_log_path(nr.task_id)
+                if log_path.exists():
+                    log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+                    data = parse_log(log_text, task.type.value)
+                    node_outputs[nr.node_id] = data.text
+                else:
+                    node_outputs[nr.node_id] = ""  # 日志已删除，但节点本身算成功
+                succeeded_node_ids.add(nr.node_id)
+
+        # ── 确定需要重跑的节点 ───────────────────────────────
+        failed_node_ids = {n.node_id for n in sorted_nodes} - succeeded_node_ids
+
+        if not failed_node_ids:
+            pipeline.status = "succeeded"
+            pipeline.touch(self.pipelines_dir)
+            return pipeline
+
+        # ── 重建 resolved_projects（优先用存储的 project_map / default_project）──
+        project_map     = dict(pipeline.project_map)
+        default_project = pipeline.default_project
+        resolved_projects: dict[str, str] = {}
+        for node in sorted_nodes:
+            if node.node_id in succeeded_node_ids:
+                # 已成功节点：从 node_runs 取已解析的项目（保持一致）
+                nr = next((r for r in pipeline.node_runs if r.node_id == node.node_id), None)
+                resolved_projects[node.node_id] = nr.resolved_project if nr else ""
+            else:
+                target_mode = getattr(node, "target_mode", "default") or "default"
+                if target_mode == "fixed_project":
+                    resolved_projects[node.node_id] = node.project_name
+                elif target_mode == "runtime_role":
+                    resolved_projects[node.node_id] = project_map.get(node.project_role) or project_map.get(node.node_id) or ""
+                else:
+                    resolved_projects[node.node_id] = project_map.get(node.node_id) or default_project
+                if not resolved_projects[node.node_id]:
+                    raise ValueError(f"节点「{node.name or node.node_id}」无法解析执行项目，请重新运行模板")
+
+        # ── 构建仅含待执行节点的 level_groups ────────────────
+        from collections import defaultdict
+        dep_levels: dict[str, int] = {}
+        for node in sorted_nodes:
+            level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
+            dep_levels[node.node_id] = level
+
+        level_groups: dict[int, list] = defaultdict(list)
+        for node in sorted_nodes:
+            if node.node_id in failed_node_ids:
+                level_groups[dep_levels[node.node_id]].append(node)
+
+        # ── 重置状态并在后台重跑 ────────────────────────────
+        pipeline.status = "running"
+        pipeline.touch(self.pipelines_dir)
+
+        asyncio.create_task(
+            self._execute_pipeline_levels(
+                pipeline.id, tpl, level_groups, resolved_projects,
+                pipeline.trigger_input, initial_node_outputs=node_outputs,
+                initial_succeeded=succeeded_node_ids,
+            ),
+            name=f"pipeline-resume-{pipeline.id}",
+        )
+
+        return pipeline
 
     # ── 工作流模板 CRUD ───────────────────────────────────
 
@@ -2107,12 +2372,16 @@ class Scheduler:
         # 创建此次运行的 Pipeline（只含元数据，task_ids 由后台协程逐步追加）
         run_name = f"{tpl.name} · {input_str[:30]}" if input_str else tpl.name
         pipeline = Pipeline(
-            id            = self.new_pipeline_id(),
-            name          = run_name,
-            template_id   = tpl.id,
-            trigger_input = input_str,
+            id              = self.new_pipeline_id(),
+            name            = run_name,
+            template_id     = tpl.id,
+            trigger_input   = input_str,
+            status          = "running",
+            project_map     = dict(project_map),
+            default_project = default_project,
         )
         pipeline.save(self.pipelines_dir)
+        self._create_workflow_run_for_pipeline(pipeline, tpl, sorted_nodes, resolved_projects)
 
         # 后台协程按层推进：等待上层完成 → 提取输出 → 插值提交下层
         asyncio.create_task(
@@ -2127,18 +2396,45 @@ class Scheduler:
     # ── 模板执行辅助 ──────────────────────────────────────────────
 
     @staticmethod
+    def _extract_step_references(prompt_tpl: str) -> list[str]:
+        """Return all node IDs referenced via {{steps.<id>.outputs.text}}."""
+        return re.findall(r"\{\{steps\.([^}]+)\.outputs\.text\}\}", prompt_tpl)
+
+    @staticmethod
     def _render_prompt(prompt_tpl: str, input_str: str, node_outputs: dict[str, str]) -> str:
         """
         Replace {{input}} and {{steps.<node_id>.outputs.text}} placeholders.
-        Unknown step references are replaced with a readable placeholder.
+        Caller must have validated that referenced outputs are available.
         """
         result = prompt_tpl.replace("{{input}}", input_str)
         result = re.sub(
             r"\{\{steps\.([^}]+)\.outputs\.text\}\}",
-            lambda m: node_outputs.get(m.group(1), f"[output of {m.group(1)} not available]"),
+            lambda m: node_outputs.get(m.group(1), ""),
             result,
         )
         return result
+
+    def _validate_step_references(
+        self, node: "TemplateNode", node_outputs: dict[str, str]
+    ) -> None:
+        """
+        检查 prompt_tpl 中引用的上游节点输出是否可用。
+        若任意引用的输出不存在或为空，抛出 ValueError，阻止该节点提交。
+        """
+        refs = self._extract_step_references(node.prompt_tpl)
+        if not refs:
+            return
+        problems: list[str] = []
+        for ref_id in refs:
+            if ref_id not in node_outputs:
+                problems.append(f"节点「{ref_id}」的输出尚未采集（日志可能未落盘）")
+            elif not node_outputs[ref_id].strip():
+                problems.append(f"节点「{ref_id}」执行成功但输出为空，无法作为上游数据")
+        if problems:
+            label = node.name or node.node_id
+            raise ValueError(
+                f"节点「{label}」依赖的上游输出无效，已阻止执行：\n" + "\n".join(f"  · {p}" for p in problems)
+            )
 
     async def _wait_for_task_done(
         self,
@@ -2167,8 +2463,18 @@ class Scheduler:
         node_outputs: dict[str, str],
     ) -> "Task":
         """Submit a single node's task and register it in the pipeline."""
+        # 校验上游输出：引用了 {{steps.X.outputs.text}} 而 X 输出为空时直接报错，阻止提交
+        self._validate_step_references(node, node_outputs)
         actual_prompt = self._render_prompt(node.prompt_tpl, input_str, node_outputs)
         pname = resolved_projects[node.node_id]
+        self._update_workflow_node(
+            pipeline_id,
+            node.node_id,
+            state=WorkflowNodeState.running,
+            resolved_project=pname,
+            actual_prompt=actual_prompt,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+        )
 
         task = await self.submit(
             prompt       = actual_prompt,
@@ -2195,16 +2501,26 @@ class Scheduler:
                 actual_prompt    = actual_prompt,
             ))
             pipeline.touch(self.pipelines_dir)
+            self._update_workflow_node(
+                pipeline_id,
+                node.node_id,
+                task_id=task.id,
+                attempt_count=1,
+                resolved_project=pname,
+                actual_prompt=actual_prompt,
+            )
 
         return task
 
     async def _execute_pipeline_levels(
         self,
-        pipeline_id:       str,
-        tpl:               "WorkflowTemplate",
-        level_groups:      dict,
-        resolved_projects: dict[str, str],
-        input_str:         str,
+        pipeline_id:            str,
+        tpl:                    "WorkflowTemplate",
+        level_groups:           dict,
+        resolved_projects:      dict[str, str],
+        input_str:              str,
+        initial_node_outputs:   dict[str, str] | None = None,
+        initial_succeeded:      set[str] | None       = None,
     ) -> None:
         """
         Background coroutine: execute workflow levels sequentially.
@@ -2215,11 +2531,45 @@ class Scheduler:
           3. Extract each node's text output.
           4. Proceed to the next level, injecting outputs into prompts via
              {{steps.<node_id>.outputs.text}}.
+
+        initial_node_outputs / initial_succeeded allow resume to seed prior results.
         """
+        try:
+            await self._execute_pipeline_levels_inner(
+                pipeline_id, tpl, level_groups, resolved_projects,
+                input_str, initial_node_outputs, initial_succeeded,
+            )
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[pipeline {pipeline_id}] UNHANDLED exception in pipeline executor:\n{tb}")
+            # Record the error and mark pipeline as failed so the UI can surface it
+            try:
+                pipeline = self.get_pipeline(pipeline_id)
+                if pipeline:
+                    pipeline.status     = "failed"
+                    pipeline.last_error = str(exc)
+                    pipeline.touch(self.pipelines_dir)
+                    self._update_workflow_run_from_pipeline(pipeline)
+            except Exception:
+                pass
+
+    async def _execute_pipeline_levels_inner(
+        self,
+        pipeline_id:            str,
+        tpl:                    "WorkflowTemplate",
+        level_groups:           dict,
+        resolved_projects:      dict[str, str],
+        input_str:              str,
+        initial_node_outputs:   dict[str, str] | None = None,
+        initial_succeeded:      set[str] | None       = None,
+    ) -> None:
         from coderfleet.server.log_parser import parse_log
 
-        node_outputs: dict[str, str] = {}
+        node_outputs: dict[str, str] = dict(initial_node_outputs or {})
         pipeline_failed = False
+        node_error: str = ""
+        succeeded_nodes: set[str] = set(initial_succeeded or set())
 
         for level in sorted(level_groups.keys()):
             if pipeline_failed:
@@ -2241,7 +2591,16 @@ class Scheduler:
             # --- Wait for each node to finish (with per-node retry) ---
             for node, submit_result in zip(nodes, submit_results):
                 if isinstance(submit_result, Exception):
+                    err_msg = f"节点「{node.name or node.node_id}」提交失败: {submit_result}"
                     print(f"[pipeline {pipeline_id}] node {node.node_id} submit error: {submit_result}")
+                    self._update_workflow_node(
+                        pipeline_id,
+                        node.node_id,
+                        state=WorkflowNodeState.failed,
+                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        error_message=str(submit_result),
+                    )
+                    node_error = node_error or err_msg
                     pipeline_failed = True
                     continue
 
@@ -2260,6 +2619,20 @@ class Scheduler:
                             log_text = log_path.read_text(encoding="utf-8", errors="ignore")
                             data = parse_log(log_text, task.type.value)
                             node_outputs[node.node_id] = data.text
+                            node_output = data.text
+                        else:
+                            # 日志文件未落盘：key 必须存在以便下游校验时给出准确提示
+                            node_outputs[node.node_id] = ""
+                            node_output = ""
+                        succeeded_nodes.add(node.node_id)
+                        self._update_workflow_node(
+                            pipeline_id,
+                            node.node_id,
+                            state=WorkflowNodeState.succeeded,
+                            outputs={"text": node_output},
+                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            error_message="",
+                        )
                         break
 
                     # Task failed / killed
@@ -2275,6 +2648,12 @@ class Scheduler:
                             task = await self._submit_pipeline_node(
                                 node, pipeline_id, resolved_projects, input_str, node_outputs
                             )
+                            self._update_workflow_node(
+                                pipeline_id,
+                                node.node_id,
+                                attempt_count=attempt + 1,
+                                task_id=task.id,
+                            )
                         except Exception as e:
                             print(
                                 f"[pipeline {pipeline_id}] node {node.node_id} "
@@ -2287,8 +2666,35 @@ class Scheduler:
                             f"[pipeline {pipeline_id}] node {node.node_id} "
                             f"permanently failed after {attempt + 1} attempt(s)"
                         )
+                        self._update_workflow_node(
+                            pipeline_id,
+                            node.node_id,
+                            state=WorkflowNodeState.cancelled if final_status == TaskStatus.killed else WorkflowNodeState.failed,
+                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            error_message=f"任务 {task.id} 结束状态: {final_status.value}",
+                        )
                         pipeline_failed = True
                         break
+
+        # ── 更新 Pipeline 最终状态 ──────────────────────────────
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline:
+            total_nodes = sum(len(nodes) for nodes in level_groups.values())
+            if not pipeline_failed:
+                pipeline.status     = "succeeded"
+                pipeline.last_error = ""
+            elif succeeded_nodes:
+                pipeline.status     = "partial"
+                pipeline.last_error = node_error
+            else:
+                pipeline.status     = "failed"
+                pipeline.last_error = node_error
+            pipeline.touch(self.pipelines_dir)
+            self._update_workflow_run_from_pipeline(pipeline)
+            print(
+                f"[pipeline {pipeline_id}] finished with status={pipeline.status} "
+                f"({len(succeeded_nodes)}/{total_nodes} nodes succeeded)"
+            )
 
     # ── 逻辑项目（按 path 分组） ──────────────────────────
 

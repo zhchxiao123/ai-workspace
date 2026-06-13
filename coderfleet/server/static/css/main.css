@@ -4700,6 +4700,23 @@
       flex-wrap: wrap;
     }
 
+    .workflow-output-section {
+      flex-shrink: 0;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--green) 6%, var(--bg));
+    }
+    .workflow-output-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .workflow-output-header:hover {
+      background: color-mix(in srgb, var(--green) 10%, var(--bg));
+    }
+
     .workflow-detail-log {
       flex: 1;
       overflow-y: auto;
@@ -5030,6 +5047,34 @@
       background: var(--bg);
       border-radius: var(--radius);
       border: 1px solid var(--border);
+    }
+
+    .df-var-hints {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+    }
+    .df-var-hints-label {
+      font-size: 10px;
+      color: var(--text-3);
+      flex-shrink: 0;
+    }
+    .df-var-chip {
+      font-size: 10px;
+      font-family: var(--font-mono, monospace);
+      background: color-mix(in srgb, var(--primary) 12%, var(--bg));
+      color: var(--primary);
+      border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+      border-radius: 3px;
+      padding: 1px 5px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.1s;
+    }
+    .df-var-chip:hover {
+      background: color-mix(in srgb, var(--primary) 22%, var(--bg));
     }
 
     /* ── 认证登录遮罩 ──────────────────────────────────────── */

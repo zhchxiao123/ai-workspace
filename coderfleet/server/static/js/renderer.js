@@ -726,8 +726,8 @@ class ChatLogRenderer {
 
     // Toggle 逻辑
     const header = card.querySelector('.chat-tool-header');
-    const body = card.querySelector(`#tbody-${id}`);
-    const btn = card.querySelector(`#tt-${id}`);
+    const body = document.getElementById(`tbody-${id}`);
+    const btn = document.getElementById(`tt-${id}`);
     header.addEventListener('click', () => {
       const collapsed = body.classList.toggle('collapsed');
       btn.textContent = collapsed ? '展开' : '收起';
@@ -735,10 +735,10 @@ class ChatLogRenderer {
     btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
 
     this.toolMap[id] = {
-      statusEl: card.querySelector(`#ts-${id}`),
-      badgeEl: card.querySelector(`#tb-${id}`),
-      outputEl: card.querySelector(`#to-${id}`),
-      exitEl: card.querySelector(`#te-${id}`),
+      statusEl: document.getElementById(`ts-${id}`),
+      badgeEl: document.getElementById(`tb-${id}`),
+      outputEl: document.getElementById(`to-${id}`),
+      exitEl: document.getElementById(`te-${id}`),
       bodyEl: body,
       btnEl: btn,
       wrap, name, input,

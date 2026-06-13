@@ -220,7 +220,7 @@ function fmtDuration(created, finished) {
 }
 
 function statusLabel(s) {
-  return { running: '运行中', done: '完成', failed: '失败', killed: '已终止' }[s] || s;
+  return { scheduled: '等待依赖', pending: '待执行', running: '运行中', done: '完成', failed: '失败', killed: '已终止' }[s] || s;
 }
 
 function statusRank(s) {

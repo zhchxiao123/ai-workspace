@@ -64,6 +64,8 @@ from coderfleet.server.models import (
     TemplateCreateRequest,
     TemplateRunRequest,
     TerminalConversationCreateRequest,
+    WorkflowRun,
+    WorkflowRunResponse,
     WorkflowTemplateResponse,
 )
 from coderfleet.server.auth import AuthMiddleware, load_api_key
@@ -1586,6 +1588,21 @@ async def get_logs(task_id: str):
     return log_path.read_text(encoding="utf-8")
 
 
+@app.get("/api/tasks/{task_id}/output")
+async def get_task_output(task_id: str):
+    """提取任务的结构化输出文本（由 log_parser 解析）。"""
+    from coderfleet.server.log_parser import extract_task_output
+    task = scheduler.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务 '{task_id}' 不存在")
+    log_path = scheduler.get_log_path(task_id)
+    if not log_path.exists():
+        return {"text": ""}
+    log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+    text = extract_task_output(log_text, task.type.value)
+    return {"text": text}
+
+
 # ── SSE 实时日志流 ────────────────────────────────────────
 
 @app.get("/api/tasks/{task_id}/logs/stream")
@@ -1805,6 +1822,68 @@ async def delete_pipeline(pipeline_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/api/pipelines/{pipeline_id}/resume", response_model=PipelineResponse)
+async def resume_pipeline(pipeline_id: str):
+    try:
+        pipeline = await scheduler.resume_pipeline(pipeline_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
+    return PipelineResponse.from_pipeline(pipeline, tasks)
+
+
+def _workflow_run_response(run: WorkflowRun) -> WorkflowRunResponse:
+    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    pipeline = scheduler.get_pipeline(run.legacy_pipeline_id) if run.legacy_pipeline_id else None
+    task_ids = [n.task_id for n in run.node_executions if n.task_id]
+    tasks = [all_tasks[tid] for tid in task_ids if tid in all_tasks]
+    return WorkflowRunResponse.from_run(
+        run,
+        tasks,
+        default_project=getattr(pipeline, "default_project", ""),
+        last_error=getattr(pipeline, "last_error", ""),
+    )
+
+
+@app.get("/api/workflow-runs", response_model=list[WorkflowRunResponse])
+async def list_workflow_runs():
+    return [_workflow_run_response(r) for r in scheduler.list_workflow_runs()]
+
+
+@app.get("/api/workflow-runs/{run_id}", response_model=WorkflowRunResponse)
+async def get_workflow_run(run_id: str):
+    run = scheduler.get_workflow_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"工作流运行 '{run_id}' 不存在")
+    return _workflow_run_response(run)
+
+
+@app.delete("/api/workflow-runs/{run_id}", status_code=204)
+async def delete_workflow_run(run_id: str):
+    try:
+        scheduler.delete_workflow_run(run_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/workflow-runs/{run_id}/resume", response_model=WorkflowRunResponse)
+async def resume_workflow_run(run_id: str):
+    run = scheduler.get_workflow_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"工作流运行 '{run_id}' 不存在")
+    if not run.legacy_pipeline_id:
+        raise HTTPException(status_code=400, detail="此工作流运行没有兼容执行记录，无法恢复")
+    try:
+        pipeline = await scheduler.resume_pipeline(run.legacy_pipeline_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    refreshed = scheduler.get_workflow_run_by_legacy_pipeline_id(pipeline.id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail=f"工作流运行 '{run_id}' 不存在")
+    return _workflow_run_response(refreshed)
+
+
 # ══════════════════════════════════════════════════════════════
 #  定时计划 CRUD
 # ══════════════════════════════════════════════════════════════
@@ -1923,7 +2002,7 @@ async def delete_workflow_template(template_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/api/workflow-templates/{template_id}/run", response_model=PipelineResponse, status_code=201)
+@app.post("/api/workflow-templates/{template_id}/run", response_model=WorkflowRunResponse, status_code=201)
 async def run_workflow_template(template_id: str, req: TemplateRunRequest):
     try:
         pipeline = await scheduler.run_template(
@@ -1932,9 +2011,10 @@ async def run_workflow_template(template_id: str, req: TemplateRunRequest):
             project_map     = req.project_map,
             default_project = req.default_project,
         )
-        all_tasks = {t.id: t for t in scheduler.list_tasks()}
-        tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
-        return PipelineResponse.from_pipeline(pipeline, tasks)
+        run = scheduler.get_workflow_run_by_legacy_pipeline_id(pipeline.id)
+        if run is None:
+            raise HTTPException(status_code=500, detail="工作流运行创建失败")
+        return _workflow_run_response(run)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
