@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ import uuid
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -198,6 +199,18 @@ DIGEST_DIR       = WORKSPACE_DIR / "digests"
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
+def _build_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            cwd=Path(__file__).parent,
+        ).decode().strip()
+    except Exception:
+        return "dev"
+
+_BUILD_VERSION = _build_version()
+
 app = FastAPI(
     title       = "CoderFleet Scheduler API",
     description = "CoderFleet 任务调度服务",
@@ -230,7 +243,8 @@ async def index():
     html = STATIC_DIR / "index.html"
     if not html.exists():
         return PlainTextResponse("Web UI not found.", status_code=404)
-    return FileResponse(html)
+    content = html.read_text(encoding="utf-8").replace("__BUILD__", _BUILD_VERSION)
+    return HTMLResponse(content=content)
 
 
 @app.get("/m", include_in_schema=False)
