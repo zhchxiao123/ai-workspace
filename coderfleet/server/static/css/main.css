@@ -5077,6 +5077,31 @@
       background: color-mix(in srgb, var(--primary) 22%, var(--bg));
     }
 
+    /* ── 特殊节点类型样式 ──────────────────────────────────── */
+    .df-node-type-condition {
+      background: color-mix(in srgb, #f59e0b 15%, var(--bg));
+      color: #d97706;
+      border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+    }
+    .df-node-type-delay {
+      background: color-mix(in srgb, #6366f1 15%, var(--bg));
+      color: #4f46e5;
+      border: 1px solid color-mix(in srgb, #6366f1 30%, transparent);
+    }
+    .df-node-type-approval {
+      background: color-mix(in srgb, #10b981 15%, var(--bg));
+      color: #059669;
+      border: 1px solid color-mix(in srgb, #10b981 30%, transparent);
+    }
+    .df-tpl-node-condition .df-node-title { border-bottom-color: color-mix(in srgb, #f59e0b 30%, var(--border)); }
+    .df-tpl-node-delay     .df-node-title { border-bottom-color: color-mix(in srgb, #6366f1 30%, var(--border)); }
+    .df-tpl-node-approval  .df-node-title { border-bottom-color: color-mix(in srgb, #10b981 30%, var(--border)); }
+
+    /* ── 下拉菜单 hover ──────────────────────────────────────── */
+    .dropdown-item:hover {
+      background: var(--surface-2);
+    }
+
     /* ── 认证登录遮罩 ──────────────────────────────────────── */
     #auth-overlay {
       position: fixed;

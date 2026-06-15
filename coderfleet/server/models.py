@@ -582,11 +582,28 @@ class LogicalProject(BaseModel):
 
 # ── 工作流模板 ─────────────────────────────────────────────
 
+class NodeType(str, Enum):
+    task      = "task"       # 默认：提交 AI 任务
+    condition = "condition"  # 条件路由节点（不提交任务，根据上游输出决定分支）
+    delay     = "delay"      # 延迟等待节点
+    approval  = "approval"   # 人工审批节点（等待用户手动批准后继续）
+
+
+class ConditionBranch(BaseModel):
+    """条件节点的一个分支：condition 为真时激活 next_nodes 中的下游节点。"""
+    condition:  str             # 表达式，支持格式：
+                                #   "{{steps.X.outputs.text}} contains 'ERROR'"
+                                #   "{{steps.X.outputs.text}} not_contains 'ok'"
+                                #   "{{steps.X.outputs.text}} equals 'done'"
+                                #   "else"（fallback 分支，总为真）
+    next_nodes: list[str] = Field(default_factory=list)  # 激活的下游 node_id 列表
+
+
 class TemplateNode(BaseModel):
     """模板中的一个节点定义（可重复使用的任务蓝图）"""
     node_id:              str
     name:                 str
-    prompt_tpl:           str              # 支持 {{input}} 和 {{steps.<id>.outputs.text}}
+    prompt_tpl:           str = ""         # 支持 {{input}} 和 {{steps.<id>.outputs.text}}
     target_mode:          str = "default"  # default / fixed_project / runtime_role
     project_name:         str = ""         # target_mode=fixed_project 时使用
     project_role:         str = ""         # 角色名（如 "claude"/"codex"）或具体项目名
@@ -595,6 +612,13 @@ class TemplateNode(BaseModel):
     pos_y:                float = 0.0
     max_retries:          int = 0          # 节点失败后最大重试次数（0=不重试）
     retry_delay_seconds:  int = 30         # 每次重试前等待秒数
+    timeout_minutes:      int = 120        # 节点执行超时（分钟），0=不限制
+    # 节点类型（新增）
+    node_type:            NodeType = NodeType.task
+    # condition 节点专用
+    branches:             list[ConditionBranch] = Field(default_factory=list)
+    # delay 节点专用
+    delay_seconds:        int = 0
 
 
 class WorkflowTemplate(BaseModel):
@@ -824,6 +848,7 @@ class ScheduleType(str, Enum):
     daily  = "daily"    # 每天 HH:MM
     weekly = "weekly"   # 每周指定星期 HH:MM
     hourly = "hourly"   # 每小时 :MM
+    cron   = "cron"     # 自定义 cron 表达式
 
 
 class Schedule(BaseModel):
@@ -835,9 +860,12 @@ class Schedule(BaseModel):
     time_of_day:     Optional[str] = None    # "HH:MM" for daily/weekly
     days_of_week:    list[int] = Field(default_factory=list)  # 0=Mon..6=Sun
     minute_of_hour:  Optional[int] = None    # 0-59 for hourly
+    cron_expr:       Optional[str] = None    # cron 表达式，schedule_type=cron 时使用
     enabled:         bool = True
     auto:            bool = False
     account:         Optional[str] = None
+    webhook_token:   str = Field(default_factory=lambda: __import__("uuid").uuid4().hex)
+    webhook_enabled: bool = False
     next_run_at:     Optional[str] = None
     last_run_at:     Optional[str] = None
     last_task_id:    str = ""
@@ -870,22 +898,25 @@ class Schedule(BaseModel):
 
 
 class ScheduleResponse(BaseModel):
-    id:             str
-    name:           str
-    prompt:         str
-    project_name:   str
-    schedule_type:  ScheduleType
-    time_of_day:    Optional[str] = None
-    days_of_week:   list[int] = []
-    minute_of_hour: Optional[int] = None
-    enabled:        bool
-    auto:           bool
-    account:        Optional[str] = None
-    next_run_at:    Optional[str] = None
-    last_run_at:    Optional[str] = None
-    last_task_id:   str = ""
-    created:        str
-    updated:        str
+    id:              str
+    name:            str
+    prompt:          str
+    project_name:    str
+    schedule_type:   ScheduleType
+    time_of_day:     Optional[str] = None
+    days_of_week:    list[int] = []
+    minute_of_hour:  Optional[int] = None
+    cron_expr:       Optional[str] = None
+    enabled:         bool
+    auto:            bool
+    account:         Optional[str] = None
+    webhook_token:   str = ""
+    webhook_enabled: bool = False
+    next_run_at:     Optional[str] = None
+    last_run_at:     Optional[str] = None
+    last_task_id:    str = ""
+    created:         str
+    updated:         str
 
     @classmethod
     def from_schedule(cls, s: "Schedule") -> "ScheduleResponse":
@@ -898,29 +929,33 @@ class TerminalConversationCreateRequest(BaseModel):
 
 
 class ScheduleCreateRequest(BaseModel):
-    name:           str
-    prompt:         str
-    project_name:   str
-    schedule_type:  ScheduleType
-    time_of_day:    Optional[str] = None
-    days_of_week:   list[int] = []
-    minute_of_hour: Optional[int] = None
-    enabled:        bool = True
-    auto:           bool = False
-    account:        Optional[str] = None
+    name:            str
+    prompt:          str
+    project_name:    str
+    schedule_type:   ScheduleType
+    time_of_day:     Optional[str] = None
+    days_of_week:    list[int] = []
+    minute_of_hour:  Optional[int] = None
+    cron_expr:       Optional[str] = None
+    enabled:         bool = True
+    auto:            bool = False
+    account:         Optional[str] = None
+    webhook_enabled: bool = False
 
 
 class ScheduleUpdateRequest(BaseModel):
-    name:           Optional[str] = None
-    prompt:         Optional[str] = None
-    project_name:   Optional[str] = None
-    schedule_type:  Optional[ScheduleType] = None
-    time_of_day:    Optional[str] = None
-    days_of_week:   Optional[list[int]] = None
-    minute_of_hour: Optional[int] = None
-    enabled:        Optional[bool] = None
-    auto:           Optional[bool] = None
-    account:        Optional[str] = None
+    name:            Optional[str] = None
+    prompt:          Optional[str] = None
+    project_name:    Optional[str] = None
+    schedule_type:   Optional[ScheduleType] = None
+    time_of_day:     Optional[str] = None
+    days_of_week:    Optional[list[int]] = None
+    minute_of_hour:  Optional[int] = None
+    cron_expr:       Optional[str] = None
+    enabled:         Optional[bool] = None
+    auto:            Optional[bool] = None
+    account:         Optional[str] = None
+    webhook_enabled: Optional[bool] = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -932,13 +967,14 @@ class ScheduleUpdateRequest(BaseModel):
 
 class WorkflowNodeState(str, Enum):
     """工作流节点执行状态机"""
-    pending      = "pending"
-    waiting_deps = "waiting_deps"
-    running      = "running"
-    succeeded    = "succeeded"
-    failed       = "failed"
-    skipped      = "skipped"
-    cancelled    = "cancelled"
+    pending          = "pending"
+    waiting_deps     = "waiting_deps"
+    running          = "running"
+    succeeded        = "succeeded"
+    failed           = "failed"
+    skipped          = "skipped"          # 未命中条件分支
+    cancelled        = "cancelled"
+    waiting_approval = "waiting_approval" # 人工审批节点等待中
 
 
 class NodeExecution(BaseModel):
@@ -967,18 +1003,21 @@ class WorkflowRun(BaseModel):
     工作流的一次执行实例（新核心实体，逐步替代 Pipeline 的“运行记录”语义）。
     每次从模板 run 产生一个 WorkflowRun，拥有完整节点状态机。
     """
-    id:                 str
-    template_id:        str = ""
-    template_version:   int = 1
-    name:               str = ""
-    trigger_input:      str = ""
-    status:             str = "running"   # running | succeeded | failed | cancelled | partial
-    node_executions:    list[NodeExecution] = Field(default_factory=list)
-    created:            str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:            str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    id:                          str
+    template_id:                 str = ""
+    template_version:            int = 1
+    name:                        str = ""
+    trigger_input:               str = ""
+    status:                      str = "running"  # running | succeeded | failed | cancelled | partial | waiting_approval
+    node_executions:             list[NodeExecution] = Field(default_factory=list)
+    created:                     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    updated:                     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     # 兼容/审计
-    legacy_pipeline_id: str = ""          # 若由旧 Pipeline 迁移而来
-    project_map:        dict[str, str] = Field(default_factory=dict)  # 运行时角色->项目快照
+    legacy_pipeline_id:          str = ""         # 若由旧 Pipeline 迁移而来
+    project_map:                 dict[str, str] = Field(default_factory=dict)  # 运行时角色->项目快照
+    # 人工审批节点支持
+    pending_approval_node_id:    str = ""
+    approval_token:              str = ""
 
     def save(self, runs_dir: Path) -> None:
         runs_dir.mkdir(parents=True, exist_ok=True)
@@ -1011,20 +1050,22 @@ class WorkflowRun(BaseModel):
 
 
 class WorkflowRunResponse(BaseModel):
-    id:                 str
-    template_id:        str = ""
-    template_version:   int = 1
-    name:               str = ""
-    trigger_input:      str = ""
-    status:             str = "running"
-    node_executions:    list[NodeExecution] = []
-    created:            str
-    updated:            str
-    legacy_pipeline_id: str = ""
-    project_map:        dict[str, str] = {}
-    default_project:    str = ""
-    last_error:         str = ""
-    tasks:              list[TaskResponse] = []
+    id:                          str
+    template_id:                 str = ""
+    template_version:            int = 1
+    name:                        str = ""
+    trigger_input:               str = ""
+    status:                      str = "running"
+    node_executions:             list[NodeExecution] = []
+    created:                     str
+    updated:                     str
+    legacy_pipeline_id:          str = ""
+    project_map:                 dict[str, str] = {}
+    default_project:             str = ""
+    last_error:                  str = ""
+    tasks:                       list[TaskResponse] = []
+    pending_approval_node_id:    str = ""
+    approval_token:              str = ""
 
     # Compatibility for the current DAG renderer while the frontend moves from
     # Pipeline-shaped data to WorkflowRun-shaped data.
@@ -1061,13 +1102,15 @@ class WorkflowRunResponse(BaseModel):
             trigger_input      = run.trigger_input,
             status             = run.status,
             node_executions    = run.node_executions,
-            created            = run.created,
-            updated            = run.updated,
-            legacy_pipeline_id = run.legacy_pipeline_id,
-            project_map        = run.project_map,
-            default_project    = default_project,
-            last_error         = last_error,
-            tasks              = [TaskResponse.from_task(t) for t in tasks],
-            task_ids           = task_ids,
-            node_runs          = node_runs,
+            created                  = run.created,
+            updated                  = run.updated,
+            legacy_pipeline_id       = run.legacy_pipeline_id,
+            project_map              = run.project_map,
+            default_project          = default_project,
+            last_error               = last_error,
+            tasks                    = [TaskResponse.from_task(t) for t in tasks],
+            task_ids                 = task_ids,
+            node_runs                = node_runs,
+            pending_approval_node_id = getattr(run, "pending_approval_node_id", ""),
+            approval_token           = getattr(run, "approval_token", ""),
         )

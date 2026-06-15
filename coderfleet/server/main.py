@@ -1898,6 +1898,30 @@ async def resume_workflow_run(run_id: str):
     return _workflow_run_response(refreshed)
 
 
+@app.post("/api/workflow-runs/{run_id}/cancel", response_model=WorkflowRunResponse)
+async def cancel_workflow_run(run_id: str):
+    run = scheduler.get_workflow_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"工作流运行 '{run_id}' 不存在")
+    try:
+        updated_run = await scheduler.cancel_workflow_run(run_id)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _workflow_run_response(updated_run)
+
+
+@app.post("/api/workflow-runs/{run_id}/approve", response_model=WorkflowRunResponse)
+async def approve_workflow_run(run_id: str, token: str = ""):
+    """批准工作流中的人工审批节点，工作流继续执行。"""
+    try:
+        updated_run = await scheduler.approve_workflow_run(run_id, token)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return _workflow_run_response(updated_run)
+
+
 # ══════════════════════════════════════════════════════════════
 #  定时计划 CRUD
 # ══════════════════════════════════════════════════════════════
@@ -1910,17 +1934,19 @@ async def list_schedules():
 @app.post("/api/schedules", response_model=ScheduleResponse, status_code=201)
 async def create_schedule(req: ScheduleCreateRequest):
     sched = Schedule(
-        id            = scheduler.new_schedule_id(),
-        name          = req.name,
-        prompt        = req.prompt,
-        project_name  = req.project_name,
-        schedule_type = req.schedule_type,
-        time_of_day   = req.time_of_day,
-        days_of_week  = req.days_of_week,
-        minute_of_hour= req.minute_of_hour,
-        enabled       = req.enabled,
-        auto          = req.auto,
-        account       = req.account,
+        id              = scheduler.new_schedule_id(),
+        name            = req.name,
+        prompt          = req.prompt,
+        project_name    = req.project_name,
+        schedule_type   = req.schedule_type,
+        time_of_day     = req.time_of_day,
+        days_of_week    = req.days_of_week,
+        minute_of_hour  = req.minute_of_hour,
+        cron_expr       = req.cron_expr,
+        enabled         = req.enabled,
+        auto            = req.auto,
+        account         = req.account,
+        webhook_enabled = req.webhook_enabled,
     )
     sched = scheduler.create_schedule(sched)
     return ScheduleResponse.from_schedule(sched)
@@ -1936,7 +1962,9 @@ async def get_schedule(sched_id: str):
 
 @app.put("/api/schedules/{sched_id}", response_model=ScheduleResponse)
 async def update_schedule(sched_id: str, req: ScheduleUpdateRequest):
-    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    # Use exclude_unset so fields not sent by the client are skipped,
+    # but explicitly sent null/None values (e.g. clearing cron_expr) are preserved.
+    updates = req.model_dump(exclude_unset=True)
     sched = scheduler.update_schedule(sched_id, updates)
     if sched is None:
         raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
@@ -1972,6 +2000,29 @@ async def run_schedule_now(sched_id: str):
     sched.last_run_at = datetime.now().isoformat(timespec="seconds")
     sched.last_task_id = task.id
     sched.updated = datetime.now().isoformat(timespec="seconds")
+    sched.save(scheduler.schedules_dir)
+    return TaskResponse.from_task(task)
+
+
+@app.post("/api/webhooks/{webhook_token}/trigger", response_model=TaskResponse, status_code=201)
+async def webhook_trigger(webhook_token: str):
+    """公开端点（无需认证），通过 webhook_token 触发对应定时计划立即执行一次。"""
+    sched = next(
+        (s for s in scheduler.list_schedules()
+         if getattr(s, "webhook_enabled", False) and s.webhook_token == webhook_token),
+        None,
+    )
+    if sched is None:
+        raise HTTPException(status_code=404, detail="webhook not found or disabled")
+    task = await scheduler.submit(
+        prompt       = sched.prompt,
+        project_name = sched.project_name,
+        auto         = sched.auto,
+        account_name = sched.account,
+    )
+    sched.last_run_at  = datetime.now().isoformat(timespec="seconds")
+    sched.last_task_id = task.id
+    sched.updated      = datetime.now().isoformat(timespec="seconds")
     sched.save(scheduler.schedules_dir)
     return TaskResponse.from_task(task)
 

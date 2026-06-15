@@ -457,6 +457,8 @@
                     <span id="dag-status-badge" style="font-size:11px;display:none"></span>
                     <span id="dag-progress-label" style="font-size:11px;color:var(--text-3);display:none"></span>
                     <button id="dag-resume-btn" class="btn primary" style="font-size:12px;padding:5px 12px;display:none" onclick="resumePipeline()">▶ 恢复运行</button>
+                    <button id="dag-approve-btn" class="btn primary" style="font-size:12px;padding:5px 12px;display:none" onclick="approveWorkflowRun()">✓ 批准继续</button>
+                    <button id="dag-cancel-btn" class="btn danger" style="font-size:12px;padding:5px 12px;display:none" onclick="cancelWorkflowRun()">■ 取消</button>
                     <button class="btn wf-zoom-btn" title="缩小" onclick="zoomDag(-0.15)">－</button>
                     <span id="dag-zoom-label" style="font-size:11px;color:var(--text-3);min-width:34px;text-align:center">100%</span>
                     <button class="btn wf-zoom-btn" title="放大" onclick="zoomDag(0.15)">＋</button>
@@ -486,7 +488,18 @@
                 <div class="workflows-canvas-toolbar" id="template-editor-toolbar" style="display:none">
                   <input class="tpl-name-input" id="tpl-name" placeholder="模板名称" oninput="markTemplateDirty()">
                   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-                    <button class="btn" style="font-size:12px;padding:5px 12px" onclick="addTemplateNode()">+ 节点</button>
+                    <div class="dropdown" style="position:relative">
+                      <button class="btn" style="font-size:12px;padding:5px 12px"
+                        onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">+ 节点 ▾</button>
+                      <div class="dropdown-menu" style="display:none;position:absolute;top:100%;left:0;background:var(--bg-2);border:1px solid var(--border);border-radius:6px;min-width:150px;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,.15);margin-top:2px">
+                        <div style="padding:4px 0">
+                          <div class="dropdown-item" style="padding:6px 12px;font-size:13px;cursor:pointer" onclick="addTemplateNode('task');this.closest('.dropdown-menu').style.display='none'">⚙ 任务节点</div>
+                          <div class="dropdown-item" style="padding:6px 12px;font-size:13px;cursor:pointer" onclick="addTemplateNode('condition');this.closest('.dropdown-menu').style.display='none'">◇ 条件节点</div>
+                          <div class="dropdown-item" style="padding:6px 12px;font-size:13px;cursor:pointer" onclick="addTemplateNode('delay');this.closest('.dropdown-menu').style.display='none'">⏱ 延迟节点</div>
+                          <div class="dropdown-item" style="padding:6px 12px;font-size:13px;cursor:pointer" onclick="addTemplateNode('approval');this.closest('.dropdown-menu').style.display='none'">✋ 审批节点</div>
+                        </div>
+                      </div>
+                    </div>
                     <button class="btn primary" style="font-size:12px;padding:5px 12px" id="tpl-save-btn" onclick="saveTemplate()">保存</button>
                     <button class="btn" style="font-size:12px;padding:5px 12px" onclick="showRunTemplateModal(activeTemplateId)">▶ 运行</button>
                     <button class="btn" style="font-size:12px;padding:5px 12px" onclick="confirmDeleteTemplate()">删除</button>

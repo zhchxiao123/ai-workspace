@@ -39,6 +39,9 @@ function schedulePatternLabel(s) {
     const min = s.minute_of_hour != null ? String(s.minute_of_hour).padStart(2, '0') : '00';
     return `每小时 :${min}`;
   }
+  if (s.schedule_type === 'cron') {
+    return `Cron: ${s.cron_expr || '?'}`;
+  }
   return s.schedule_type;
 }
 
@@ -127,6 +130,15 @@ function _fillScheduleForm(s) {
   // minute_of_hour
   document.getElementById('sched-minute-of-hour').value =
     s.minute_of_hour != null ? String(s.minute_of_hour).padStart(2, '0') : '00';
+
+  // cron_expr
+  const cronInput = document.getElementById('sched-cron-expr');
+  if (cronInput) cronInput.value = s.cron_expr || '';
+
+  // webhook
+  const webhookEnabled = document.getElementById('sched-webhook-enabled');
+  if (webhookEnabled) webhookEnabled.checked = !!s.webhook_enabled;
+  _updateWebhookUrl(s);
 }
 
 function _resetScheduleForm() {
@@ -140,6 +152,23 @@ function _resetScheduleForm() {
   document.getElementById('sched-minute').value = '00';
   document.querySelectorAll('.sched-day-cb').forEach(cb => { cb.checked = false; });
   document.getElementById('sched-minute-of-hour').value = '00';
+  const cronInput = document.getElementById('sched-cron-expr');
+  if (cronInput) cronInput.value = '';
+  const webhookEnabled = document.getElementById('sched-webhook-enabled');
+  if (webhookEnabled) webhookEnabled.checked = false;
+  _updateWebhookUrl(null);
+}
+
+function _updateWebhookUrl(s) {
+  const row = document.getElementById('sched-webhook-url-row');
+  if (!row) return;
+  if (s && s.webhook_enabled && s.webhook_token) {
+    const url = `${window.location.origin}/api/webhooks/${s.webhook_token}/trigger`;
+    row.style.display = '';
+    row.querySelector('.webhook-url-text').textContent = url;
+  } else {
+    row.style.display = 'none';
+  }
 }
 
 function closeScheduleModal(event) {
@@ -153,9 +182,11 @@ function closeScheduleModalBtn() {
 
 function _updateScheduleTypeUI() {
   const type = document.getElementById('sched-type').value;
-  document.getElementById('sched-time-row').style.display = (type === 'daily' || type === 'weekly') ? '' : 'none';
-  document.getElementById('sched-days-row').style.display = type === 'weekly' ? '' : 'none';
+  document.getElementById('sched-time-row').style.display   = (type === 'daily' || type === 'weekly') ? '' : 'none';
+  document.getElementById('sched-days-row').style.display   = type === 'weekly' ? '' : 'none';
   document.getElementById('sched-minute-row').style.display = type === 'hourly' ? '' : 'none';
+  const cronRow = document.getElementById('sched-cron-row');
+  if (cronRow) cronRow.style.display = type === 'cron' ? '' : 'none';
 }
 
 async function saveSchedule() {
@@ -181,10 +212,16 @@ async function saveSchedule() {
     msgEl.textContent = msg;
   };
 
+  const cronExprEl = document.getElementById('sched-cron-expr');
+  const cron_expr = cronExprEl ? cronExprEl.value.trim() : '';
+  const webhookEnabledEl = document.getElementById('sched-webhook-enabled');
+  const webhook_enabled = webhookEnabledEl ? webhookEnabledEl.checked : false;
+
   if (!name) { showErr('请填写计划名称'); return; }
   if (!prompt) { showErr('请填写任务描述（Prompt）'); return; }
   if (!project_name) { showErr('请选择项目'); return; }
   if (schedule_type === 'weekly' && !days_of_week.length) { showErr('请至少选择一天'); return; }
+  if (schedule_type === 'cron' && !cron_expr) { showErr('请填写 Cron 表达式'); return; }
 
   const body = {
     name, prompt, project_name, auto, enabled,
@@ -192,6 +229,8 @@ async function saveSchedule() {
     time_of_day: (schedule_type === 'daily' || schedule_type === 'weekly') ? `${hour}:${minute}` : null,
     days_of_week: schedule_type === 'weekly' ? days_of_week : [],
     minute_of_hour: schedule_type === 'hourly' ? (isNaN(minuteOfHour) ? 0 : minuteOfHour) : null,
+    cron_expr: schedule_type === 'cron' ? cron_expr : null,
+    webhook_enabled,
   };
 
   const btn = document.getElementById('sched-save-btn');
@@ -302,6 +341,7 @@ function _initScheduleModal() {
           <option value="daily">每天</option>
           <option value="weekly">每周</option>
           <option value="hourly">每小时</option>
+          <option value="cron">自定义 Cron</option>
         </select>
       </div>
       <div id="sched-time-row" class="form-group">
@@ -319,6 +359,25 @@ function _initScheduleModal() {
       <div id="sched-minute-row" class="form-group" style="display:none">
         <label>执行分钟（:MM）</label>
         <select id="sched-minute-of-hour" class="form-input" style="width:80px">${minuteOfHourOpts}</select>
+      </div>
+      <div id="sched-cron-row" class="form-group" style="display:none">
+        <label>Cron 表达式 <span style="color:var(--text-3);font-weight:400;font-size:11px">（分 时 日 月 周，如 <code>*/15 * * * *</code> = 每15分钟）</span></label>
+        <input id="sched-cron-expr" class="form-input" placeholder="*/15 * * * *">
+      </div>
+      <div class="form-group">
+        <div style="display:flex;align-items:center;gap:8px;font-size:13px">
+          <input type="checkbox" id="sched-webhook-enabled" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex-shrink:0"
+            onchange="_updateWebhookUrl(null)">
+          <label for="sched-webhook-enabled" style="margin:0;cursor:pointer;font-weight:400;color:var(--text-1);font-size:13px">启用 Webhook 触发</label>
+        </div>
+        <div id="sched-webhook-url-row" style="display:none;margin-top:6px">
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:3px">Webhook URL（POST 此地址立即触发计划）：</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <code class="webhook-url-text" style="font-size:11px;word-break:break-all;flex:1;background:var(--surface-2);padding:4px 8px;border-radius:4px"></code>
+            <button class="btn" style="font-size:11px;padding:3px 8px;flex-shrink:0"
+              onclick="navigator.clipboard.writeText(document.querySelector('.webhook-url-text').textContent)">复制</button>
+          </div>
+        </div>
       </div>
       <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:4px">
         <div style="display:flex;align-items:center;gap:8px;font-size:13px">

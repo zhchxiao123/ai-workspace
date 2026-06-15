@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import os
-import pty
 import shlex
-import signal
 import struct
-import termios
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+_WINDOWS = sys.platform == "win32"
+
+if not _WINDOWS:
+    import fcntl
+    import pty
+    import signal
+    import termios
 
 from coderfleet.server import docker_mgr
 from coderfleet.server.models import Account, Project
@@ -54,10 +59,10 @@ def resolve_terminal_target(scheduler: Scheduler, project_name: str) -> Terminal
 
 
 def resize_pty(fd: int, cols: int, rows: int) -> None:
-    if cols <= 0 or rows <= 0:
+    if _WINDOWS or cols <= 0 or rows <= 0:
         return
     size = struct.pack("HHHH", rows, cols, 0, 0)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, size)  # type: ignore[name-defined]
 
 
 class TerminalSession:
@@ -68,10 +73,12 @@ class TerminalSession:
         self.child_pid: int | None = None
 
     def start(self) -> None:
+        if _WINDOWS:
+            raise RuntimeError("In-browser terminal is not supported on Windows")
         if self.master_fd is not None or self.child_pid is not None:
             raise RuntimeError("terminal session already started")
 
-        child_pid, master_fd = pty.fork()
+        child_pid, master_fd = pty.fork()  # type: ignore[name-defined]
         if child_pid == 0:
             os.execvp(self.command[0], self.command)
         self.child_pid = child_pid
@@ -101,7 +108,7 @@ class TerminalSession:
 
         if child_pid is not None:
             try:
-                os.kill(child_pid, signal.SIGHUP)
+                os.kill(child_pid, signal.SIGHUP)  # type: ignore[name-defined]
             except ProcessLookupError:
                 pass
             except OSError:
@@ -220,6 +227,8 @@ class TmuxTerminalSession:
         self.child_pid: int | None = None
 
     def start(self) -> None:
+        if _WINDOWS:
+            raise RuntimeError("In-browser terminal is not supported on Windows")
         if self.master_fd is not None or self.child_pid is not None:
             raise RuntimeError("tmux terminal session already started")
 
@@ -233,7 +242,7 @@ class TmuxTerminalSession:
             self.container_name,
             "tmux", "new-session", "-A", "-s", self.session_name,
         ]
-        child_pid, master_fd = pty.fork()
+        child_pid, master_fd = pty.fork()  # type: ignore[name-defined]
         if child_pid == 0:
             os.execvp(command[0], command)
         self.child_pid = child_pid

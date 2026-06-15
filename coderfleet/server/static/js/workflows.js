@@ -452,6 +452,8 @@ function _updateToolbarStatus(pipeline, tasks) {
   const badge      = document.getElementById('dag-status-badge');
   const progress   = document.getElementById('dag-progress-label');
   const resumeBtn  = document.getElementById('dag-resume-btn');
+  const cancelBtn  = document.getElementById('dag-cancel-btn');
+  const approveBtn = document.getElementById('dag-approve-btn');
   if (!badge) return;
 
   // 计算进度：以模板节点总数 vs 已完成任务数
@@ -466,10 +468,12 @@ function _updateToolbarStatus(pipeline, tasks) {
   );
 
   const statusMap = {
-    running:   { text: '运行中', cls: 'status-dot running' },
-    succeeded: { text: '已完成', cls: 'status-dot done' },
-    failed:    { text: '失败',   cls: 'status-dot failed' },
-    partial:   { text: '部分完成', cls: 'status-dot failed' },
+    running:          { text: '运行中', cls: 'status-dot running' },
+    waiting_approval: { text: '等待审批', cls: 'status-dot running' },
+    succeeded:        { text: '已完成', cls: 'status-dot done' },
+    failed:           { text: '失败',   cls: 'status-dot failed' },
+    partial:          { text: '部分完成', cls: 'status-dot failed' },
+    cancelled:        { text: '已取消', cls: 'status-dot killed' },
   };
   const s = statusMap[status] || statusMap.running;
   badge.className = s.cls;
@@ -486,6 +490,14 @@ function _updateToolbarStatus(pipeline, tasks) {
   // Resume 按钮只在 failed / partial 且有源模板时显示
   const canResume = (status === 'failed' || status === 'partial') && pipeline.template_id;
   if (resumeBtn) resumeBtn.style.display = canResume ? '' : 'none';
+
+  // 取消按钮只在 running / waiting_approval 时显示
+  const canCancel = (status === 'running' || status === 'waiting_approval');
+  if (cancelBtn) cancelBtn.style.display = canCancel ? '' : 'none';
+
+  // 批准按钮只在 waiting_approval 时显示
+  const canApprove = status === 'waiting_approval';
+  if (approveBtn) approveBtn.style.display = canApprove ? '' : 'none';
 }
 
 function _hideToolbar() {
@@ -522,6 +534,46 @@ async function resumePipeline() {
     alert('恢复失败：' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '▶ 恢复运行'; }
+  }
+}
+
+async function approveWorkflowRun() {
+  if (!activePipelineId) return;
+  const btn = document.getElementById('dag-approve-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '处理中...'; }
+  try {
+    // 先获取 run 拿到 approval_token
+    const runR = await fetch(`${API}/api/workflow-runs/${activePipelineId}`);
+    const run  = await runR.json();
+    if (!runR.ok) throw new Error(run.detail || runR.statusText);
+    const token = run.approval_token || '';
+    const r = await fetch(`${API}/api/workflow-runs/${activePipelineId}/approve?token=${encodeURIComponent(token)}`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    await loadWorkflows();
+  } catch (e) {
+    alert('批准失败：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ 批准继续'; }
+  }
+}
+
+async function cancelWorkflowRun() {
+  if (!activePipelineId) return;
+  const p = pipelinesCache.find(p => p.id === activePipelineId);
+  if (!confirm(`确定要取消工作流「${p?.name || activePipelineId}」？所有运行中的节点都会被终止。`)) return;
+  const btn = document.getElementById('dag-cancel-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '取消中...'; }
+  try {
+    const r = await fetch(`${API}/api/workflow-runs/${activePipelineId}/cancel`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+    closeWorkflowDetail();
+    await loadWorkflows();
+  } catch (e) {
+    alert('取消失败：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '■ 取消'; }
   }
 }
 
@@ -1101,15 +1153,20 @@ function _scheduleDrawflowConnectionRefresh(connectionPairs = [], importVersion 
 function _normalizeTemplateNodeData(data = {}) {
   const targetMode = data.target_mode || (data.project_role ? 'runtime_role' : 'default');
   return {
-    node_id:      data.node_id || '',
-    name:         data.name || '',
-    prompt_tpl:   data.prompt_tpl || '',
-    target_mode:  targetMode,
-    project_name: data.project_name || '',
-    project_role: data.project_role || '',
-    depends_on:   data.depends_on || [],
-    pos_x:        data.pos_x || 0,
-    pos_y:        data.pos_y || 0,
+    node_id:         data.node_id || '',
+    name:            data.name || '',
+    prompt_tpl:      data.prompt_tpl || '',
+    target_mode:     targetMode,
+    project_name:    data.project_name || '',
+    project_role:    data.project_role || '',
+    depends_on:      data.depends_on || [],
+    pos_x:           data.pos_x || 0,
+    pos_y:           data.pos_y || 0,
+    node_type:       data.node_type || 'task',
+    timeout_minutes: data.timeout_minutes ?? 120,
+    max_retries:     data.max_retries ?? 0,
+    delay_seconds:   data.delay_seconds ?? 0,
+    branches:        data.branches || [],
   };
 }
 
@@ -1176,21 +1233,44 @@ function _projectOptions(selected = '', emptyLabel = '选择项目') {
 // 构建 Drawflow 节点的显示 HTML
 function _buildDrawflowNodeHtml(data) {
   const normalized = _normalizeTemplateNodeData(data);
-  const name   = normalized.name || '';
-  const prompt = (normalized.prompt_tpl || '');
-  const preview = prompt.length > 65 ? prompt.slice(0, 63) + '…' : prompt;
+  const name     = normalized.name || '';
+  const nodeType = normalized.node_type || 'task';
 
-  const targetTag = `<span class="df-node-role">${esc(_templateNodeTargetLabel(normalized))}</span>`;
   const nameHtml = name
     ? esc(name)
     : `<span class="df-node-placeholder">节点名称</span>`;
-  const promptHtml = preview
-    ? `<div class="df-node-prompt">${esc(preview)}</div>`
-    : `<div class="df-node-prompt df-node-placeholder">点击配置 Prompt…</div>`;
 
-  return `<div class="df-tpl-node">
-    <div class="df-node-title">${nameHtml}${targetTag}</div>
-    ${promptHtml}
+  const typeIcons = { task: '⚙', condition: '◇', delay: '⏱', approval: '✋' };
+  const typeLabels = { task: '任务', condition: '条件', delay: '延迟', approval: '审批' };
+  const typeIcon = typeIcons[nodeType] || '⚙';
+
+  const typeTag  = nodeType !== 'task'
+    ? `<span class="df-node-role df-node-type-${nodeType}">${typeIcon} ${typeLabels[nodeType] || nodeType}</span>`
+    : `<span class="df-node-role">${esc(_templateNodeTargetLabel(normalized))}</span>`;
+
+  let bodyHtml = '';
+  if (nodeType === 'task') {
+    const prompt  = normalized.prompt_tpl || '';
+    const preview = prompt.length > 65 ? prompt.slice(0, 63) + '…' : prompt;
+    bodyHtml = preview
+      ? `<div class="df-node-prompt">${esc(preview)}</div>`
+      : `<div class="df-node-prompt df-node-placeholder">点击配置 Prompt…</div>`;
+  } else if (nodeType === 'condition') {
+    const n = (normalized.branches || []).length;
+    bodyHtml = `<div class="df-node-prompt">${n ? `${n} 个条件分支` : '点击配置分支…'}</div>`;
+  } else if (nodeType === 'delay') {
+    const sec = normalized.delay_seconds || 0;
+    bodyHtml = `<div class="df-node-prompt">${sec > 0 ? `等待 ${sec}s` : '点击设置延迟…'}</div>`;
+  } else if (nodeType === 'approval') {
+    const prompt = normalized.prompt_tpl || '';
+    bodyHtml = prompt
+      ? `<div class="df-node-prompt">${esc(prompt.length > 65 ? prompt.slice(0, 63) + '…' : prompt)}</div>`
+      : `<div class="df-node-prompt df-node-placeholder">点击配置审批说明…</div>`;
+  }
+
+  return `<div class="df-tpl-node df-tpl-node-${nodeType}">
+    <div class="df-node-title">${nameHtml}${typeTag}</div>
+    ${bodyHtml}
   </div>`;
 }
 
@@ -1232,27 +1312,45 @@ function _getTemplateFromCanvas() {
       .flatMap(inp => inp.connections.map(c => idMap[c.node]).filter(Boolean));
     const data = _normalizeTemplateNodeData(n.data);
     return {
-      node_id:      idMap[dfId],
-      name:         data.name,
-      prompt_tpl:   data.prompt_tpl,
-      target_mode:  data.target_mode,
-      project_name: data.project_name,
-      project_role: data.project_role,
+      node_id:         idMap[dfId],
+      name:            data.name,
+      prompt_tpl:      data.prompt_tpl,
+      target_mode:     data.target_mode,
+      project_name:    data.project_name,
+      project_role:    data.project_role,
       depends_on,
-      pos_x: n.pos_x || 0,
-      pos_y: n.pos_y || 0,
+      pos_x:           n.pos_x || 0,
+      pos_y:           n.pos_y || 0,
+      node_type:       data.node_type || 'task',
+      timeout_minutes: data.timeout_minutes ?? 120,
+      max_retries:     data.max_retries ?? 0,
+      delay_seconds:   data.delay_seconds ?? 0,
+      branches:        data.branches || [],
     };
   });
 
   return { name, description, nodes };
 }
 
-// 添加新节点到画布
-function addTemplateNode() {
+// 添加新节点到画布（nodeType: 'task'|'condition'|'delay'|'approval'）
+function addTemplateNode(nodeType = 'task') {
   if (!dfEditor) return;
   const nodeId = _nextTemplateNodeId();
   const existing = Object.keys(dfEditor.export().drawflow.Home.data).length;
-  const data = { node_id: nodeId, name: `节点 ${existing + 1}`, prompt_tpl: '', target_mode: 'default', project_name: '', project_role: '' };
+  const typeNames = { task: '任务', condition: '条件', delay: '延迟', approval: '审批' };
+  const data = {
+    node_id: nodeId,
+    name: `${typeNames[nodeType] || '节点'} ${existing + 1}`,
+    prompt_tpl: '',
+    target_mode: 'default',
+    project_name: '',
+    project_role: '',
+    node_type: nodeType,
+    timeout_minutes: nodeType === 'task' ? 120 : 0,
+    max_retries: 0,
+    delay_seconds: nodeType === 'delay' ? 60 : 0,
+    branches: nodeType === 'condition' ? [{ condition: 'else', next_nodes: [] }] : [],
+  };
 
   const mount = document.getElementById('drawflow-mount');
   const cx = mount ? mount.clientWidth  / 2 - 110 : 160;
@@ -1284,7 +1382,6 @@ function _openNodeDetail(dfId) {
   const d = _normalizeTemplateNodeData(node.data);
   node.data = d;
 
-  // 动态计算可用变量（来自当前连线的上游节点）
   const upstreamIds = _getNodeUpstreamIds(dfId);
   const availableVars = [
     { v: '{{input}}',  tip: '运行时输入' },
@@ -1299,20 +1396,13 @@ function _openNodeDetail(dfId) {
       ).join('')}
     </div>`;
 
-  const panel = document.getElementById('tpl-node-detail');
-  if (!panel) return;
-  panel.classList.add('open');
-  panel.innerHTML = `
-    <div class="workflow-detail-header">
-      <span style="font-size:13px;font-weight:600;flex:1">节点属性</span>
-      <button class="close-btn" onclick="_closeNodeDetail()">✕</button>
-    </div>
-    <div class="tpl-detail-body">
-      <div class="form-group">
-        <label>节点名称</label>
-        <input id="df-detail-name" value="${esc(d.name || '')}" placeholder="节点名称"
-          oninput="_updateNodeField(${dfId}, 'name', this.value)">
-      </div>
+  const nodeType = d.node_type || 'task';
+
+  // ── 各节点类型专属区域 ──────────────────────────────────
+  let typeSpecificHtml = '';
+
+  if (nodeType === 'task') {
+    typeSpecificHtml = `
       <div class="form-group">
         <label>Prompt 模板</label>
         <textarea id="df-detail-prompt" rows="7" placeholder="描述此节点要完成的任务..."
@@ -1340,10 +1430,84 @@ function _openNodeDetail(dfId) {
         <input id="df-detail-role" value="${esc(d.project_role || '')}" placeholder="例如：planner、implementer、reviewer"
           oninput="_updateNodeField(${dfId}, 'project_role', this.value)">
       </div>
-      <div class="tpl-detail-hint">
-        执行目标决定此节点由哪个项目账号运行；连线用于建立前置依赖。
-        ${upstreamIds.length ? '<br>引用上游输出的节点在上游输出为空时会<strong>阻止执行并报错</strong>，确保数据可靠。' : ''}
+      <div class="form-group" style="display:flex;gap:8px">
+        <div style="flex:1">
+          <label>超时（分钟，0=不限）</label>
+          <input type="number" min="0" value="${d.timeout_minutes ?? 120}"
+            oninput="_updateNodeField(${dfId}, 'timeout_minutes', +this.value)"
+            style="width:100%">
+        </div>
+        <div style="flex:1">
+          <label>失败重试次数</label>
+          <input type="number" min="0" value="${d.max_retries ?? 0}"
+            oninput="_updateNodeField(${dfId}, 'max_retries', +this.value)"
+            style="width:100%">
+        </div>
+      </div>`;
+
+  } else if (nodeType === 'condition') {
+    typeSpecificHtml = `
+      <div class="form-group">
+        <label>条件分支
+          <span style="color:var(--text-3);font-size:11px;font-weight:400">按顺序匹配，第一个命中的分支被激活</span>
+        </label>
+        <div id="df-branches-list">${_renderBranchesList(dfId, d.branches || [], availableVars)}</div>
+        <button class="btn" style="width:100%;margin-top:6px;font-size:12px"
+          onclick="_addConditionBranch(${dfId})">+ 添加分支</button>
       </div>
+      <div class="tpl-detail-hint">
+        条件格式：<code>{{steps.X.outputs.text}} contains '关键词'</code><br>
+        支持：<code>contains</code> / <code>not_contains</code> / <code>equals</code> / <code>else</code><br>
+        目标节点：填写要激活的下游节点 ID（逗号分隔）
+      </div>`;
+
+  } else if (nodeType === 'delay') {
+    typeSpecificHtml = `
+      <div class="form-group">
+        <label>延迟时间（秒）</label>
+        <input type="number" min="0" value="${d.delay_seconds ?? 0}"
+          oninput="_updateNodeField(${dfId}, 'delay_seconds', +this.value)"
+          style="width:100%">
+      </div>
+      <div class="tpl-detail-hint">工作流执行到此节点时暂停指定秒数后继续。</div>`;
+
+  } else if (nodeType === 'approval') {
+    typeSpecificHtml = `
+      <div class="form-group">
+        <label>审批说明</label>
+        <textarea id="df-detail-prompt" rows="4" placeholder="请说明需要审批的内容和要求..."
+          oninput="_updateNodeField(${dfId}, 'prompt_tpl', this.value)">${esc(d.prompt_tpl || '')}</textarea>
+      </div>
+      <div class="tpl-detail-hint">
+        工作流执行到此节点时会暂停，等待在 DAG 视图中点击"✓ 批准继续"后才继续下一步。<br>
+        审批令牌随运行详情一起返回，也可通过 API 批准。
+      </div>`;
+  }
+
+  const panel = document.getElementById('tpl-node-detail');
+  if (!panel) return;
+  panel.classList.add('open');
+  panel.innerHTML = `
+    <div class="workflow-detail-header">
+      <span style="font-size:13px;font-weight:600;flex:1">节点属性</span>
+      <button class="close-btn" onclick="_closeNodeDetail()">✕</button>
+    </div>
+    <div class="tpl-detail-body">
+      <div class="form-group">
+        <label>节点名称</label>
+        <input id="df-detail-name" value="${esc(d.name || '')}" placeholder="节点名称"
+          oninput="_updateNodeField(${dfId}, 'name', this.value)">
+      </div>
+      <div class="form-group">
+        <label>节点类型</label>
+        <select onchange="_updateNodeType(${dfId}, this.value)">
+          <option value="task"      ${nodeType === 'task'      ? 'selected' : ''}>⚙ 任务（执行 Claude/Codex）</option>
+          <option value="condition" ${nodeType === 'condition' ? 'selected' : ''}>◇ 条件（路由分支）</option>
+          <option value="delay"     ${nodeType === 'delay'     ? 'selected' : ''}>⏱ 延迟（等待一段时间）</option>
+          <option value="approval"  ${nodeType === 'approval'  ? 'selected' : ''}>✋ 审批（人工确认）</option>
+        </select>
+      </div>
+      ${typeSpecificHtml}
       <button class="btn danger" style="width:100%;margin-top:8px;font-size:12px"
         onclick="confirmRemoveNode(${dfId})">移除节点</button>
     </div>`;
@@ -1387,6 +1551,126 @@ function _updateNodeTargetMode(dfId, value) {
   if (role) role.style.display = value === 'runtime_role' ? '' : 'none';
   _refreshDrawflowNodeHtml(dfId, node.data);
   markTemplateDirty();
+}
+
+function _updateNodeType(dfId, value) {
+  if (!dfEditor) return;
+  const node = dfEditor.getNodeFromId(dfId);
+  if (!node) return;
+  node.data.node_type = value;
+  // seed sensible defaults when switching type
+  if (value === 'condition' && !(node.data.branches || []).length) {
+    node.data.branches = [{ condition: 'else', next_nodes: [] }];
+  }
+  if (value === 'delay' && !node.data.delay_seconds) {
+    node.data.delay_seconds = 60;
+  }
+  dfEditor.updateNodeDataFromId(dfId, node.data);
+  _refreshDrawflowNodeHtml(dfId, node.data);
+  markTemplateDirty();
+  // re-render detail panel to show type-specific fields
+  _openNodeDetail(dfId);
+}
+
+// ── 条件分支编辑器 ─────────────────────────────────────────
+
+function _renderBranchesList(dfId, branches, availableVars) {
+  if (!branches.length) return '<div style="color:var(--text-3);font-size:12px;padding:4px 0">暂无分支</div>';
+  const varOptions = availableVars.map(({ v }) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  return branches.map((b, i) => `
+    <div class="branch-row" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span style="font-size:11px;color:var(--text-3);min-width:30px">分支 ${i + 1}</span>
+        <button class="btn" style="font-size:11px;padding:2px 6px;margin-left:auto"
+          onclick="_removeBranch(${dfId}, ${i})">✕</button>
+      </div>
+      <div style="margin-bottom:4px">
+        <label style="font-size:11px;color:var(--text-3)">条件表达式</label>
+        <div style="display:flex;gap:4px">
+          <input style="flex:1;font-size:12px" value="${esc(b.condition || '')}"
+            placeholder="{{steps.X.outputs.text}} contains '关键词'  或  else"
+            oninput="_updateBranchField(${dfId}, ${i}, 'condition', this.value)">
+          <select style="font-size:11px;width:auto" onchange="_insertBranchVar(${dfId}, ${i}, this.value); this.value=''">
+            <option value="">插入变量</option>
+            ${varOptions}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--text-3)">激活节点（逗号分隔 node_id）</label>
+        <input style="font-size:12px;width:100%" value="${esc((b.next_nodes || []).join(', '))}"
+          placeholder="node-2, node-3"
+          oninput="_updateBranchField(${dfId}, ${i}, 'next_nodes', this.value.split(',').map(s=>s.trim()).filter(Boolean))">
+      </div>
+    </div>`).join('');
+}
+
+function _addConditionBranch(dfId) {
+  if (!dfEditor) return;
+  const node = dfEditor.getNodeFromId(dfId);
+  if (!node) return;
+  node.data.branches = [...(node.data.branches || []), { condition: '', next_nodes: [] }];
+  dfEditor.updateNodeDataFromId(dfId, node.data);
+  _refreshDrawflowNodeHtml(dfId, node.data);
+  markTemplateDirty();
+  const list = document.getElementById('df-branches-list');
+  const upstreamIds = _getNodeUpstreamIds(dfId);
+  const availableVars = [
+    { v: '{{input}}', tip: '运行时输入' },
+    ...upstreamIds.map(id => ({ v: `{{steps.${id}.outputs.text}}`, tip: `节点 ${id} 的输出` })),
+  ];
+  if (list) list.innerHTML = _renderBranchesList(dfId, node.data.branches, availableVars);
+}
+
+function _removeBranch(dfId, index) {
+  if (!dfEditor) return;
+  const node = dfEditor.getNodeFromId(dfId);
+  if (!node) return;
+  node.data.branches = (node.data.branches || []).filter((_, i) => i !== index);
+  dfEditor.updateNodeDataFromId(dfId, node.data);
+  _refreshDrawflowNodeHtml(dfId, node.data);
+  markTemplateDirty();
+  const list = document.getElementById('df-branches-list');
+  const upstreamIds = _getNodeUpstreamIds(dfId);
+  const availableVars = [
+    { v: '{{input}}', tip: '运行时输入' },
+    ...upstreamIds.map(id => ({ v: `{{steps.${id}.outputs.text}}`, tip: `节点 ${id} 的输出` })),
+  ];
+  if (list) list.innerHTML = _renderBranchesList(dfId, node.data.branches, availableVars);
+}
+
+function _updateBranchField(dfId, index, field, value) {
+  if (!dfEditor) return;
+  const node = dfEditor.getNodeFromId(dfId);
+  if (!node) return;
+  const branches = [...(node.data.branches || [])];
+  if (!branches[index]) return;
+  branches[index] = { ...branches[index], [field]: value };
+  node.data.branches = branches;
+  dfEditor.updateNodeDataFromId(dfId, node.data);
+  _refreshDrawflowNodeHtml(dfId, node.data);
+  markTemplateDirty();
+}
+
+function _insertBranchVar(dfId, index, varExpr) {
+  if (!varExpr) return;
+  const node = dfEditor?.getNodeFromId(dfId);
+  if (!node) return;
+  const branches = [...(node.data.branches || [])];
+  if (!branches[index]) return;
+  const current = branches[index].condition || '';
+  branches[index] = { ...branches[index], condition: current ? `${current} ${varExpr}` : varExpr };
+  node.data.branches = branches;
+  dfEditor.updateNodeDataFromId(dfId, node.data);
+  markTemplateDirty();
+  // refresh branch row input value
+  const list = document.getElementById('df-branches-list');
+  const upstreamIds = _getNodeUpstreamIds(dfId);
+  const availableVars = [
+    { v: '{{input}}', tip: '运行时输入' },
+    ...upstreamIds.map(id => ({ v: `{{steps.${id}.outputs.text}}`, tip: `节点 ${id} 的输出` })),
+  ];
+  if (list) list.innerHTML = _renderBranchesList(dfId, node.data.branches, availableVars);
 }
 
 function _refreshDrawflowNodeHtml(dfId, data) {

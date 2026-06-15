@@ -980,8 +980,11 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
     const logs = await Promise.all(logPromises);
     chatContent.innerHTML = '';
 
-    // 循环独立渲染每一个任务的提问和日志
+    // 循环独立渲染每一个任务的提问和日志（排队/定时中的任务跳过，由队列面板管理）
+    let _lastLocalRenderer = null;
     convTasks.forEach((task, idx) => {
+      if (task.status === 'pending' || task.status === 'scheduled') return;
+
       const logText = logs[idx];
 
       // 1. 渲染用户提问蓝气泡
@@ -1006,19 +1009,10 @@ ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+E
       // 3. 构建局部的 ChatLogRenderer 并进行渲染
       // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
       const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null);
-      if (task.status === 'pending') {
-        localRenderer.renderPending();
-      } else if (task.status === 'scheduled') {
-        localRenderer.renderScheduled(task.execute_at);
-      } else {
-        localRenderer.render(logText, task.type);
-      }
-
-      // 4. 如果是最后一个任务，把该 localRenderer 赋给全局 chatRenderer 方便 SSE 追加
-      if (idx === convTasks.length - 1) {
-        chatRenderer = localRenderer;
-      }
+      localRenderer.render(logText, task.type);
+      _lastLocalRenderer = localRenderer;
     });
+    if (_lastLocalRenderer) chatRenderer = _lastLocalRenderer;
 
     scrollToBottomAndResume();
     bindChatViewportScroll();
@@ -1057,19 +1051,21 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
   const chatContent = document.getElementById('chat-content');
   if (!chatContent) return false;
 
-  // 用户气泡（无论是否 pending 都要展示）
-  const userWrap = document.createElement('div');
-  userWrap.className = 'timeline-node-wrapper user-wrapper';
-  userWrap.innerHTML = `
-    <div class="user-bubble">
-      <div class="user-bubble-title-row">
-        <div class="user-bubble-title">你:</div>
-        <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
-      </div>
-      <div class="user-bubble-content">${esc(promptText)}</div>
-      ${renderTaskFileAttachments({ images: snapshotPaths, project_name: currentChatProjectName }, currentChatProjectName)}
-    </div>`;
-  chatContent.appendChild(userWrap);
+  // 排队中的任务不立即显示气泡，等真正执行时再展示；由下方队列面板管理
+  if (!isPending) {
+    const userWrap = document.createElement('div');
+    userWrap.className = 'timeline-node-wrapper user-wrapper';
+    userWrap.innerHTML = `
+      <div class="user-bubble">
+        <div class="user-bubble-title-row">
+          <div class="user-bubble-title">你:</div>
+          <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
+        </div>
+        <div class="user-bubble-content">${esc(promptText)}</div>
+        ${renderTaskFileAttachments({ images: snapshotPaths, project_name: currentChatProjectName }, currentChatProjectName)}
+      </div>`;
+    chatContent.appendChild(userWrap);
+  }
 
   currentChatTaskId = taskId;
 

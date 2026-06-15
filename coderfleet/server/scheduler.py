@@ -38,6 +38,7 @@ from coderfleet.server.models import (
     ConversationStatus,
     LogicalProject,
     LogicalProjectEntry,
+    NodeType,
     Pipeline,
     PipelineNodeRun,
     Project,
@@ -82,7 +83,6 @@ class Scheduler:
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
         self._push_manager = None  # set by main.py after both are initialized
-        self.workflow_engine = None  # Phase 1 后由 main.py 注入 WorkflowEngine(self.workspace_dir, self)
         self._last_auto_digest_date: str = ""
 
     async def _notify(self, task: Task) -> None:
@@ -667,6 +667,17 @@ class Scheduler:
             if candidate <= now:
                 candidate += timedelta(hours=1)
             return candidate.isoformat(timespec="seconds")
+
+        elif sched.schedule_type == ScheduleType.cron:
+            if not sched.cron_expr:
+                return None
+            try:
+                from croniter import croniter
+                it = croniter(sched.cron_expr, now)
+                return it.get_next(datetime).isoformat(timespec="seconds")
+            except Exception as e:
+                print(f"[schedule {sched.id}] invalid cron_expr '{sched.cron_expr}': {e}")
+                return None
 
         return None
 
@@ -2018,6 +2029,48 @@ class Scheduler:
             if legacy_path.exists():
                 legacy_path.unlink()
 
+    async def cancel_workflow_run(self, run_id: str) -> WorkflowRun:
+        """取消整个工作流运行：终止后台协程、杀所有子任务、更新状态。"""
+        run = self.get_workflow_run(run_id)
+        if run is None:
+            raise ValueError(f"工作流运行 '{run_id}' 不存在")
+        if run.status not in ("running", "waiting_approval"):
+            raise RuntimeError(f"工作流状态为 '{run.status}'，只能取消 running 状态的工作流")
+
+        # 取消后台 pipeline 协程（按 asyncio.Task 名称匹配）
+        pipeline_id = run.legacy_pipeline_id or run_id
+        target_names = {f"pipeline-{pipeline_id}", f"pipeline-resume-{pipeline_id}"}
+        for task_obj in asyncio.all_tasks():
+            if task_obj.get_name() in target_names:
+                task_obj.cancel()
+
+        # 终止所有 running / pending 子任务
+        for ne in run.node_executions:
+            if ne.task_id and ne.state in (WorkflowNodeState.running, WorkflowNodeState.pending):
+                try:
+                    await self.kill_task(ne.task_id)
+                except Exception:
+                    pass
+            if ne.state in (WorkflowNodeState.running, WorkflowNodeState.pending, WorkflowNodeState.waiting_deps):
+                ne.state = WorkflowNodeState.cancelled
+
+        # 更新 Pipeline 持久状态（兼容旧模型）
+        if run.legacy_pipeline_id:
+            pipeline = self.get_pipeline(run.legacy_pipeline_id)
+            if pipeline:
+                pipeline.status = "failed"
+                pipeline.last_error = "用户取消"
+                pipeline.touch(self.pipelines_dir)
+
+        run.status = "cancelled"
+        run.updated = datetime.now().isoformat(timespec="seconds")
+        # WorkflowRun 只有 legacy pipeline bridge 会在 workflow_runs_dir 有文件；
+        # 纯 legacy run 不在 workflow_runs_dir，无需 save
+        path = self.workflow_runs_dir / f"{run.id}.json"
+        if path.exists():
+            run.save(self.workflow_runs_dir)
+        return run
+
     def _workflow_run_from_pipeline(self, pipeline: Pipeline) -> WorkflowRun:
         task_map = {t.id: t for t in self.list_tasks()}
         node_executions: list[NodeExecution] = []
@@ -2200,8 +2253,10 @@ class Scheduler:
         # ── 重建已成功节点的输出 ─────────────────────────────
         node_outputs: dict[str, str] = {}
         succeeded_node_ids: set[str] = set()
+        skipped_node_ids:   set[str] = set()
         task_map = {t.id: t for t in self.list_tasks()}
 
+        # 1) 从 pipeline.node_runs 恢复已完成的 task 节点
         for nr in pipeline.node_runs:
             task = task_map.get(nr.task_id)
             if task and task.status == TaskStatus.done:
@@ -2211,11 +2266,23 @@ class Scheduler:
                     data = parse_log(log_text, task.type.value)
                     node_outputs[nr.node_id] = data.text
                 else:
-                    node_outputs[nr.node_id] = ""  # 日志已删除，但节点本身算成功
+                    node_outputs[nr.node_id] = ""
                 succeeded_node_ids.add(nr.node_id)
 
+        # 2) 从 WorkflowRun.node_executions 恢复非 task 节点（condition/delay/approval/skipped）
+        wf_run = self.get_workflow_run_by_legacy_pipeline_id(pipeline_id)
+        if wf_run:
+            for ne in wf_run.node_executions:
+                if ne.state == WorkflowNodeState.succeeded and ne.node_id not in succeeded_node_ids:
+                    node_outputs[ne.node_id] = (ne.outputs or {}).get("text", "")
+                    succeeded_node_ids.add(ne.node_id)
+                elif ne.state == WorkflowNodeState.skipped:
+                    node_outputs[ne.node_id] = ""
+                    skipped_node_ids.add(ne.node_id)
+
         # ── 确定需要重跑的节点 ───────────────────────────────
-        failed_node_ids = {n.node_id for n in sorted_nodes} - succeeded_node_ids
+        terminal_ids   = succeeded_node_ids | skipped_node_ids
+        failed_node_ids = {n.node_id for n in sorted_nodes} - terminal_ids
 
         if not failed_node_ids:
             pipeline.status = "succeeded"
@@ -2227,10 +2294,19 @@ class Scheduler:
         default_project = pipeline.default_project
         resolved_projects: dict[str, str] = {}
         for node in sorted_nodes:
+            node_type = getattr(node, "node_type", NodeType.task)
+
+            # 非 task 节点（condition/delay/approval）不需要项目
+            if node_type != NodeType.task:
+                resolved_projects[node.node_id] = ""
+                continue
+
             if node.node_id in succeeded_node_ids:
-                # 已成功节点：从 node_runs 取已解析的项目（保持一致）
+                # 已成功任务节点：从 node_runs 取已解析的项目（保持一致）
                 nr = next((r for r in pipeline.node_runs if r.node_id == node.node_id), None)
                 resolved_projects[node.node_id] = nr.resolved_project if nr else ""
+            elif node.node_id in skipped_node_ids:
+                resolved_projects[node.node_id] = ""
             else:
                 target_mode = getattr(node, "target_mode", "default") or "default"
                 if target_mode == "fixed_project":
@@ -2249,6 +2325,19 @@ class Scheduler:
             level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
             dep_levels[node.node_id] = level
 
+        # 条件节点的 branches.next_nodes 视为隐式依赖（保持和 run_template 一致）
+        _changed = True
+        while _changed:
+            _changed = False
+            for node in sorted_nodes:
+                if getattr(node, "node_type", "task") == NodeType.condition:
+                    cond_level = dep_levels[node.node_id]
+                    for branch in (node.branches or []):
+                        for nid in (branch.next_nodes or []):
+                            if dep_levels.get(nid, -1) <= cond_level:
+                                dep_levels[nid] = cond_level + 1
+                                _changed = True
+
         level_groups: dict[int, list] = defaultdict(list)
         for node in sorted_nodes:
             if node.node_id in failed_node_ids:
@@ -2263,6 +2352,7 @@ class Scheduler:
                 pipeline.id, tpl, level_groups, resolved_projects,
                 pipeline.trigger_input, initial_node_outputs=node_outputs,
                 initial_succeeded=succeeded_node_ids,
+                initial_skipped=skipped_node_ids,
             ),
             name=f"pipeline-resume-{pipeline.id}",
         )
@@ -2342,6 +2432,12 @@ class Scheduler:
         sorted_nodes = self._topo_sort_nodes(tpl.nodes)
         resolved_projects: dict[str, str] = {}
         for node in sorted_nodes:
+            node_type = getattr(node, "node_type", NodeType.task)
+            if node_type != NodeType.task:
+                # condition / delay / approval 节点不需要项目
+                resolved_projects[node.node_id] = ""
+                continue
+
             target_mode = getattr(node, "target_mode", "default") or "default"
             if target_mode == "fixed_project":
                 project_name = node.project_name
@@ -2361,9 +2457,25 @@ class Scheduler:
         # 按拓扑层级分组（同层节点并发，跨层串行并传递输出）
         from collections import defaultdict
         dep_levels: dict[str, int] = {}
+        # 先计算所有节点的基础 level（根据显式 depends_on）
         for node in sorted_nodes:
             level = max((dep_levels.get(d, -1) for d in (node.depends_on or [])), default=-1) + 1
             dep_levels[node.node_id] = level
+
+        # 条件节点的 branches.next_nodes 视为隐式依赖：
+        # 确保 next_node 的 level >= condition_level + 1，
+        # 即便用户没有画显式连线也保证正确顺序。
+        changed = True
+        while changed:
+            changed = False
+            for node in sorted_nodes:
+                if getattr(node, "node_type", "task") == NodeType.condition:
+                    cond_level = dep_levels[node.node_id]
+                    for branch in (node.branches or []):
+                        for nid in (branch.next_nodes or []):
+                            if dep_levels.get(nid, -1) <= cond_level:
+                                dep_levels[nid] = cond_level + 1
+                                changed = True
 
         level_groups: dict[int, list[TemplateNode]] = defaultdict(list)
         for node in sorted_nodes:
@@ -2521,6 +2633,7 @@ class Scheduler:
         input_str:              str,
         initial_node_outputs:   dict[str, str] | None = None,
         initial_succeeded:      set[str] | None       = None,
+        initial_skipped:        set[str] | None       = None,
     ) -> None:
         """
         Background coroutine: execute workflow levels sequentially.
@@ -2532,12 +2645,13 @@ class Scheduler:
           4. Proceed to the next level, injecting outputs into prompts via
              {{steps.<node_id>.outputs.text}}.
 
-        initial_node_outputs / initial_succeeded allow resume to seed prior results.
+        initial_node_outputs / initial_succeeded / initial_skipped allow resume
+        to seed prior results and skip already-skipped condition-branch nodes.
         """
         try:
             await self._execute_pipeline_levels_inner(
                 pipeline_id, tpl, level_groups, resolved_projects,
-                input_str, initial_node_outputs, initial_succeeded,
+                input_str, initial_node_outputs, initial_succeeded, initial_skipped,
             )
         except Exception as exc:
             import traceback
@@ -2563,13 +2677,15 @@ class Scheduler:
         input_str:              str,
         initial_node_outputs:   dict[str, str] | None = None,
         initial_succeeded:      set[str] | None       = None,
+        initial_skipped:        set[str] | None       = None,
     ) -> None:
         from coderfleet.server.log_parser import parse_log
 
-        node_outputs: dict[str, str] = dict(initial_node_outputs or {})
-        pipeline_failed = False
-        node_error: str = ""
-        succeeded_nodes: set[str] = set(initial_succeeded or set())
+        node_outputs:    dict[str, str] = dict(initial_node_outputs or {})
+        pipeline_failed: bool           = False
+        node_error:      str            = ""
+        succeeded_nodes: set[str]       = set(initial_succeeded or set())
+        skipped_nodes:   set[str]       = set(initial_skipped or set())   # 条件分支未命中的节点
 
         for level in sorted(level_groups.keys()):
             if pipeline_failed:
@@ -2577,25 +2693,100 @@ class Scheduler:
 
             nodes: list[TemplateNode] = level_groups[level]
 
-            # --- Submit all nodes in this level concurrently ---
+            # ── 先处理特殊节点（条件/延迟/审批），再批量提交任务节点 ──
+            # 在同一 level 内，condition 节点必须先于 task 节点求值，
+            # 否则 skip 传播检查会在 condition 还未执行时提前通过。
+            _type_priority = {"condition": 0, "delay": 1, "approval": 2}
+            nodes = sorted(
+                nodes,
+                key=lambda n: _type_priority.get(getattr(n, "node_type", "task") or "task", 3),
+            )
+
+            task_nodes: list[TemplateNode] = []
+            for node in nodes:
+                # 传播 skip：依赖中有被跳过的节点则本节点也跳过
+                _deps = node.depends_on or []
+                if node.node_id in skipped_nodes or (_deps and all(d in skipped_nodes for d in _deps)):
+                    skipped_nodes.add(node.node_id)
+                    node_outputs[node.node_id] = ""
+                    self._update_workflow_node(
+                        pipeline_id, node.node_id,
+                        state=WorkflowNodeState.skipped,
+                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        error_message="未命中条件分支（跳过）",
+                    )
+                    continue
+
+                node_type = getattr(node, "node_type", NodeType.task)
+
+                if node_type == NodeType.condition:
+                    activated = self._eval_condition_branches(node, node_outputs)
+                    all_next  = {nid for b in (node.branches or []) for nid in b.next_nodes}
+                    skipped_nodes.update(all_next - set(activated))
+                    node_outputs[node.node_id] = ""
+                    succeeded_nodes.add(node.node_id)
+                    self._update_workflow_node(
+                        pipeline_id, node.node_id,
+                        state=WorkflowNodeState.succeeded,
+                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        error_message="",
+                    )
+                    print(f"[pipeline {pipeline_id}] condition node {node.node_id}: activated={activated}, skipped={all_next - set(activated)}")
+
+                elif node_type == NodeType.delay:
+                    delay_sec = getattr(node, "delay_seconds", 0) or 0
+                    print(f"[pipeline {pipeline_id}] delay node {node.node_id}: sleeping {delay_sec}s")
+                    self._update_workflow_node(pipeline_id, node.node_id, state=WorkflowNodeState.running)
+                    if delay_sec > 0:
+                        await asyncio.sleep(delay_sec)
+                    node_outputs[node.node_id] = ""
+                    succeeded_nodes.add(node.node_id)
+                    self._update_workflow_node(
+                        pipeline_id, node.node_id,
+                        state=WorkflowNodeState.succeeded,
+                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        error_message="",
+                    )
+
+                elif node_type == NodeType.approval:
+                    approved = await self._wait_for_approval(pipeline_id, node)
+                    if approved:
+                        node_outputs[node.node_id] = ""
+                        succeeded_nodes.add(node.node_id)
+                        self._update_workflow_node(
+                            pipeline_id, node.node_id,
+                            state=WorkflowNodeState.succeeded,
+                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            error_message="",
+                        )
+                    else:
+                        # 被取消（工作流取消时 _wait_for_approval 返回 False）
+                        node_error = node_error or f"节点「{node.name or node.node_id}」审批取消"
+                        pipeline_failed = True
+
+                else:
+                    task_nodes.append(node)
+
+            if pipeline_failed or not task_nodes:
+                continue
+
+            # ── 批量提交 task 节点（并发） ──────────────────────
             submit_results = await asyncio.gather(
                 *[
                     self._submit_pipeline_node(
                         node, pipeline_id, resolved_projects, input_str, node_outputs
                     )
-                    for node in nodes
+                    for node in task_nodes
                 ],
                 return_exceptions=True,
             )
 
-            # --- Wait for each node to finish (with per-node retry) ---
-            for node, submit_result in zip(nodes, submit_results):
+            for node, submit_result in zip(task_nodes, submit_results):
                 if isinstance(submit_result, Exception):
                     err_msg = f"节点「{node.name or node.node_id}」提交失败: {submit_result}"
                     print(f"[pipeline {pipeline_id}] node {node.node_id} submit error: {submit_result}")
                     self._update_workflow_node(
-                        pipeline_id,
-                        node.node_id,
+                        pipeline_id, node.node_id,
                         state=WorkflowNodeState.failed,
                         finished_at=datetime.now().isoformat(timespec="seconds"),
                         error_message=str(submit_result),
@@ -2604,16 +2795,32 @@ class Scheduler:
                     pipeline_failed = True
                     continue
 
-                task: Task = submit_result
+                task: Task       = submit_result
                 max_retries      = getattr(node, "max_retries", 0) or 0
                 retry_delay      = getattr(node, "retry_delay_seconds", 30) or 30
+                _timeout_attr    = getattr(node, "timeout_minutes", None)
+                timeout_min      = _timeout_attr if _timeout_attr is not None else 120
+                # 0 = no limit; use 10 years as sentinel for asyncio timeout
+                node_timeout_sec = timeout_min * 60 if timeout_min > 0 else 86400 * 365
                 attempt          = 0
 
                 while True:
-                    final_status = await self._wait_for_task_done(task.id)
+                    final_status  = await self._wait_for_task_done(task.id, timeout=node_timeout_sec)
+                    was_timeout   = False
+
+                    # 超时检测：_wait_for_task_done 返回 failed 但任务仍在运行 → 超时
+                    if final_status == TaskStatus.failed:
+                        live_task = self.get_task(task.id)
+                        if live_task and live_task.status == TaskStatus.running:
+                            was_timeout = True
+                            print(f"[pipeline {pipeline_id}] node {node.node_id} timed out after {timeout_min}min, killing")
+                            try:
+                                await self.kill_task(task.id)
+                            except Exception:
+                                pass
+                            final_status = TaskStatus.killed  # fall through to retry logic
 
                     if final_status == TaskStatus.done:
-                        # Extract output text for downstream nodes
                         log_path = self.get_log_path(task.id)
                         if log_path.exists():
                             log_text = log_path.read_text(encoding="utf-8", errors="ignore")
@@ -2621,13 +2828,11 @@ class Scheduler:
                             node_outputs[node.node_id] = data.text
                             node_output = data.text
                         else:
-                            # 日志文件未落盘：key 必须存在以便下游校验时给出准确提示
                             node_outputs[node.node_id] = ""
                             node_output = ""
                         succeeded_nodes.add(node.node_id)
                         self._update_workflow_node(
-                            pipeline_id,
-                            node.node_id,
+                            pipeline_id, node.node_id,
                             state=WorkflowNodeState.succeeded,
                             outputs={"text": node_output},
                             finished_at=datetime.now().isoformat(timespec="seconds"),
@@ -2635,7 +2840,7 @@ class Scheduler:
                         )
                         break
 
-                    # Task failed / killed
+                    # Task failed / killed — retry logic
                     if attempt < max_retries:
                         attempt += 1
                         print(
@@ -2649,30 +2854,30 @@ class Scheduler:
                                 node, pipeline_id, resolved_projects, input_str, node_outputs
                             )
                             self._update_workflow_node(
-                                pipeline_id,
-                                node.node_id,
+                                pipeline_id, node.node_id,
                                 attempt_count=attempt + 1,
                                 task_id=task.id,
                             )
                         except Exception as e:
-                            print(
-                                f"[pipeline {pipeline_id}] node {node.node_id} "
-                                f"retry submit failed: {e}"
-                            )
+                            print(f"[pipeline {pipeline_id}] node {node.node_id} retry submit failed: {e}")
                             pipeline_failed = True
                             break
                     else:
+                        _err_msg = (
+                            f"节点超时（>{timeout_min}min）" if was_timeout
+                            else f"任务 {task.id} 结束状态: {final_status.value}"
+                        )
                         print(
                             f"[pipeline {pipeline_id}] node {node.node_id} "
-                            f"permanently failed after {attempt + 1} attempt(s)"
+                            f"permanently failed after {attempt + 1} attempt(s): {_err_msg}"
                         )
                         self._update_workflow_node(
-                            pipeline_id,
-                            node.node_id,
-                            state=WorkflowNodeState.cancelled if final_status == TaskStatus.killed else WorkflowNodeState.failed,
+                            pipeline_id, node.node_id,
+                            state=WorkflowNodeState.failed,
                             finished_at=datetime.now().isoformat(timespec="seconds"),
-                            error_message=f"任务 {task.id} 结束状态: {final_status.value}",
+                            error_message=_err_msg,
                         )
+                        node_error = node_error or f"节点「{node.name or node.node_id}」{_err_msg}"
                         pipeline_failed = True
                         break
 
@@ -2693,8 +2898,112 @@ class Scheduler:
             self._update_workflow_run_from_pipeline(pipeline)
             print(
                 f"[pipeline {pipeline_id}] finished with status={pipeline.status} "
-                f"({len(succeeded_nodes)}/{total_nodes} nodes succeeded)"
+                f"({len(succeeded_nodes)}/{total_nodes} nodes succeeded, "
+                f"{len(skipped_nodes)} skipped)"
             )
+
+    async def _wait_for_approval(
+        self,
+        pipeline_id: str,
+        node: "TemplateNode",
+        poll_interval: float = 3.0,
+    ) -> bool:
+        """
+        暂停工作流，等待用户通过 /api/workflow-runs/{run_id}/approve 批准。
+        返回 True=已批准，False=被取消（工作流被终止或超时）。
+        """
+        import uuid as _uuid
+        token    = _uuid.uuid4().hex
+        run      = self.get_workflow_run_by_legacy_pipeline_id(pipeline_id)
+        run_id   = run.id if run else pipeline_id
+
+        self._update_workflow_node(
+            pipeline_id, node.node_id,
+            state=WorkflowNodeState.waiting_approval,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+        # 将审批 token 写入 WorkflowRun
+        run_path = self.workflow_runs_dir / f"{run_id}.json"
+        if run_path.exists():
+            run = self.get_workflow_run(run_id)
+            if run:
+                run.pending_approval_node_id = node.node_id
+                run.approval_token           = token
+                run.status                   = "waiting_approval"
+                run.save(self.workflow_runs_dir)
+
+        # 推送通知
+        if self._push_manager:
+            label = node.name or node.node_id
+            try:
+                await self._push_manager.send_all("⏸️ 工作流等待审批", f"节点「{label}」需要您审批后继续执行")
+            except Exception:
+                pass
+
+        print(f"[pipeline {pipeline_id}] approval node {node.node_id} waiting, token={token}")
+
+        while True:
+            await asyncio.sleep(poll_interval)
+            run_check = self.get_workflow_run(run_id)
+            if run_check is None:
+                return False
+            if run_check.status == "cancelled":
+                return False
+            # 审批完成：pending_approval_node_id 被清空
+            if not run_check.pending_approval_node_id:
+                return True
+
+    async def approve_workflow_run(self, run_id: str, token: str) -> WorkflowRun:
+        """用户批准审批节点，工作流继续执行。"""
+        run = self.get_workflow_run(run_id)
+        if run is None:
+            raise ValueError(f"工作流运行 '{run_id}' 不存在")
+        if run.status != "waiting_approval":
+            raise RuntimeError(f"工作流状态为 '{run.status}'，不在等待审批状态")
+        if run.approval_token != token:
+            raise ValueError("审批 token 不匹配")
+        run.pending_approval_node_id = ""
+        run.approval_token           = ""
+        run.status                   = "running"
+        run.updated                  = datetime.now().isoformat(timespec="seconds")
+        run.save(self.workflow_runs_dir)
+        return run
+
+    @staticmethod
+    def _eval_condition_branches(node: "TemplateNode", node_outputs: dict[str, str]) -> list[str]:
+        """
+        求值 condition 节点的各分支，返回命中分支的 next_nodes 列表。
+        支持表达式格式：
+          "{{steps.X.outputs.text}} contains 'value'"
+          "{{steps.X.outputs.text}} not_contains 'value'"
+          "{{steps.X.outputs.text}} equals 'value'"
+          "else"  （fallback 分支，总为真）
+        只取第一个命中的分支。
+        """
+        import re as _re
+        _EXPR_RE = _re.compile(
+            r"\{\{steps\.([^}]+)\.outputs\.text\}\}\s+(contains|not_contains|equals)\s+'([^']*)'",
+        )
+        for branch in (node.branches or []):
+            expr = (branch.condition or "").strip()
+            if expr == "else":
+                return list(branch.next_nodes)
+            m = _EXPR_RE.match(expr)
+            if not m:
+                continue
+            ref_id, op, value = m.groups()
+            text = node_outputs.get(ref_id, "")
+            matched = False
+            if op == "contains":
+                matched = value in text
+            elif op == "not_contains":
+                matched = value not in text
+            elif op == "equals":
+                matched = text.strip() == value
+            if matched:
+                return list(branch.next_nodes)
+        return []
 
     # ── 逻辑项目（按 path 分组） ──────────────────────────
 
