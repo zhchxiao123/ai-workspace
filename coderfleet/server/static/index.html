@@ -375,55 +375,57 @@
 
           <div id="project-detail-view" style="display:none">
             <div class="project-toolbar">
-              <button class="btn" onclick="backToProjects()">返回项目</button>
+              <button class="btn" onclick="backToProjects()">← 返回项目</button>
               <button class="btn primary" onclick="submitForCurrentProject()">开启新对话</button>
+              <button class="btn" onclick="openProjectFormModal(projectContext?.name)">编辑配置</button>
             </div>
-            <div class="project-detail">
-              <div style="display:flex;flex-direction:column;gap:16px">
-                <div class="card project-side" id="project-detail-summary">
-                  <div class="empty">加载中...</div>
+            <div class="project-config-grid">
+              <!-- 项目信息 -->
+              <div class="card" id="project-detail-summary" style="padding:16px">
+                <div class="empty">加载中...</div>
+              </div>
+              <!-- 环境变量 -->
+              <div class="card" id="project-env-card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
+                <div style="font-weight:600;font-size:13px;color:var(--text-2)">环境变量</div>
+                <div style="font-size:11px;color:var(--text-3)">通过 docker exec -e 注入，无需重启容器</div>
+                <div id="project-env-rows"><div style="color:var(--text-3);font-size:12px;padding:2px 0">暂无变量</div></div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <input id="project-new-env-key" class="form-input" placeholder="变量名" style="flex:1.4;font-size:12px" autocomplete="off">
+                  <input id="project-new-env-val" class="form-input" type="text" placeholder="值" style="flex:1;font-size:12px" autocomplete="off" spellcheck="false">
+                  <button class="btn" style="font-size:11px;white-space:nowrap" onclick="addProjectEnvRow()">+ 添加</button>
                 </div>
-                <div class="card project-side" id="project-env-card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
-                  <div style="font-weight:600;font-size:13px;color:var(--text-2)">环境变量</div>
-                  <div style="font-size:11px;color:var(--text-3)">通过 docker exec -e 注入，无需重启容器</div>
-                  <div id="project-env-rows"><div style="color:var(--text-3);font-size:12px;padding:2px 0">暂无变量</div></div>
-                  <div style="display:flex;gap:6px;align-items:center">
-                    <input id="project-new-env-key" class="form-input" placeholder="变量名" style="flex:1.4;font-size:12px" autocomplete="off">
-                    <input id="project-new-env-val" class="form-input" type="text" placeholder="值" style="flex:1;font-size:12px" autocomplete="off" spellcheck="false">
-                    <button class="btn" style="font-size:11px;white-space:nowrap" onclick="addProjectEnvRow()">+ 添加</button>
-                  </div>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <button class="btn primary" style="font-size:12px" onclick="saveProjectEnvVars()">保存</button>
-                    <div id="project-env-msg" style="display:none;font-size:12px"></div>
-                  </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <button class="btn primary" style="font-size:12px" onclick="saveProjectEnvVars()">保存</button>
+                  <div id="project-env-msg" style="display:none;font-size:12px"></div>
                 </div>
               </div>
-              <div class="project-main">
-                <div class="ide-card" id="project-ide-card">
-                  <div class="ide-toolbar">
-                    <div class="terminal-status">
-                      <span class="status-dot killed" id="project-ide-dot">未启用</span>
-                      <span class="terminal-status-text" id="project-ide-status">在项目配置中启用 IDE 后可浏览代码</span>
-                    </div>
-                    <button class="btn" id="project-ide-open" type="button" onclick="openProjectIdeWindow()" style="display:none">新窗口打开</button>
-                  </div>
-                  <iframe id="project-ide-frame" class="ide-frame" title="项目 IDE" src="about:blank"></iframe>
+              <!-- 镜像管理（跨两列） -->
+              <div class="card" id="project-image-card" style="padding:16px;display:flex;flex-direction:column;gap:14px;grid-column:1/-1">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div style="font-weight:600;font-size:13px;color:var(--text-2)">镜像管理</div>
+                  <span id="project-image-badge" class="badge" style="font-size:11px"></span>
                 </div>
-                <div class="terminal-card">
-                  <div class="terminal-toolbar">
-                    <div class="terminal-status">
-                      <span class="status-dot killed" id="project-terminal-dot">未连接</span>
-                      <span class="terminal-status-text" id="project-terminal-status">连接项目容器终端</span>
-                    </div>
-                    <div style="display:flex;gap:8px;align-items:center">
-                      <button class="btn" id="project-terminal-reconnect" type="button" onclick="openProjectTerminal()">连接</button>
-                      <button class="btn" type="button" onclick="disconnectProjectTerminal()">断开</button>
-                    </div>
-                  </div>
-                  <div id="project-terminal" class="project-terminal-mount"></div>
+                <div>
+                  <label style="font-size:11px;color:var(--text-3);display:block;margin-bottom:5px">镜像名称 <span style="opacity:.7">（name:tag，留空自动推导）</span></label>
+                  <input id="project-image-name" class="form-input" style="font-size:12px;font-family:monospace;max-width:360px"
+                    placeholder="coderfleet-{项目名}:latest" autocomplete="off" spellcheck="false">
+                </div>
+                <div>
+                  <label style="font-size:11px;color:var(--text-3);display:block;margin-bottom:5px">Dockerfile <span style="opacity:.7">（FROM coderfleet:latest 追加安装）</span></label>
+                  <textarea id="project-image-dockerfile" class="form-input" rows="8"
+                    style="font-family:monospace;font-size:12px;resize:vertical;width:100%;box-sizing:border-box"
+                    placeholder="FROM coderfleet:latest&#10;RUN pip install numpy pandas&#10;RUN apt-get install -y ffmpeg"></textarea>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <button class="btn" style="font-size:12px" onclick="saveProjectDockerfile()">保存 Dockerfile</button>
+                  <button class="btn primary" style="font-size:12px" onclick="buildProjectImage()">保存并构建镜像</button>
+                  <button class="btn danger" id="project-image-reset-btn" style="font-size:12px;display:none" onclick="clearProjectImage()">恢复共享镜像</button>
+                  <div id="project-image-msg" style="display:none;font-size:12px"></div>
                 </div>
               </div>
             </div>
+            <!-- 保留隐藏 iframe 供 backToProjects 清理 -->
+            <iframe id="project-ide-frame" style="display:none" src="about:blank" title=""></iframe>
           </div>
         </div>
 
@@ -953,6 +955,20 @@
         </div>
         <div id="project-form-msg" style="display:none"></div>
         <button id="project-form-btn" class="btn primary" onclick="saveProjectForm()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 项目镜像构建输出 Modal -->
+  <div class="modal-backdrop" id="image-build-modal" style="display:none" onclick="closeImageBuildModal(event)">
+    <div class="modal-sm" onclick="event.stopPropagation()" style="max-width:640px;width:90vw">
+      <div class="section-head" style="margin-bottom:12px">
+        <div class="modal-title" id="image-build-modal-title">构建镜像</div>
+        <span id="image-build-running" style="font-size:12px;color:var(--text-3)">执行中…</span>
+      </div>
+      <pre id="image-build-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--mono);max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+      <div style="margin-top:12px;display:flex;justify-content:flex-end">
+        <button id="image-build-done-btn" class="btn primary" style="display:none" onclick="closeImageBuildModal()">完成</button>
       </div>
     </div>
   </div>

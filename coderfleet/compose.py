@@ -184,8 +184,9 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "CODERFLEET_RELAY_PORT": relay_port,
             })
 
+        project_image = p.get("IMAGE") or image
         svc: dict[str, Any] = {
-            "image":        image,
+            "image":        project_image,
             "platform":     build_platform,
             "pull_policy":  "never",
             "container_name": ctr_name,

@@ -122,6 +122,7 @@ class ProjectCreateRequest(BaseModel):
     ide_port:    Optional[int] = None
     ide_auth:    str = "none"
     ide_remote:  bool = False
+    image:       str = ""
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -132,6 +133,7 @@ class ProjectUpdateRequest(BaseModel):
     ide_port:    Optional[int]  = None
     ide_auth:    Optional[str]  = None
     ide_remote:  Optional[bool] = None
+    image:       Optional[str]  = None
 
 
 class BoardCreateRequest(BaseModel):
@@ -923,7 +925,7 @@ async def create_project(req: ProjectCreateRequest):
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
     try:
-        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote)
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote, req.image)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -941,13 +943,14 @@ async def update_project(name: str, req: ProjectUpdateRequest):
     new_ide_port = existing.ide_port if req.ide_port is None else req.ide_port
     new_ide_auth   = existing.ide_auth   if req.ide_auth   is None else req.ide_auth
     new_ide_remote = existing.ide_remote if req.ide_remote is None else req.ide_remote
+    new_image = existing.image if req.image is None else req.image
     if not new_ide_enabled:
         new_ide_port = None
     _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
     try:
-        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote)
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote, new_image)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -976,6 +979,111 @@ async def set_project_env(name: str, req: EnvVarsRequest):
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── 项目镜像管理 ──────────────────────────────────────────
+
+def _project_dockerfile_path(name: str) -> Path:
+    return WORKSPACE_DIR / "projects" / name / "Dockerfile"
+
+
+def _default_project_image(name: str) -> str:
+    return f"coderfleet-{name}:latest"
+
+
+class DockerfileUpdateRequest(BaseModel):
+    content: str
+
+
+class ImageBuildRequest(BaseModel):
+    image_tag: str = ""
+
+
+@app.get("/api/projects/{name}/dockerfile")
+async def get_project_dockerfile(name: str):
+    if not any(p.name == name for p in scheduler.get_projects()):
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    path = _project_dockerfile_path(name)
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    return {"content": content}
+
+
+@app.put("/api/projects/{name}/dockerfile", status_code=200)
+async def save_project_dockerfile(name: str, req: DockerfileUpdateRequest):
+    if not any(p.name == name for p in scheduler.get_projects()):
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    path = _project_dockerfile_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(req.content, encoding="utf-8")
+    return {"ok": True}
+
+
+@app.post("/api/projects/{name}/image/build")
+async def build_project_image(name: str, req: ImageBuildRequest = None):
+    """触发 docker build 构建项目专属镜像，SSE 流式输出构建日志。
+    req.image_tag 优先；未提供则用 projects.conf 中的 IMAGE=，再 fallback 到自动推导名。
+    构建成功后始终将最终镜像名写入 projects.conf。
+    """
+    if req is None:
+        req = ImageBuildRequest()
+    existing = next((p for p in scheduler.get_projects() if p.name == name), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+
+    dockerfile = _project_dockerfile_path(name)
+    if not dockerfile.exists():
+        raise HTTPException(status_code=400, detail="Dockerfile 不存在，请先保存 Dockerfile")
+
+    image_tag = req.image_tag.strip() or existing.image or _default_project_image(name)
+    cfg = __import__("coderfleet.config", fromlist=["load_config"]).load_config(WORKSPACE_DIR)
+    platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+
+    async def _stream() -> AsyncIterator[str]:
+        try:
+            yield f">>> 构建镜像 {image_tag}（平台：{platform}）...\n"
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "build",
+                "--platform", platform,
+                "--tag", image_tag,
+                "--file", str(dockerfile),
+                str(dockerfile.parent),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            assert proc.stdout is not None
+            async for line in proc.stdout:
+                yield line.decode("utf-8", errors="replace")
+            rc = await proc.wait()
+            if rc != 0:
+                yield f"\n✗ 构建失败（exit={rc}）\n"
+            else:
+                yield f"\n✓ 镜像构建完成：{image_tag}\n"
+                # 构建成功后始终将镜像名写入 projects.conf（新增或更名均生效）
+                if image_tag != existing.image:
+                    scheduler.save_project(
+                        name, existing.account, existing.path,
+                        existing.active, existing.ide_enabled, existing.ide_port,
+                        existing.ide_auth, existing.ide_remote, image_tag,
+                    )
+                    yield f"  已写入 IMAGE={image_tag} 到 projects.conf\n"
+        except Exception as e:
+            yield f"\n✗ 构建出错：{e}\n"
+
+    return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
+
+
+@app.delete("/api/projects/{name}/image", status_code=200)
+async def clear_project_image(name: str):
+    """清除项目专属镜像配置，恢复使用共享镜像。"""
+    existing = next((p for p in scheduler.get_projects() if p.name == name), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    scheduler.save_project(
+        name, existing.account, existing.path,
+        existing.active, existing.ide_enabled, existing.ide_port,
+        existing.ide_auth, existing.ide_remote, "",
+    )
+    return {"ok": True}
 
 
 # ── 系统运维 ──────────────────────────────────────────────

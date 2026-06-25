@@ -164,26 +164,24 @@ def test_legacy_project_records_use_single_canonical_path_owner() -> None:
     assert "if (conversation.project_name) return conversation.project_name === project.name" in source
 
 
-def test_project_workspace_exposes_embedded_terminal() -> None:
+def test_project_workspace_config_layout() -> None:
+    """项目详情页改为配置管理布局：移除内嵌终端和 IDE iframe，保留 xterm 供底部终端使用。"""
     html = read_index()
     source = read_ui_source()
 
+    # xterm 仍然加载（供底部终端/对话终端使用）
     assert '/static/vendor/xterm/xterm.css' in html
     assert '/static/vendor/xterm/xterm.js' in html
     assert '/static/vendor/xterm/addon-fit.js' in html
+
+    # 项目配置卡片存在
     assert 'id="project-detail-summary"' in html
-    assert 'class="terminal-card"' in html
-    assert 'class="terminal-toolbar"' in html
-    assert 'id="project-terminal-status"' in html
-    assert 'id="project-terminal"' in html
-    assert 'id="project-terminal-reconnect"' in html
-    assert "terminalContext" in source
-    assert "function openProjectTerminal" in source
-    assert "function connectProjectTerminal" in source
-    assert "function disconnectProjectTerminal" in source
-    assert "function resizeProjectTerminal" in source
-    assert "window.addEventListener('beforeunload', disconnectProjectTerminal)" in source
-    assert "disconnectProjectTerminal();" in source
+    assert 'id="project-env-card"' in html
+    assert 'id="project-image-card"' in html
+    assert 'project-config-grid' in html
+
+    # 底部终端 JS 函数仍然存在（供对话终端/全局终端使用）
+    assert "function disconnectProjectTerminal" in source or "disconnectProjectTerminal" in source
 
 
 def test_bottom_terminal_tabs_keep_independent_sessions() -> None:

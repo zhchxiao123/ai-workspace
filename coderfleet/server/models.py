@@ -72,6 +72,7 @@ class Project(BaseModel):
     ide_port:    Optional[int] = None
     ide_auth:    str = "none"
     ide_remote:  bool = False
+    image:       str = ""
 
     @property
     def mount_path(self) -> str:
@@ -441,6 +442,7 @@ class ProjectResponse(BaseModel):
     ide_auth:    str = "none"
     ide_remote:  bool = False
     ide_url:     str = ""
+    image:       str = ""
 
     @classmethod
     def from_project(cls, p: Project) -> "ProjectResponse":
@@ -455,6 +457,7 @@ class ProjectResponse(BaseModel):
             ide_auth=p.ide_auth,
             ide_remote=p.ide_remote,
             ide_url=ide_url,
+            image=p.image,
         )
 
 

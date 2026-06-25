@@ -190,6 +190,7 @@ WORKDIR /workspace
 # OpenCode 数据：/home/byclaw/.opencode（运行时按账号挂载并设置 XDG_*_HOME）
 ENV CODEX_HOME=/home/byclaw/.codex
 ENV CLAUDE_CONFIG_DIR=/home/byclaw/.claude
+ENV PATH=/home/byclaw/.local/bin:$PATH
 
 # ── 启动脚本 ──────────────────────────────────────────────
 COPY entrypoint.sh /entrypoint.sh

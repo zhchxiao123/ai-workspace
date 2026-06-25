@@ -63,24 +63,121 @@ def _get_projects(ws: Path) -> list[dict[str, str]]:
 
 
 @click.command("build")
+@click.argument("project", required=False, default=None, metavar="[PROJECT]")
 @click.option("--no-cache", is_flag=True, help="不使用构建缓存（强制完整重新构建）")
 @click.option("--pull", is_flag=True, help="强制拉取最新基础镜像")
 @click.option("--platform", "platform_override", default=None, metavar="PLATFORM",
               help="覆盖 config.conf 中的 BUILD_PLATFORM（如 linux/amd64）")
 @click.option("--tag", "tag_override", default=None, metavar="TAG",
-              help="覆盖 config.conf 中的 IMAGE_TAG")
+              help="覆盖 config.conf 中的 IMAGE_TAG（仅构建共享镜像时有效）")
+@click.option("--all-projects", "all_projects", is_flag=True,
+              help="构建共享镜像 + 所有有 Dockerfile 的项目专属镜像")
 @click.pass_context
 def cmd_build(
     ctx: click.Context,
+    project: Optional[str],
     no_cache: bool,
     pull: bool,
     platform_override: Optional[str],
     tag_override: Optional[str],
+    all_projects: bool,
 ) -> None:
-    """Build the Docker image."""
+    """Build the shared Docker image, or a per-project image.
+
+    \b
+    Examples:
+      coderfleet build               # 构建共享镜像（原有行为）
+      coderfleet build my-project    # 构建 my-project 专属镜像
+      coderfleet build --all-projects  # 共享镜像 + 所有有 Dockerfile 的项目镜像
+    """
     ws: Path = ctx.obj["workspace"]
     cfg = load_config(ws)
+    platform = platform_override or cfg.get("BUILD_PLATFORM", "linux/amd64")
 
+    def _build_image(image: str, dockerfile: Path, context: Path) -> bool:
+        cmd = [
+            "docker", "build",
+            "--platform", platform,
+            "--tag", image,
+            "--file", str(dockerfile),
+        ]
+        if no_cache:
+            cmd.append("--no-cache")
+        if pull:
+            cmd.append("--pull")
+        cmd.append(str(context))
+        return subprocess.run(cmd).returncode == 0
+
+    if project:
+        # ── 构建单个项目专属镜像 ──────────────────────────────
+        projects = parse_conf(ws / "projects.conf")
+        proj = next((p for p in projects if p.get("NAME") == project), None)
+        if proj is None:
+            raise click.ClickException(f"项目 '{project}' 不在 projects.conf 中")
+
+        dockerfile = ws / "projects" / project / "Dockerfile"
+        if not dockerfile.exists():
+            raise click.ClickException(
+                f"找不到 {dockerfile}\n"
+                f"请先在 {dockerfile.parent}/ 创建 Dockerfile，再执行此命令"
+            )
+
+        image = proj.get("IMAGE") or f"coderfleet-{project}:latest"
+        click.echo(f"构建项目镜像 {image}（平台：{platform}）...")
+        click.echo()
+
+        if not _build_image(image, dockerfile, dockerfile.parent):
+            raise click.ClickException("项目镜像构建失败")
+
+        # 若 IMAGE= 未设置则写入 projects.conf
+        from coderfleet.config import update_conf_field
+        if not proj.get("IMAGE"):
+            update_conf_field(ws / "projects.conf", project, "IMAGE", image)
+            click.secho(f"  已自动写入 IMAGE={image} 到 projects.conf", dim=True)
+
+        click.echo()
+        click.secho(f"✓ 项目镜像构建完成：{image}", fg="green")
+        click.secho("  执行 coderfleet apply 使新镜像生效", fg="yellow")
+        return
+
+    if all_projects:
+        # ── 构建共享镜像 + 所有有 Dockerfile 的项目镜像 ─────
+        projects = parse_conf(ws / "projects.conf")
+        items: list[tuple[str, Path, Path]] = []  # (image, dockerfile, context)
+
+        shared_dockerfile = ws / "Dockerfile"
+        if shared_dockerfile.exists():
+            image_name = cfg.get("IMAGE_NAME", "coderfleet")
+            image_tag = tag_override or cfg.get("IMAGE_TAG", "latest")
+            items.append((f"{image_name}:{image_tag}", shared_dockerfile, ws))
+
+        for p in projects:
+            pname = p.get("NAME", "")
+            if not pname:
+                continue
+            df = ws / "projects" / pname / "Dockerfile"
+            if df.exists():
+                img = p.get("IMAGE") or f"coderfleet-{pname}:latest"
+                items.append((img, df, df.parent))
+
+        if not items:
+            raise click.ClickException("没有找到任何 Dockerfile")
+
+        click.echo(f"构建 {len(items)} 个镜像（平台：{platform}）...")
+        failed = []
+        for image, dockerfile, context in items:
+            click.secho(f"\n  → {image}", bold=True)
+            if not _build_image(image, dockerfile, context):
+                failed.append(image)
+
+        click.echo()
+        if failed:
+            raise click.ClickException(f"以下镜像构建失败：{', '.join(failed)}")
+        click.secho(f"✓ 全部 {len(items)} 个镜像构建完成", fg="green")
+        click.secho("  执行 coderfleet apply 使新镜像生效", fg="yellow")
+        return
+
+    # ── 构建共享镜像（原有行为）──────────────────────────────
     dockerfile = ws / "Dockerfile"
     if not dockerfile.exists():
         raise click.ClickException(
@@ -90,7 +187,6 @@ def cmd_build(
     image_name = cfg.get("IMAGE_NAME", "coderfleet")
     image_tag = tag_override or cfg.get("IMAGE_TAG", "latest")
     image = f"{image_name}:{image_tag}"
-    platform = platform_override or cfg.get("BUILD_PLATFORM", "linux/amd64")
 
     click.echo(f"构建镜像 {image}（平台：{platform}）...")
     if no_cache:
@@ -100,21 +196,7 @@ def cmd_build(
     click.secho("首次构建约需 5~10 分钟，请耐心等待", dim=True)
     click.echo()
 
-    cmd = [
-        "docker", "build",
-        "--platform", platform,
-        "--tag", image,
-        "--file", str(dockerfile),
-    ]
-    if no_cache:
-        cmd.append("--no-cache")
-    if pull:
-        cmd.append("--pull")
-    cmd.append(str(ws))
-
-    result = subprocess.run(cmd)
-
-    if result.returncode != 0:
+    if not _build_image(image, dockerfile, ws):
         raise click.ClickException("镜像构建失败")
 
     click.echo()

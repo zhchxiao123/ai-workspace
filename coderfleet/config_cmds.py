@@ -200,6 +200,7 @@ def project_group() -> None:
 @click.option("--ide", is_flag=True, help="Enable browser IDE (code-server) for this project")
 @click.option("--ide-port", type=int, default=None, help="Host port for browser IDE, auto-assigned when omitted")
 @click.option("--disabled", is_flag=True, help="Add project in disabled state (no container on apply)")
+@click.option("--image", default=None, metavar="IMAGE", help="自定义 Docker 镜像（如 my-image:latest），留空使用共享镜像")
 @click.pass_context
 def cmd_project_add(
     ctx: click.Context,
@@ -209,6 +210,7 @@ def cmd_project_add(
     ide: bool,
     ide_port: int | None,
     disabled: bool,
+    image: Optional[str],
 ) -> None:
     """Add a new project."""
     ws: Path = ctx.obj["workspace"]
@@ -242,11 +244,60 @@ def cmd_project_add(
         tokens["IDE_PORT"] = str(ide_port)
     if disabled:
         tokens["ACTIVE"] = "off"
+    if image:
+        tokens["IMAGE"] = image
     write_conf_line(projects_conf, tokens)
 
     expanded = str(Path(path).expanduser())
     state_label = "（已禁用）" if disabled else ""
     click.secho(f"✓ 项目 '{name}' 已添加{state_label}（账号：{account}  路径：{expanded}）", fg="green")
+    if image:
+        click.secho(f"  镜像：{image}", dim=True)
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+@project_group.command("set-image")
+@click.argument("name")
+@click.argument("image")
+@click.pass_context
+def cmd_project_set_image(ctx: click.Context, name: str, image: str) -> None:
+    """Set or clear a project's custom Docker image.
+
+    \b
+    Examples:
+      coderfleet project set-image my-project my-image:latest  # 设置专属镜像
+      coderfleet project set-image my-project -               # 清除，恢复共享镜像
+    """
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+
+    if not any(p.get("NAME") == name for p in parse_conf(projects_conf)):
+        raise click.ClickException(f"项目 '{name}' 不存在")
+
+    if image == "-":
+        from coderfleet.config import remove_conf_entry, update_conf_field
+        # 把 IMAGE= 这个 token 从该行移除（update_conf_field 找不到就不改）
+        # 用更直接的方式：先读行，去掉 IMAGE=xxx token，再写回
+        import re
+        lines = projects_conf.read_text(encoding="utf-8").splitlines(keepends=True)
+        new_lines = []
+        name_pat = re.compile(rf"\bNAME={re.escape(name)}(\s|$)")
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                new_lines.append(line)
+                continue
+            if name_pat.search(line):
+                tokens = [t for t in line.rstrip("\n").split() if not t.upper().startswith("IMAGE=")]
+                new_lines.append("  ".join(tokens) + "\n")
+            else:
+                new_lines.append(line)
+        projects_conf.write_text("".join(new_lines), encoding="utf-8")
+        click.secho(f"✓ 项目 '{name}' 已恢复使用共享镜像", fg="green")
+    else:
+        update_conf_field(projects_conf, name, "IMAGE", image)
+        click.secho(f"✓ 项目 '{name}' 已设置镜像：{image}", fg="green")
+
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 
