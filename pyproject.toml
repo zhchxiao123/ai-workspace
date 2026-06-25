@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coderfleet"
-version = "0.1.13.dev0"
+version = "0.1.14.dev0"
 description = "CoderFleet - Run multiple Codex, Claude Code, OpenCode, and Hermes Agent accounts in isolated Docker containers"
 readme = "README.md"
 requires-python = ">=3.10"
