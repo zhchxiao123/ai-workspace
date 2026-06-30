@@ -54,6 +54,7 @@ from coderfleet.server.models import (
     Schedule,
     ScheduleCreateRequest,
     ScheduleResponse,
+    ScheduleRunResponse,
     ScheduleType,
     ScheduleUpdateRequest,
     Skill,
@@ -804,6 +805,12 @@ async def create_task(req: TaskCreateRequest):
             depends_on     = req.depends_on,
             pipeline_id    = req.pipeline_id,
             board_card_id  = req.board_card_id,
+            ephemeral      = req.ephemeral,
+            execution_mode = req.execution_mode,
+            secrets        = req.secrets,
+            output_dir     = req.output_dir,
+            ephemeral_retention = req.ephemeral_retention,
+            ephemeral_ttl_minutes = req.ephemeral_ttl_minutes,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1223,6 +1230,92 @@ async def download_task_file(
     return _serve_project_file(proj_path, path)
 
 
+# ── 项目文件浏览 ──────────────────────────────────────────
+
+class FileEntry(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+    size: Optional[int]
+    modified: Optional[float]
+
+
+_FILES_SKIP = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.mypy_cache', '.ruff_cache'}
+
+
+@app.get("/api/projects/{project_name}/files", response_model=list[FileEntry])
+async def list_project_files(
+    project_name: str,
+    path: str = Query("", description="相对路径，空表示根目录"),
+):
+    """列出项目目录下的文件和子目录（单层）。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    base = Path(project.path).resolve()
+    target = (base / path).resolve() if path else base
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="路径不合法")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="不是目录")
+    entries: list[FileEntry] = []
+    try:
+        items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        for item in items:
+            if item.name in _FILES_SKIP:
+                continue
+            try:
+                stat = item.stat()
+            except OSError:
+                continue
+            rel = str(item.relative_to(base))
+            entries.append(FileEntry(
+                name=item.name,
+                path=rel,
+                is_dir=item.is_dir(),
+                size=stat.st_size if not item.is_dir() else None,
+                modified=stat.st_mtime,
+            ))
+    except PermissionError:
+        pass
+    return entries
+
+
+@app.get("/api/projects/{project_name}/preview")
+async def preview_project_file(
+    project_name: str,
+    path: str = Query(..., description="相对路径"),
+):
+    """返回文件内容用于预览：图片直接响应，文本返回 JSON {content, truncated, name}。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    base = Path(project.path).resolve()
+    target = (base / path).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="路径不合法")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    img_exts = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico', '.bmp'}
+    if target.suffix.lower() in img_exts:
+        return FileResponse(target)
+    MAX = 512 * 1024
+    try:
+        raw = target.read_bytes()
+        if b'\x00' in raw[:1024]:
+            raise HTTPException(status_code=400, detail="binary")
+        text = raw[:MAX].decode('utf-8', errors='replace')
+        return {"content": text, "truncated": len(raw) > MAX, "name": target.name}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="无法预览")
+
+
 # ── 项目终端 ──────────────────────────────────────────────
 
 def _is_allowed_terminal_origin(origin: str | None, host: str | None) -> bool:
@@ -1586,6 +1679,13 @@ async def delete_conversation(conversation_id: str):
         scheduler.delete_conversation(conversation_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/sessions/{conversation_id}", status_code=204)
+async def delete_session(conversation_id: str):
+    """关闭 ephemeral 会话容器并删除本地 workspace 目录（sessions/<conv-id>/）。"""
+    scheduler.close_ephemeral_conversation(conversation_id)
+    scheduler.delete_session(conversation_id)
 
 
 # ── 任务列表 ──────────────────────────────────────────────
@@ -1968,6 +2068,21 @@ def _workflow_run_response(run: WorkflowRun) -> WorkflowRunResponse:
     )
 
 
+def _schedule_run_response(sched: Schedule, run_type: str, run_obj) -> ScheduleRunResponse:
+    if run_type == "workflow":
+        run = scheduler.get_workflow_run_by_legacy_pipeline_id(run_obj.id)
+        return ScheduleRunResponse(
+            run_type="workflow",
+            schedule=ScheduleResponse.from_schedule(sched),
+            workflow_run=_workflow_run_response(run) if run else None,
+        )
+    return ScheduleRunResponse(
+        run_type="task",
+        schedule=ScheduleResponse.from_schedule(sched),
+        task=TaskResponse.from_task(run_obj),
+    )
+
+
 @app.get("/api/workflow-runs", response_model=list[WorkflowRunResponse])
 async def list_workflow_runs():
     return [_workflow_run_response(r) for r in scheduler.list_workflow_runs()]
@@ -2046,6 +2161,13 @@ async def create_schedule(req: ScheduleCreateRequest):
         name            = req.name,
         prompt          = req.prompt,
         project_name    = req.project_name,
+        target_type     = req.target_type,
+        template_id     = req.template_id,
+        workflow_input  = req.workflow_input,
+        project_map     = req.project_map,
+        default_project = req.default_project,
+        default_account = req.default_account,
+        workspace_policy = req.workspace_policy,
         schedule_type   = req.schedule_type,
         time_of_day     = req.time_of_day,
         days_of_week    = req.days_of_week,
@@ -2054,6 +2176,10 @@ async def create_schedule(req: ScheduleCreateRequest):
         enabled         = req.enabled,
         auto            = req.auto,
         account         = req.account,
+        execution_mode  = req.execution_mode,
+        output_dir      = req.output_dir,
+        ephemeral_retention = req.ephemeral_retention,
+        ephemeral_ttl_minutes = req.ephemeral_ttl_minutes,
         webhook_enabled = req.webhook_enabled,
     )
     sched = scheduler.create_schedule(sched)
@@ -2094,25 +2220,26 @@ async def toggle_schedule(sched_id: str):
     return ScheduleResponse.from_schedule(sched)
 
 
-@app.post("/api/schedules/{sched_id}/run-now", response_model=TaskResponse, status_code=201)
+@app.post("/api/schedules/{sched_id}/run-now", response_model=ScheduleRunResponse, status_code=201)
 async def run_schedule_now(sched_id: str):
     sched = scheduler.get_schedule(sched_id)
     if sched is None:
         raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
-    task = await scheduler.submit(
-        prompt       = sched.prompt,
-        project_name = sched.project_name,
-        auto         = sched.auto,
-        account_name = sched.account,
-    )
+    run_type, run_obj = await scheduler._run_schedule_target(sched)
     sched.last_run_at = datetime.now().isoformat(timespec="seconds")
-    sched.last_task_id = task.id
+    sched.last_run_type = run_type
+    if run_type == "workflow":
+        sched.last_workflow_run_id = run_obj.id
+        sched.last_task_id = ""
+    else:
+        sched.last_task_id = run_obj.id
+        sched.last_workflow_run_id = ""
     sched.updated = datetime.now().isoformat(timespec="seconds")
     sched.save(scheduler.schedules_dir)
-    return TaskResponse.from_task(task)
+    return _schedule_run_response(sched, run_type, run_obj)
 
 
-@app.post("/api/webhooks/{webhook_token}/trigger", response_model=TaskResponse, status_code=201)
+@app.post("/api/webhooks/{webhook_token}/trigger", response_model=ScheduleRunResponse, status_code=201)
 async def webhook_trigger(webhook_token: str):
     """公开端点（无需认证），通过 webhook_token 触发对应定时计划立即执行一次。"""
     sched = next(
@@ -2122,17 +2249,18 @@ async def webhook_trigger(webhook_token: str):
     )
     if sched is None:
         raise HTTPException(status_code=404, detail="webhook not found or disabled")
-    task = await scheduler.submit(
-        prompt       = sched.prompt,
-        project_name = sched.project_name,
-        auto         = sched.auto,
-        account_name = sched.account,
-    )
+    run_type, run_obj = await scheduler._run_schedule_target(sched)
     sched.last_run_at  = datetime.now().isoformat(timespec="seconds")
-    sched.last_task_id = task.id
+    sched.last_run_type = run_type
+    if run_type == "workflow":
+        sched.last_workflow_run_id = run_obj.id
+        sched.last_task_id = ""
+    else:
+        sched.last_task_id = run_obj.id
+        sched.last_workflow_run_id = ""
     sched.updated      = datetime.now().isoformat(timespec="seconds")
     sched.save(scheduler.schedules_dir)
-    return TaskResponse.from_task(task)
+    return _schedule_run_response(sched, run_type, run_obj)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2183,6 +2311,8 @@ async def run_workflow_template(template_id: str, req: TemplateRunRequest):
             input_str       = req.input,
             project_map     = req.project_map,
             default_project = req.default_project,
+            default_account = req.default_account,
+            workspace_policy = req.workspace_policy,
         )
         run = scheduler.get_workflow_run_by_legacy_pipeline_id(pipeline.id)
         if run is None:

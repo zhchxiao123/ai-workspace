@@ -332,6 +332,27 @@
     .user-image-attachment img {
       width: 100%; height: 100%; object-fit: cover; display: block;
     }
+    .user-file-attachment {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 10px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.06);
+      text-decoration: none; color: var(--text1);
+      max-width: 220px; flex-shrink: 0;
+    }
+    .user-file-attachment .file-attach-name {
+      font-size: 12px; color: var(--text1);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 160px;
+    }
+    .file-ext-badge {
+      flex-shrink: 0; font-size: 9px; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 2px 5px; border-radius: 4px;
+      background: rgba(90,169,255,0.15); color: #5aa9ff;
+      border: 1px solid rgba(90,169,255,0.3);
+      font-family: ui-monospace, monospace; line-height: 1.3;
+    }
 
     /* AI 渲染器容器 */
     .ai-log-wrap {

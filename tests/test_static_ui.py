@@ -289,6 +289,21 @@ def test_log_renderer_supports_opencode_events() -> None:
         assert token in source
 
 
+def test_log_renderer_reassembles_multiline_json_events() -> None:
+    source = read_ui_source()
+
+    for token in [
+        "isFooterSeparator",
+        "next.startsWith('finished:') || next.startsWith('usage status:')",
+        "_renderBody(lines)",
+        "_processJsonBodyText(text)",
+        "let jsonStart = -1",
+        "depth += 1",
+        "this._event(JSON.parse(candidate))",
+    ]:
+        assert token in source
+
+
 def test_log_modal_uses_neutral_color_tokens() -> None:
     source = read_ui_source()
 

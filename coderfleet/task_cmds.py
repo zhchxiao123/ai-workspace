@@ -81,6 +81,11 @@ def task_group() -> None:
 @click.option("--conversation", "conversation_id", default=None, help="续接已有任务链 ID")
 @click.option("--new-chain", "conversation_name", default=None, help="新建任务链并命名")
 @click.option("--at", "execute_at", default=None, help="定时执行时间（ISO 8601）")
+@click.option("--ephemeral", is_flag=True, help="临时容器模式（docker run --rm，无需持久容器）")
+@click.option("--secret", "raw_secrets", multiple=True, metavar="KEY=VAL",
+              help="注入临时容器的 secret 环境变量（可多次使用）")
+@click.option("--output", "output_dir", default=None, metavar="DIR",
+              help="宿主机目录，挂载为容器内 /output（用于收集文件产出）")
 def cmd_task_run(
     prompt: str,
     prefer_project: Optional[str],
@@ -90,6 +95,9 @@ def cmd_task_run(
     conversation_id: Optional[str],
     conversation_name: Optional[str],
     execute_at: Optional[str],
+    ephemeral: bool,
+    raw_secrets: tuple,
+    output_dir: Optional[str],
 ) -> None:
     """Submit a task for execution."""
     api = _require_server()
@@ -109,6 +117,18 @@ def cmd_task_run(
         body["conversation_name"] = conversation_name
     if execute_at:
         body["execute_at"] = execute_at
+    if ephemeral:
+        body["ephemeral"] = True
+    if raw_secrets:
+        parsed: dict[str, str] = {}
+        for s in raw_secrets:
+            if "=" not in s:
+                raise click.ClickException(f"--secret 格式错误（应为 KEY=VAL）：{s}")
+            k, v = s.split("=", 1)
+            parsed[k.strip()] = v
+        body["secrets"] = parsed
+    if output_dir:
+        body["output_dir"] = str(Path(output_dir).expanduser().resolve())
 
     try:
         r = httpx.post(f"{api}/api/tasks", json=body, timeout=10)
@@ -124,7 +144,8 @@ def cmd_task_run(
     project_label = d["project"].split("/")[-1] if d.get("project") else d.get("project_name", "")
 
     click.secho(f"✓ 任务已提交：{d['id']}", fg="green")
-    click.echo(f"  项目：{project_label}  账号：{d['account']} ({d['type']})")
+    mode_label = "  [临时容器]" if d.get("ephemeral") else ""
+    click.echo(f"  项目：{project_label}  账号：{d['account']} ({d['type']}){mode_label}")
     if d.get("status") == "scheduled":
         click.echo(f"  定时：{d.get('execute_at')}")
     elif d.get("status") == "pending":

@@ -73,6 +73,8 @@ class Project(BaseModel):
     ide_auth:    str = "none"
     ide_remote:  bool = False
     image:       str = ""
+    ephemeral:   bool = False
+    git_url:     str = ""
 
     @property
     def mount_path(self) -> str:
@@ -101,6 +103,12 @@ class Conversation(BaseModel):
     created:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     last_task_id:      str = ""
+    ephemeral:         bool = False
+    output_dir:        str = ""
+    ephemeral_retention: str = "release_on_finish"  # release_on_finish | keep_until_ttl | keep_until_manual_close
+    ephemeral_ttl_minutes: int = 120
+    ephemeral_container_name: str = ""
+    ephemeral_expires_at: str = ""
 
     def save(self, conversations_dir: Path) -> None:
         conversations_dir.mkdir(parents=True, exist_ok=True)
@@ -247,6 +255,14 @@ class Task(BaseModel):
     tokens_input:  int = 0
     tokens_output: int = 0
     cost_usd:      float = 0.0
+    # Ephemeral task fields
+    ephemeral:    bool = False
+    execution_mode: str = "persistent"  # persistent | ephemeral
+    output_dir:   str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
+    ephemeral_container_name: str = ""
+    task_secrets: dict = Field(default_factory=dict)
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -304,6 +320,13 @@ class TaskCreateRequest(BaseModel):
     depends_on:     list[str] = []
     pipeline_id:    Optional[str] = None
     board_card_id:  Optional[str] = None
+    # Ephemeral task fields
+    ephemeral:  bool = False
+    execution_mode: Optional[str] = None
+    secrets:    dict = {}
+    output_dir: str = ""
+    ephemeral_retention: Optional[str] = None
+    ephemeral_ttl_minutes: Optional[int] = None
 
 
 class TaskResponse(BaseModel):
@@ -330,6 +353,12 @@ class TaskResponse(BaseModel):
     tokens_input:  int = 0
     tokens_output: int = 0
     cost_usd:      float = 0.0
+    ephemeral:    bool = False
+    execution_mode: str = "persistent"
+    output_dir:   str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
+    ephemeral_container_name: str = ""
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -357,6 +386,12 @@ class TaskResponse(BaseModel):
             tokens_input   = getattr(t, "tokens_input", 0),
             tokens_output  = getattr(t, "tokens_output", 0),
             cost_usd       = getattr(t, "cost_usd", 0.0),
+            ephemeral      = getattr(t, "ephemeral", False),
+            execution_mode = getattr(t, "execution_mode", "ephemeral" if getattr(t, "ephemeral", False) else "persistent"),
+            output_dir     = getattr(t, "output_dir", ""),
+            ephemeral_retention = getattr(t, "ephemeral_retention", "release_on_finish"),
+            ephemeral_ttl_minutes = getattr(t, "ephemeral_ttl_minutes", 120),
+            ephemeral_container_name = getattr(t, "ephemeral_container_name", ""),
         )
 
 
@@ -412,6 +447,12 @@ class ConversationResponse(BaseModel):
     created:           str
     updated:           str
     last_task_id:      str
+    ephemeral:         bool = False
+    output_dir:        str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
+    ephemeral_container_name: str = ""
+    ephemeral_expires_at: str = ""
 
     @classmethod
     def from_conversation(cls, c: Conversation) -> "ConversationResponse":
@@ -429,6 +470,12 @@ class ConversationResponse(BaseModel):
             created           = c.created,
             updated           = c.updated,
             last_task_id      = c.last_task_id,
+            ephemeral         = getattr(c, "ephemeral", False),
+            output_dir        = getattr(c, "output_dir", ""),
+            ephemeral_retention = getattr(c, "ephemeral_retention", "release_on_finish"),
+            ephemeral_ttl_minutes = getattr(c, "ephemeral_ttl_minutes", 120),
+            ephemeral_container_name = getattr(c, "ephemeral_container_name", ""),
+            ephemeral_expires_at = getattr(c, "ephemeral_expires_at", ""),
         )
 
 
@@ -443,6 +490,8 @@ class ProjectResponse(BaseModel):
     ide_remote:  bool = False
     ide_url:     str = ""
     image:       str = ""
+    ephemeral:   bool = False
+    git_url:     str = ""
 
     @classmethod
     def from_project(cls, p: Project) -> "ProjectResponse":
@@ -458,6 +507,8 @@ class ProjectResponse(BaseModel):
             ide_remote=p.ide_remote,
             ide_url=ide_url,
             image=p.image,
+            ephemeral=getattr(p, "ephemeral", False),
+            git_url=getattr(p, "git_url", ""),
         )
 
 
@@ -486,8 +537,13 @@ class PipelineNodeRun(BaseModel):
     target_mode:      str = "default"
     project_name:     str = ""
     project_role:     str = ""
+    account:          str = ""
     resolved_project: str = ""
     actual_prompt:    str = ""
+    execution_mode:   str = "inherit"
+    output_dir:       str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
 
 
 class Pipeline(BaseModel):
@@ -502,6 +558,10 @@ class Pipeline(BaseModel):
     last_error:      str = ""        # last unhandled exception message (if any)
     project_map:     dict[str, str] = Field(default_factory=dict)
     default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"  # isolated | shared_ephemeral | artifact_sync
+    shared_conversation_id: str = ""
+    artifact_dir: str = ""
     created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -547,6 +607,10 @@ class PipelineResponse(BaseModel):
     last_error:      str = ""
     project_map:     dict[str, str] = {}
     default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"
+    shared_conversation_id: str = ""
+    artifact_dir: str = ""
     created:         str
     updated:         str
     tasks:           list[TaskResponse] = []
@@ -565,6 +629,10 @@ class PipelineResponse(BaseModel):
             last_error      = getattr(p, "last_error", ""),
             project_map     = getattr(p, "project_map", {}),
             default_project = getattr(p, "default_project", ""),
+            default_account = getattr(p, "default_account", ""),
+            workspace_policy = getattr(p, "workspace_policy", "isolated"),
+            shared_conversation_id = getattr(p, "shared_conversation_id", ""),
+            artifact_dir = getattr(p, "artifact_dir", ""),
             created         = p.created,
             updated         = p.updated,
             tasks           = [TaskResponse.from_task(t) for t in tasks],
@@ -610,6 +678,11 @@ class TemplateNode(BaseModel):
     target_mode:          str = "default"  # default / fixed_project / runtime_role
     project_name:         str = ""         # target_mode=fixed_project 时使用
     project_role:         str = ""         # 角色名（如 "claude"/"codex"）或具体项目名
+    account:              str = ""         # execution_mode=ephemeral 且不指定项目时使用
+    execution_mode:       str = "inherit"  # inherit / persistent / ephemeral
+    output_dir:           str = ""
+    ephemeral_retention:  str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
     depends_on:           list[str] = Field(default_factory=list)  # 依赖的 node_id 列表
     pos_x:                float = 0.0      # 画布坐标（Drawflow）
     pos_y:                float = 0.0
@@ -691,6 +764,8 @@ class TemplateRunRequest(BaseModel):
     input:           str
     project_map:     dict[str, str] = {}  # project_role / node_id → 实际项目名
     default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"
 
 
 # ── Agent Skills ───────────────────────────────────────────
@@ -859,6 +934,13 @@ class Schedule(BaseModel):
     name:            str
     prompt:          str
     project_name:    str
+    target_type:     str = "task"  # task | workflow
+    template_id:     str = ""
+    workflow_input:  str = ""
+    project_map:     dict[str, str] = Field(default_factory=dict)
+    default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"
     schedule_type:   ScheduleType
     time_of_day:     Optional[str] = None    # "HH:MM" for daily/weekly
     days_of_week:    list[int] = Field(default_factory=list)  # 0=Mon..6=Sun
@@ -867,11 +949,17 @@ class Schedule(BaseModel):
     enabled:         bool = True
     auto:            bool = False
     account:         Optional[str] = None
+    execution_mode:  str = "inherit"  # inherit | persistent | ephemeral
+    output_dir:      str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
     webhook_token:   str = Field(default_factory=lambda: __import__("uuid").uuid4().hex)
     webhook_enabled: bool = False
     next_run_at:     Optional[str] = None
     last_run_at:     Optional[str] = None
+    last_run_type:   str = ""
     last_task_id:    str = ""
+    last_workflow_run_id: str = ""
     created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -905,6 +993,13 @@ class ScheduleResponse(BaseModel):
     name:            str
     prompt:          str
     project_name:    str
+    target_type:     str = "task"
+    template_id:     str = ""
+    workflow_input:  str = ""
+    project_map:     dict[str, str] = {}
+    default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"
     schedule_type:   ScheduleType
     time_of_day:     Optional[str] = None
     days_of_week:    list[int] = []
@@ -913,17 +1008,30 @@ class ScheduleResponse(BaseModel):
     enabled:         bool
     auto:            bool
     account:         Optional[str] = None
+    execution_mode:  str = "inherit"
+    output_dir:      str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
     webhook_token:   str = ""
     webhook_enabled: bool = False
     next_run_at:     Optional[str] = None
     last_run_at:     Optional[str] = None
+    last_run_type:   str = ""
     last_task_id:    str = ""
+    last_workflow_run_id: str = ""
     created:         str
     updated:         str
 
     @classmethod
     def from_schedule(cls, s: "Schedule") -> "ScheduleResponse":
         return cls(**s.model_dump())
+
+
+class ScheduleRunResponse(BaseModel):
+    run_type: str
+    schedule: Optional[ScheduleResponse] = None
+    task: Optional[TaskResponse] = None
+    workflow_run: Optional["WorkflowRunResponse"] = None
 
 
 class TerminalConversationCreateRequest(BaseModel):
@@ -935,6 +1043,13 @@ class ScheduleCreateRequest(BaseModel):
     name:            str
     prompt:          str
     project_name:    str
+    target_type:     str = "task"
+    template_id:     str = ""
+    workflow_input:  str = ""
+    project_map:     dict[str, str] = {}
+    default_project: str = ""
+    default_account: str = ""
+    workspace_policy: str = "isolated"
     schedule_type:   ScheduleType
     time_of_day:     Optional[str] = None
     days_of_week:    list[int] = []
@@ -943,6 +1058,10 @@ class ScheduleCreateRequest(BaseModel):
     enabled:         bool = True
     auto:            bool = False
     account:         Optional[str] = None
+    execution_mode:  str = "inherit"
+    output_dir:      str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
     webhook_enabled: bool = False
 
 
@@ -950,6 +1069,13 @@ class ScheduleUpdateRequest(BaseModel):
     name:            Optional[str] = None
     prompt:          Optional[str] = None
     project_name:    Optional[str] = None
+    target_type:     Optional[str] = None
+    template_id:     Optional[str] = None
+    workflow_input:  Optional[str] = None
+    project_map:     Optional[dict[str, str]] = None
+    default_project: Optional[str] = None
+    default_account: Optional[str] = None
+    workspace_policy: Optional[str] = None
     schedule_type:   Optional[ScheduleType] = None
     time_of_day:     Optional[str] = None
     days_of_week:    Optional[list[int]] = None
@@ -958,6 +1084,10 @@ class ScheduleUpdateRequest(BaseModel):
     enabled:         Optional[bool] = None
     auto:            Optional[bool] = None
     account:         Optional[str] = None
+    execution_mode:  Optional[str] = None
+    output_dir:      Optional[str] = None
+    ephemeral_retention: Optional[str] = None
+    ephemeral_ttl_minutes: Optional[int] = None
     webhook_enabled: Optional[bool] = None
 
 
@@ -989,6 +1119,11 @@ class NodeExecution(BaseModel):
     target_mode:       str = "default"
     project_name:      str = ""
     project_role:      str = ""
+    account:           str = ""
+    execution_mode:    str = "inherit"
+    output_dir:        str = ""
+    ephemeral_retention: str = "release_on_finish"
+    ephemeral_ttl_minutes: int = 120
     task_id:           str = ""           # 当前（或最后一次）关联的 Task id
     attempt_count:     int = 0
     resolved_project:  str = ""
@@ -1018,6 +1153,10 @@ class WorkflowRun(BaseModel):
     # 兼容/审计
     legacy_pipeline_id:          str = ""         # 若由旧 Pipeline 迁移而来
     project_map:                 dict[str, str] = Field(default_factory=dict)  # 运行时角色->项目快照
+    default_account:             str = ""
+    workspace_policy:            str = "isolated"
+    shared_conversation_id:      str = ""
+    artifact_dir:                str = ""
     # 人工审批节点支持
     pending_approval_node_id:    str = ""
     approval_token:              str = ""
@@ -1065,6 +1204,10 @@ class WorkflowRunResponse(BaseModel):
     legacy_pipeline_id:          str = ""
     project_map:                 dict[str, str] = {}
     default_project:             str = ""
+    default_account:             str = ""
+    workspace_policy:            str = "isolated"
+    shared_conversation_id:      str = ""
+    artifact_dir:                str = ""
     last_error:                  str = ""
     tasks:                       list[TaskResponse] = []
     pending_approval_node_id:    str = ""
@@ -1092,8 +1235,13 @@ class WorkflowRunResponse(BaseModel):
                 target_mode      = n.target_mode,
                 project_name     = n.project_name,
                 project_role     = n.project_role,
+                account          = getattr(n, "account", ""),
                 resolved_project = n.resolved_project,
                 actual_prompt    = n.actual_prompt,
+                execution_mode   = getattr(n, "execution_mode", "inherit"),
+                output_dir       = getattr(n, "output_dir", ""),
+                ephemeral_retention = getattr(n, "ephemeral_retention", "release_on_finish"),
+                ephemeral_ttl_minutes = getattr(n, "ephemeral_ttl_minutes", 120),
             )
             for n in run.node_executions
         ]
@@ -1110,6 +1258,10 @@ class WorkflowRunResponse(BaseModel):
             legacy_pipeline_id       = run.legacy_pipeline_id,
             project_map              = run.project_map,
             default_project          = default_project,
+            default_account          = getattr(run, "default_account", ""),
+            workspace_policy         = getattr(run, "workspace_policy", "isolated"),
+            shared_conversation_id   = getattr(run, "shared_conversation_id", ""),
+            artifact_dir             = getattr(run, "artifact_dir", ""),
             last_error               = last_error,
             tasks                    = [TaskResponse.from_task(t) for t in tasks],
             task_ids                 = task_ids,

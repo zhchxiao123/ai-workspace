@@ -164,6 +164,10 @@
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5H4"/><path d="M7 19H4"/><path d="M15 12H4"/><path d="M17 5l4 4-4 4"/></svg>
                   <span id="chat-sort-label">默认</span>
                 </button>
+                <button class="chat-sort-btn" onclick="openEphemeralModal()" title="新建临时任务（无需持久容器）" style="margin-left:auto;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                  临时任务
+                </button>
               </div>
               <div class="chat-search-bar">
                 <svg class="chat-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -748,9 +752,23 @@
         <div class="section-subtitle" style="margin-top:4px">所有节点的 prompt 中 {{input}} 会被替换为此内容</div>
       </div>
       <div class="form-group" id="run-tpl-default-project-group">
-        <label>默认项目 *</label>
+        <label>默认项目</label>
         <select id="run-tpl-default-project"><option value="">选择项目</option></select>
         <div class="section-subtitle" style="margin-top:4px">执行目标为“使用运行时默认项目”的节点将使用此项目</div>
+      </div>
+      <div class="form-group">
+        <label>默认账号</label>
+        <select id="run-tpl-default-account"><option value="">选择账号</option></select>
+        <div class="section-subtitle" style="margin-top:4px">临时沙箱节点未配置账号且未指定项目时使用此账号</div>
+      </div>
+      <div class="form-group">
+        <label>工作区策略</label>
+        <select id="run-tpl-workspace-policy">
+          <option value="isolated">节点独立执行</option>
+          <option value="shared_ephemeral">共享临时沙箱</option>
+          <option value="artifact_sync">Artifact 同步（预留）</option>
+        </select>
+        <div class="section-subtitle" style="margin-top:4px">共享临时沙箱要求所有临时节点使用同一个账号</div>
       </div>
       <div id="run-tpl-role-map-group">
         <!-- 动态生成：每个 project_role 对应一个 select -->
@@ -1013,6 +1031,7 @@
   <script src="/static/js/schedules.js?v=__BUILD__"></script>
   <script src="/static/js/digest.js?v=__BUILD__"></script>
   <script src="/static/js/pwa.js?v=__BUILD__"></script>
+  <script src="/static/js/files.js?v=__BUILD__"></script>
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -1088,6 +1107,107 @@
         <button class="btn" onclick="closeBoardCardModal()">取消</button>
       </div>
       <div id="board-card-msg" style="display:none;margin-top:10px"></div>
+    </div>
+  </div>
+
+  <!-- 文件预览浮层 -->
+  <div id="file-preview-modal" class="file-preview-modal" style="display:none" onclick="if(event.target===this)closeFilePreview()">
+    <div class="file-preview-dialog" onclick="event.stopPropagation()">
+      <div class="file-preview-header">
+        <span id="file-preview-title" class="file-preview-title"></span>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          <a id="file-preview-download" class="btn" style="font-size:12px;padding:4px 10px;text-decoration:none" href="#" download>↓ 下载</a>
+          <button class="btn" style="font-size:12px;padding:4px 10px" onclick="closeFilePreview()">关闭</button>
+        </div>
+      </div>
+      <div id="file-preview-body" class="file-preview-body"></div>
+    </div>
+  </div>
+
+  <!-- 临时任务弹窗 -->
+  <div class="modal-backdrop" id="ephemeral-modal" style="display:none" onclick="closeEphemeralModal(event)">
+    <div class="modal-sm" style="width:540px" onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <div class="modal-title" style="margin-bottom:0">新建临时任务</div>
+        <button class="btn" onclick="closeEphemeralModal()" aria-label="关闭" style="padding:2px 8px;font-size:16px;line-height:1">×</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="font-size:12px;color:var(--text-muted)">
+          临时容器模式：任务在独立的 <code>docker run --rm</code> 容器内运行，无需预先启动持久容器。
+          同一会话内的任务共享工作区，会话结束后可清理。
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">账号 *</label>
+          <select id="eph-account" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px">
+            <option value="">加载中...</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">任务描述 *</label>
+          <textarea id="eph-prompt" rows="4"
+            placeholder="描述你的任务，例如：&#10;看 owner/repo 的 issue #42，提一个修复 PR&#10;&#10;Claude 会自己决定如何完成（git clone、写代码、提PR等）"
+            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Secrets（每行一个 KEY=VAL，注入容器环境变量）
+          </label>
+          <textarea id="eph-secrets" rows="3"
+            placeholder="GITHUB_TOKEN=ghp_xxx&#10;AWS_ACCESS_KEY_ID=AKI..."
+            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            输出目录（可选，宿主机路径，挂载为容器内 /output）
+          </label>
+          <input id="eph-output-dir" type="text" placeholder="/home/user/output"
+            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            会话名称（可选，填写后本次任务加入命名会话，后续任务共享工作区）
+          </label>
+          <input id="eph-conv-name" type="text" placeholder="fix-issue-42"
+            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:8px">
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+              临时沙箱保留策略
+            </label>
+            <select id="eph-retention"
+              style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+              <option value="release_on_finish">执行完释放</option>
+              <option value="keep_until_ttl">保留到 TTL</option>
+              <option value="keep_until_manual_close">手动关闭前保留</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">TTL 分钟</label>
+            <input id="eph-ttl-minutes" type="number" min="1" max="1440" value="120"
+              style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="eph-auto" checked> 全自动模式
+          </label>
+        </div>
+
+        <div id="eph-msg" style="display:none"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px">
+          <button class="btn" onclick="closeEphemeralModal()">取消</button>
+          <button class="btn primary" id="eph-submit-btn" onclick="submitEphemeralTask()">提交任务</button>
+        </div>
+      </div>
     </div>
   </div>
 </body>

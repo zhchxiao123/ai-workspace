@@ -85,8 +85,14 @@ async function uploadFilesGeneric(projectName, files, fromPaste, callbacks = {})
   }
 }
 
+function _fileExtBadge(filename) {
+  const ext = (filename.split('.').pop() || 'file').toUpperCase().slice(0, 6);
+  const escFn = (s) => (typeof esc === 'function' ? esc(s) : String(s || ''));
+  return `<span class="file-ext-badge">${escFn(ext)}</span>`;
+}
+
 /**
- * 渲染任务/消息中已上传图片的缩略图 HTML（桌面和移动历史区共用）
+ * 渲染任务/消息中已上传文件的缩略图 HTML（桌面和移动历史区共用）
  */
 function renderTaskFileAttachments(task, fallbackProjectName = '') {
   const images = task.images || [];
@@ -100,11 +106,12 @@ function renderTaskFileAttachments(task, fallbackProjectName = '') {
     const src = (typeof sseUrl === 'function')
       ? sseUrl(`${(typeof API !== 'undefined' ? API : '')}/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`)
       : `/api/uploads/${encodeURIComponent(projectName)}/${encodeURIComponent(filename)}`;
-    const safeName = esc ? esc(filename) : filename;
-    const inner = _isImagePath(filename)
-      ? `<img src="${src}" alt="${safeName}">`
-      : `<span class="file-attach-name">${safeName}</span>`;
-    return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${safeName}">${inner}</a>`;
+    const safeName = typeof esc === 'function' ? esc(filename) : filename;
+    if (_isImagePath(filename)) {
+      return `<a class="user-image-attachment" href="${src}" target="_blank" rel="noopener" title="${safeName}"><img src="${src}" alt="${safeName}"></a>`;
+    } else {
+      return `<a class="user-file-attachment" href="${src}" target="_blank" rel="noopener" title="${safeName}">${_fileExtBadge(filename)}<span class="file-attach-name">${safeName}</span></a>`;
+    }
   }).join('');
 
   return `<div class="user-image-attachments">${thumbs}</div>`;
@@ -154,10 +161,13 @@ function renderPendingPreviews(config = {}) {
   container.innerHTML = imgs.map((img, i) => {
     const safeName = escFn(img.name);
     const src = getSseUrl(`${getApi()}${img.preview_url}`);
-    const inner = _isImagePath(img.name)
-      ? `<img src="${src}" alt="${safeName}">`
-      : `<span class="file-attach-name">${safeName}</span>`;
-    return `<div class="${thumbClass}" title="${safeName}">${inner}<button class="${removeClass}" type="button" onclick="removePendingImage(${i})" title="移除">×</button></div>`;
+    const removeBtn = `<button class="${removeClass}" type="button" onclick="removePendingImage(${i})" title="移除">×</button>`;
+    if (_isImagePath(img.name)) {
+      return `<div class="${thumbClass}" title="${safeName}"><img src="${src}" alt="${safeName}">${removeBtn}</div>`;
+    } else {
+      const ext = escFn((img.name.split('.').pop() || 'file').toUpperCase().slice(0, 6));
+      return `<div class="chat-file-thumb" title="${safeName}"><span class="file-ext-badge">${ext}</span><span class="file-attach-name">${safeName}</span>${removeBtn}</div>`;
+    }
   }).join('');
   afterRender();
 }

@@ -5,6 +5,7 @@ const DAG_NODE_H  = 100;
 const DAG_H_GAP   = 60;
 const DAG_V_GAP   = 80;
 const DAG_PAD     = 48;
+let workflowAccountsCache = [];
 
 // ══════════════════════════════════════════════════════════════
 //  加载 / 刷新
@@ -949,12 +950,14 @@ function switchWfTab(tab) {
 // ══════════════════════════════════════════════════════════════
 async function loadTemplates() {
   try {
-    const [templates, projects] = await Promise.all([
+    const [templates, projects, accounts] = await Promise.all([
       fetch(`${API}/api/workflow-templates`).then(r => r.json()),
       fetch(`${API}/api/projects`).then(r => r.json()).catch(() => projectsCache),
+      fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => workflowAccountsCache),
     ]);
     templatesCache = templates;
     projectsCache = projects;
+    workflowAccountsCache = accounts;
     renderTemplateList(templates);
 
     // 用户正在编辑时只刷新侧边栏列表，不重建编辑器（避免覆盖未保存内容）
@@ -1010,11 +1013,13 @@ async function openTemplate(id) {
   activeTemplateId = id;
   renderTemplateList(templatesCache);
   try {
-    const [tpl, projects] = await Promise.all([
+    const [tpl, projects, accounts] = await Promise.all([
       fetch(`${API}/api/workflow-templates/${id}`).then(r => r.json()),
       fetch(`${API}/api/projects`).then(r => r.json()).catch(() => projectsCache),
+      fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => workflowAccountsCache),
     ]);
     projectsCache = projects;
+    workflowAccountsCache = accounts;
     _renderTemplateEditor(tpl);
   } catch (e) {
     alert('加载模板失败：' + e.message);
@@ -1159,6 +1164,11 @@ function _normalizeTemplateNodeData(data = {}) {
     target_mode:     targetMode,
     project_name:    data.project_name || '',
     project_role:    data.project_role || '',
+    account:         data.account || '',
+    execution_mode:  data.execution_mode || 'inherit',
+    output_dir:      data.output_dir || '',
+    ephemeral_retention: data.ephemeral_retention || 'release_on_finish',
+    ephemeral_ttl_minutes: data.ephemeral_ttl_minutes ?? 120,
     depends_on:      data.depends_on || [],
     pos_x:           data.pos_x || 0,
     pos_y:           data.pos_y || 0,
@@ -1225,9 +1235,18 @@ function _templateNodeTargetLabel(data = {}) {
   return '默认项目';
 }
 
+function _templateNodeCanRunWithoutProject(data = {}) {
+  return (data.execution_mode || 'inherit') === 'ephemeral' && !!(data.account || '').trim();
+}
+
 function _projectOptions(selected = '', emptyLabel = '选择项目') {
   return `<option value="">${emptyLabel}</option>` +
     projectsCache.map(p => `<option value="${esc(p.name)}" ${p.name === selected ? 'selected' : ''}>${esc(p.name)} · ${esc(p.account)}</option>`).join('');
+}
+
+function _accountOptions(selected = '', emptyLabel = '跟随项目账号') {
+  return `<option value="">${emptyLabel}</option>` +
+    workflowAccountsCache.map(a => `<option value="${esc(a.name)}" ${a.name === selected ? 'selected' : ''}>${esc(a.name)} (${esc(a.type)})</option>`).join('');
 }
 
 // 构建 Drawflow 节点的显示 HTML
@@ -1318,6 +1337,11 @@ function _getTemplateFromCanvas() {
       target_mode:     data.target_mode,
       project_name:    data.project_name,
       project_role:    data.project_role,
+      account:         data.account,
+      execution_mode:  data.execution_mode,
+      output_dir:      data.output_dir,
+      ephemeral_retention: data.ephemeral_retention,
+      ephemeral_ttl_minutes: data.ephemeral_ttl_minutes,
       depends_on,
       pos_x:           n.pos_x || 0,
       pos_y:           n.pos_y || 0,
@@ -1345,6 +1369,11 @@ function addTemplateNode(nodeType = 'task') {
     target_mode: 'default',
     project_name: '',
     project_role: '',
+    account: '',
+    execution_mode: 'inherit',
+    output_dir: '',
+    ephemeral_retention: 'release_on_finish',
+    ephemeral_ttl_minutes: 120,
     node_type: nodeType,
     timeout_minutes: nodeType === 'task' ? 120 : 0,
     max_retries: 0,
@@ -1429,6 +1458,43 @@ function _openNodeDetail(dfId) {
         </label>
         <input id="df-detail-role" value="${esc(d.project_role || '')}" placeholder="例如：planner、implementer、reviewer"
           oninput="_updateNodeField(${dfId}, 'project_role', this.value)">
+      </div>
+      <div class="form-group">
+        <label>账号
+          <span style="color:var(--text-3);font-size:11px;font-weight:400">（临时沙箱未指定项目时使用）</span>
+        </label>
+        <select id="df-detail-account" onchange="_updateNodeField(${dfId}, 'account', this.value)">
+          ${_accountOptions(d.account)}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>执行环境</label>
+        <select id="df-detail-execution-mode" onchange="_updateNodeField(${dfId}, 'execution_mode', this.value)">
+          <option value="inherit" ${d.execution_mode === 'inherit' ? 'selected' : ''}>跟随项目配置</option>
+          <option value="ephemeral" ${d.execution_mode === 'ephemeral' ? 'selected' : ''}>临时沙箱（执行后释放）</option>
+          <option value="persistent" ${d.execution_mode === 'persistent' ? 'selected' : ''}>持久容器</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>输出目录</label>
+        <input id="df-detail-output-dir" value="${esc(d.output_dir || '')}" placeholder="留空使用默认输出目录"
+          oninput="_updateNodeField(${dfId}, 'output_dir', this.value)">
+      </div>
+      <div class="form-group" style="display:flex;gap:8px">
+        <div style="flex:1">
+          <label>临时沙箱保留策略</label>
+          <select id="df-detail-retention" onchange="_updateNodeField(${dfId}, 'ephemeral_retention', this.value)">
+            <option value="release_on_finish" ${d.ephemeral_retention === 'release_on_finish' ? 'selected' : ''}>执行完释放</option>
+            <option value="keep_until_ttl" ${d.ephemeral_retention === 'keep_until_ttl' ? 'selected' : ''}>保留到 TTL</option>
+            <option value="keep_until_manual_close" ${d.ephemeral_retention === 'keep_until_manual_close' ? 'selected' : ''}>手动关闭前保留</option>
+          </select>
+        </div>
+        <div style="width:96px">
+          <label>TTL 分钟</label>
+          <input type="number" min="1" max="1440" value="${d.ephemeral_ttl_minutes ?? 120}"
+            oninput="_updateNodeField(${dfId}, 'ephemeral_ttl_minutes', +this.value)"
+            style="width:100%">
+        </div>
       </div>
       <div class="form-group" style="display:flex;gap:8px">
         <div style="flex:1">
@@ -1753,13 +1819,16 @@ async function showRunTemplateModal(templateId) {
   if (!projectsCache.length) {
     try { projectsCache = await fetch(`${API}/api/projects`).then(r => r.json()); } catch { /* ignore */ }
   }
+  if (!workflowAccountsCache.length) {
+    try { workflowAccountsCache = await fetch(`${API}/api/accounts`).then(r => r.json()); } catch { /* ignore */ }
+  }
   const nodes = (tpl.nodes || []).map(_normalizeTemplateNodeData);
-  const defaultNodes = nodes.filter(n => n.target_mode === 'default');
+  const defaultNodes = nodes.filter(n => n.target_mode === 'default' && !_templateNodeCanRunWithoutProject(n));
   const runtimeRoles = [...new Set(nodes
-    .filter(n => n.target_mode === 'runtime_role')
+    .filter(n => n.target_mode === 'runtime_role' && !_templateNodeCanRunWithoutProject(n))
     .map(n => n.project_role.trim())
     .filter(Boolean))];
-  const unnamedRuntimeNodes = nodes.filter(n => n.target_mode === 'runtime_role' && !n.project_role.trim());
+  const unnamedRuntimeNodes = nodes.filter(n => n.target_mode === 'runtime_role' && !n.project_role.trim() && !_templateNodeCanRunWithoutProject(n));
 
   document.getElementById('run-tpl-id').value   = templateId;
   document.getElementById('run-tpl-name').textContent = tpl.name;
@@ -1773,6 +1842,11 @@ async function showRunTemplateModal(templateId) {
   const defSel = document.getElementById('run-tpl-default-project');
   defSel.innerHTML = '<option value="">选择默认项目</option>' +
     projectsCache.map(p => `<option value="${esc(p.name)}">${esc(p.name)} · ${esc(p.account)}</option>`).join('');
+  const accountSel = document.getElementById('run-tpl-default-account');
+  if (accountSel) {
+    accountSel.innerHTML = '<option value="">选择账号</option>' +
+      workflowAccountsCache.map(a => `<option value="${esc(a.name)}">${esc(a.name)} (${esc(a.type)})</option>`).join('');
+  }
 
   // Build role-map selects for each unique runtime role
   const roleGroup = document.getElementById('run-tpl-role-map-group');
@@ -1799,6 +1873,10 @@ async function showRunTemplateModal(templateId) {
     const saved = JSON.parse(localStorage.getItem(`coderfleet.runConfig.${templateId}`) || 'null');
     if (saved) {
       if (saved.defaultProject && defSel) defSel.value = saved.defaultProject;
+      const accountSel = document.getElementById('run-tpl-default-account');
+      if (saved.defaultAccount && accountSel) accountSel.value = saved.defaultAccount;
+      const policySel = document.getElementById('run-tpl-workspace-policy');
+      if (saved.workspacePolicy && policySel) policySel.value = saved.workspacePolicy;
       if (saved.projectMap) {
         document.querySelectorAll('#run-tpl-role-map-group select[data-role]').forEach(sel => {
           const v = saved.projectMap[sel.dataset.role];
@@ -1823,8 +1901,11 @@ async function submitRunTemplate() {
   const defaultGroup   = document.getElementById('run-tpl-default-project-group');
   const needsDefault   = !defaultGroup || defaultGroup.style.display !== 'none';
   const defaultProject = document.getElementById('run-tpl-default-project').value;
+  const defaultAccount = document.getElementById('run-tpl-default-account')?.value || '';
+  const workspacePolicy = document.getElementById('run-tpl-workspace-policy')?.value || 'isolated';
   if (!input)          { alert('请填写输入内容'); return; }
-  if (needsDefault && !defaultProject) { alert('请选择默认项目'); return; }
+  if (needsDefault && !defaultProject && workspacePolicy !== 'shared_ephemeral') { alert('请选择默认项目'); return; }
+  if (workspacePolicy === 'shared_ephemeral' && !defaultProject && !defaultAccount) { alert('共享临时沙箱未选择默认项目时，请选择默认账号'); return; }
 
   const project_map = {};
   let missingRole = '';
@@ -1840,13 +1921,13 @@ async function submitRunTemplate() {
     const r = await fetch(`${API}/api/workflow-templates/${templateId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, default_project: defaultProject, project_map }),
+      body: JSON.stringify({ input, default_project: defaultProject, default_account: defaultAccount, project_map, workspace_policy: workspacePolicy }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
 
     // 保存本次运行配置，下次打开时预填
-    const savedCfg = { defaultProject, projectMap: {} };
+    const savedCfg = { defaultProject, defaultAccount, workspacePolicy, projectMap: {} };
     document.querySelectorAll('#run-tpl-role-map-group select[data-role]').forEach(sel => {
       if (sel.value) savedCfg.projectMap[sel.dataset.role] = sel.value;
     });

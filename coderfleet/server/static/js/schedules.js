@@ -6,6 +6,7 @@ const MINUTE_OPTIONS = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '4
 
 let schedulesCache = [];
 let editingScheduleId = null;
+let scheduleTemplatesCache = [];
 
 async function loadSchedules() {
   try {
@@ -50,9 +51,18 @@ function scheduleCard(s) {
   const lastRun = s.last_run_at ? fmtDatetime(s.last_run_at) : '从未执行';
   const enabledClass = s.enabled ? 'status-badge running' : 'status-badge killed';
   const enabledLabel = s.enabled ? '运行中' : '已暂停';
-  const taskLink = s.last_task_id
-    ? `<a href="#" class="inline-link" onclick="openScheduleLastTask('${s.id}');return false">${s.last_task_id.slice(-8)}</a>`
-    : '—';
+  const mode = s.execution_mode || 'inherit';
+  const modeLabel = mode === 'ephemeral' ? '临时沙箱' : (mode === 'persistent' ? '持久容器' : '跟随项目');
+  const isWorkflow = (s.target_type || 'task') === 'workflow';
+  const targetLabel = isWorkflow
+    ? (scheduleTemplatesCache.find(t => t.id === s.template_id)?.name || s.template_id || '工作流')
+    : (s.project_name || s.account || '未指定目标');
+  const runLink = s.last_run_type === 'workflow' && s.last_workflow_run_id
+    ? `<a href="#" class="inline-link" onclick="openScheduleLastTask('${s.id}');return false">${s.last_workflow_run_id.slice(-8)}</a>`
+    : (s.last_task_id
+      ? `<a href="#" class="inline-link" onclick="openScheduleLastTask('${s.id}');return false">${s.last_task_id.slice(-8)}</a>`
+      : '—');
+  const typeLabel = isWorkflow ? '工作流' : modeLabel;
 
   return `
 <div class="account-card" id="sched-card-${s.id}">
@@ -61,7 +71,8 @@ function scheduleCard(s) {
       <div style="font-weight:700;font-size:14px;margin-bottom:3px;word-break:break-word">${esc(s.name)}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <span class="type-badge">${schedulePatternLabel(s)}</span>
-        <span class="type-badge" style="background:var(--surface-3)">${esc(s.project_name)}</span>
+        <span class="type-badge" style="background:var(--surface-3)">${esc(targetLabel)}</span>
+        <span class="type-badge" style="background:var(--surface-3)">${esc(typeLabel)}</span>
         <span class="${enabledClass}">${enabledLabel}</span>
       </div>
     </div>
@@ -69,6 +80,7 @@ function scheduleCard(s) {
   <div class="account-meta" style="font-size:12px;color:var(--text-3);margin-bottom:10px">
     <div style="display:flex;gap:4px"><span style="color:var(--text-2)">下次执行：</span>${esc(nextRun)}</div>
     <div style="display:flex;gap:4px"><span style="color:var(--text-2)">上次执行：</span>${lastRun}</div>
+    <div style="display:flex;gap:4px"><span style="color:var(--text-2)">最近运行：</span>${runLink}</div>
     <div style="display:flex;gap:4px;margin-top:2px;color:var(--text-3);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(s.prompt)}">${esc(s.prompt.slice(0, 80))}${s.prompt.length > 80 ? '…' : ''}</div>
   </div>
   <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -100,6 +112,8 @@ async function openScheduleEditor(schedId = null) {
 
   const s = schedId ? schedulesCache.find(x => x.id === schedId) : null;
   await _populateScheduleProjectSelect(s?.project_name);
+  await _populateScheduleAccountSelect(s?.account);
+  await _populateScheduleTemplateSelect(s?.template_id);
 
   if (s) {
     _fillScheduleForm(s);
@@ -107,15 +121,27 @@ async function openScheduleEditor(schedId = null) {
     _resetScheduleForm();
   }
   _updateScheduleTypeUI();
+  _updateScheduleTargetUI();
 }
 
 function _fillScheduleForm(s) {
   document.getElementById('sched-name').value = s.name || '';
   document.getElementById('sched-prompt').value = s.prompt || '';
+  document.getElementById('sched-target-type').value = s.target_type || 'task';
+  document.getElementById('sched-template').value = s.template_id || '';
+  document.getElementById('sched-workflow-input').value = s.workflow_input || s.prompt || '';
+  document.getElementById('sched-default-project').value = s.default_project || '';
+  document.getElementById('sched-default-account').value = s.default_account || '';
+  document.getElementById('sched-workspace-policy').value = s.workspace_policy || 'isolated';
   document.getElementById('sched-project').value = s.project_name || '';
+  document.getElementById('sched-account').value = s.account || '';
   document.getElementById('sched-auto').checked = !!s.auto;
   document.getElementById('sched-enabled').checked = s.enabled !== false;
   document.getElementById('sched-type').value = s.schedule_type || 'daily';
+  document.getElementById('sched-execution-mode').value = s.execution_mode || 'inherit';
+  document.getElementById('sched-output-dir').value = s.output_dir || '';
+  document.getElementById('sched-ephemeral-retention').value = s.ephemeral_retention || 'release_on_finish';
+  document.getElementById('sched-ephemeral-ttl').value = s.ephemeral_ttl_minutes || 120;
 
   // time_of_day
   const [h, m] = (s.time_of_day || '09:00').split(':');
@@ -144,10 +170,22 @@ function _fillScheduleForm(s) {
 function _resetScheduleForm() {
   document.getElementById('sched-name').value = '';
   document.getElementById('sched-prompt').value = '';
+  document.getElementById('sched-target-type').value = 'task';
+  document.getElementById('sched-template').value = '';
+  document.getElementById('sched-workflow-input').value = '';
+  document.getElementById('sched-default-project').value = '';
+  document.getElementById('sched-default-account').value = '';
+  document.getElementById('sched-workspace-policy').value = 'isolated';
   // 不手动 set value：让 select 显示第一个已填充的 option
+  const accountSel = document.getElementById('sched-account');
+  if (accountSel) accountSel.value = '';
   document.getElementById('sched-auto').checked = true;
   document.getElementById('sched-enabled').checked = true;
   document.getElementById('sched-type').value = 'daily';
+  document.getElementById('sched-execution-mode').value = 'inherit';
+  document.getElementById('sched-output-dir').value = '';
+  document.getElementById('sched-ephemeral-retention').value = 'release_on_finish';
+  document.getElementById('sched-ephemeral-ttl').value = '120';
   document.getElementById('sched-hour').value = '09';
   document.getElementById('sched-minute').value = '00';
   document.querySelectorAll('.sched-day-cb').forEach(cb => { cb.checked = false; });
@@ -189,13 +227,31 @@ function _updateScheduleTypeUI() {
   if (cronRow) cronRow.style.display = type === 'cron' ? '' : 'none';
 }
 
+function _updateScheduleTargetUI() {
+  const targetType = document.getElementById('sched-target-type')?.value || 'task';
+  const isWorkflow = targetType === 'workflow';
+  document.querySelectorAll('.sched-task-field').forEach(el => { el.style.display = isWorkflow ? 'none' : ''; });
+  document.querySelectorAll('.sched-workflow-field').forEach(el => { el.style.display = isWorkflow ? '' : 'none'; });
+}
+
 async function saveSchedule() {
   const name         = document.getElementById('sched-name').value.trim();
   const prompt       = document.getElementById('sched-prompt').value.trim();
+  const target_type  = document.getElementById('sched-target-type').value || 'task';
+  const template_id  = document.getElementById('sched-template').value;
+  const workflow_input = document.getElementById('sched-workflow-input').value.trim();
+  const default_project = document.getElementById('sched-default-project').value;
+  const default_account = document.getElementById('sched-default-account').value;
+  const workspace_policy = document.getElementById('sched-workspace-policy').value || 'isolated';
   const project_name = document.getElementById('sched-project').value;
+  const account      = document.getElementById('sched-account').value;
   const auto         = document.getElementById('sched-auto').checked;
   const enabled      = document.getElementById('sched-enabled').checked;
   const schedule_type = document.getElementById('sched-type').value;
+  const execution_mode = document.getElementById('sched-execution-mode').value || 'inherit';
+  const output_dir     = document.getElementById('sched-output-dir').value.trim();
+  const ephemeral_retention = document.getElementById('sched-ephemeral-retention').value || 'release_on_finish';
+  const ephemeral_ttl_minutes = parseInt(document.getElementById('sched-ephemeral-ttl').value || '120', 10);
   const hour         = document.getElementById('sched-hour').value;
   const minute       = document.getElementById('sched-minute').value;
   const minuteOfHour = parseInt(document.getElementById('sched-minute-of-hour').value, 10);
@@ -218,18 +274,43 @@ async function saveSchedule() {
   const webhook_enabled = webhookEnabledEl ? webhookEnabledEl.checked : false;
 
   if (!name) { showErr('请填写计划名称'); return; }
-  if (!prompt) { showErr('请填写任务描述（Prompt）'); return; }
-  if (!project_name) { showErr('请选择项目'); return; }
+  if (target_type === 'workflow') {
+    if (!template_id) { showErr('请选择工作流模板'); return; }
+    if (!workflow_input) { showErr('请填写工作流输入内容'); return; }
+    if (workspace_policy === 'shared_ephemeral' && !default_project && !default_account) {
+      showErr('共享临时沙箱未选择默认项目时，请选择默认账号');
+      return;
+    }
+  } else {
+    if (!prompt) { showErr('请填写任务描述（Prompt）'); return; }
+    if (!project_name && execution_mode !== 'ephemeral') { showErr('请选择项目，或将执行环境设为临时沙箱'); return; }
+    if (!project_name && execution_mode === 'ephemeral' && !account) { showErr('临时沙箱未选择项目时，请选择账号'); return; }
+  }
   if (schedule_type === 'weekly' && !days_of_week.length) { showErr('请至少选择一天'); return; }
   if (schedule_type === 'cron' && !cron_expr) { showErr('请填写 Cron 表达式'); return; }
 
   const body = {
-    name, prompt, project_name, auto, enabled,
+    name,
+    prompt: target_type === 'workflow' ? workflow_input : prompt,
+    project_name: target_type === 'workflow' ? '' : project_name,
+    account: target_type === 'workflow' ? (default_account || null) : (account || null),
+    target_type,
+    template_id: target_type === 'workflow' ? template_id : '',
+    workflow_input: target_type === 'workflow' ? workflow_input : '',
+    project_map: {},
+    default_project: target_type === 'workflow' ? default_project : '',
+    default_account: target_type === 'workflow' ? default_account : '',
+    workspace_policy: target_type === 'workflow' ? workspace_policy : 'isolated',
+    auto, enabled,
     schedule_type,
     time_of_day: (schedule_type === 'daily' || schedule_type === 'weekly') ? `${hour}:${minute}` : null,
     days_of_week: schedule_type === 'weekly' ? days_of_week : [],
     minute_of_hour: schedule_type === 'hourly' ? (isNaN(minuteOfHour) ? 0 : minuteOfHour) : null,
     cron_expr: schedule_type === 'cron' ? cron_expr : null,
+    execution_mode,
+    output_dir,
+    ephemeral_retention,
+    ephemeral_ttl_minutes: isNaN(ephemeral_ttl_minutes) ? 120 : ephemeral_ttl_minutes,
     webhook_enabled,
   };
 
@@ -273,8 +354,12 @@ async function runScheduleNow(schedId) {
   try {
     const r = await fetch(`${API}/api/schedules/${schedId}/run-now`, { method: 'POST' });
     if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || '执行失败');
-    const task = await r.json();
-    alert(`任务已提交：${task.id}`);
+    const result = await r.json();
+    if (result.run_type === 'workflow') {
+      alert(`工作流已提交：${result.workflow_run?.id || result.schedule?.last_workflow_run_id || ''}`);
+    } else {
+      alert(`任务已提交：${result.task?.id || ''}`);
+    }
     await loadSchedules();
   } catch (e) {
     alert(e.message);
@@ -295,7 +380,12 @@ async function deleteSchedule(schedId) {
 
 async function openScheduleLastTask(schedId) {
   const s = schedulesCache.find(x => x.id === schedId);
-  if (s?.last_task_id) openLogModal(s.last_task_id);
+  if (s?.last_run_type === 'workflow' && s.last_workflow_run_id) {
+    showPage('workflows');
+    openPipeline(s.last_workflow_run_id);
+  } else if (s?.last_task_id) {
+    openLogModal(s.last_task_id);
+  }
 }
 
 // ── 初始化弹窗 HTML（在 loadSchedules 调用前注入一次） ──────
@@ -328,10 +418,69 @@ function _initScheduleModal() {
         <input id="sched-name" class="form-input" placeholder="例如：每日代码审查">
       </div>
       <div class="form-group">
-        <label>项目 *</label>
+        <label>触发目标</label>
+        <select id="sched-target-type" class="form-input" onchange="_updateScheduleTargetUI()">
+          <option value="task">普通任务</option>
+          <option value="workflow">工作流模板</option>
+        </select>
+      </div>
+      <div class="form-group sched-workflow-field" style="display:none">
+        <label>工作流模板 *</label>
+        <select id="sched-template" class="form-input"></select>
+      </div>
+      <div class="form-group sched-workflow-field" style="display:none">
+        <label>工作流输入内容 *</label>
+        <textarea id="sched-workflow-input" rows="3" placeholder="例如：openclaw/openclaw"></textarea>
+      </div>
+      <div class="form-group sched-workflow-field" style="display:none">
+        <label>默认项目</label>
+        <select id="sched-default-project" class="form-input"></select>
+      </div>
+      <div class="form-group sched-workflow-field" style="display:none">
+        <label>默认账号</label>
+        <select id="sched-default-account" class="form-input"></select>
+      </div>
+      <div class="form-group sched-workflow-field" style="display:none">
+        <label>工作区策略</label>
+        <select id="sched-workspace-policy" class="form-input">
+          <option value="isolated">节点独立执行</option>
+          <option value="shared_ephemeral">共享临时沙箱</option>
+          <option value="artifact_sync">Artifact 同步（预留）</option>
+        </select>
+      </div>
+      <div class="form-group sched-task-field">
+        <label>项目</label>
         <select id="sched-project" class="form-input"></select>
       </div>
-      <div class="form-group">
+      <div class="form-group sched-task-field">
+        <label>账号</label>
+        <select id="sched-account" class="form-input"></select>
+      </div>
+      <div class="form-group sched-task-field">
+        <label>执行环境</label>
+        <select id="sched-execution-mode" class="form-input">
+          <option value="inherit">跟随项目配置</option>
+          <option value="ephemeral">临时沙箱（执行后释放）</option>
+          <option value="persistent">持久容器</option>
+        </select>
+      </div>
+      <div class="form-group sched-task-field">
+        <label>输出目录</label>
+        <input id="sched-output-dir" class="form-input" placeholder="留空使用默认输出目录">
+      </div>
+      <div class="form-group sched-task-field">
+        <label>临时沙箱保留策略</label>
+        <select id="sched-ephemeral-retention" class="form-input">
+          <option value="release_on_finish">执行完释放</option>
+          <option value="keep_until_ttl">保留到 TTL</option>
+          <option value="keep_until_manual_close">手动关闭前保留</option>
+        </select>
+      </div>
+      <div class="form-group sched-task-field">
+        <label>TTL 分钟</label>
+        <input id="sched-ephemeral-ttl" class="form-input" type="number" min="1" max="1440" value="120">
+      </div>
+      <div class="form-group sched-task-field">
         <label>任务描述（Prompt）*</label>
         <textarea id="sched-prompt" rows="3" placeholder="描述 AI 要完成的任务..."></textarea>
       </div>
@@ -400,17 +549,45 @@ function _initScheduleModal() {
 
 async function _populateScheduleProjectSelect(selectedName) {
   const sel = document.getElementById('sched-project');
-  if (!sel) return;
+  const defSel = document.getElementById('sched-default-project');
+  if (!sel && !defSel) return;
   try {
     const projects = await fetch(`${API}/api/projects`).then(r => r.json()).catch(() => []);
-    sel.innerHTML = projects.length
-      ? projects.map(p => `<option value="${esc(p.name)}"${p.name === selectedName ? ' selected' : ''}>${esc(p.name)}</option>`).join('')
-      : '<option value="">暂无项目</option>';
+    const taskOptions = `<option value="">不指定项目（仅临时沙箱）</option>` +
+      projects.map(p => `<option value="${esc(p.name)}"${p.name === selectedName ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+    const defaultOptions = `<option value="">不指定默认项目</option>` +
+      projects.map(p => `<option value="${esc(p.name)}">${esc(p.name)} · ${esc(p.account)}</option>`).join('');
+    if (sel) sel.innerHTML = taskOptions;
+    if (defSel) defSel.innerHTML = defaultOptions;
+  } catch {}
+}
+
+async function _populateScheduleAccountSelect(selectedName) {
+  const sel = document.getElementById('sched-account');
+  const defSel = document.getElementById('sched-default-account');
+  if (!sel && !defSel) return;
+  try {
+    const accounts = await fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => []);
+    const options = accounts.map(a => `<option value="${esc(a.name)}"${a.name === selectedName ? ' selected' : ''}>${esc(a.name)} (${esc(a.type)})</option>`).join('');
+    if (sel) sel.innerHTML = `<option value="">跟随项目账号</option>` + options;
+    if (defSel) defSel.innerHTML = `<option value="">不指定默认账号</option>` + options;
+  } catch {}
+}
+
+async function _populateScheduleTemplateSelect(selectedId) {
+  const sel = document.getElementById('sched-template');
+  if (!sel) return;
+  try {
+    const templates = await fetch(`${API}/api/workflow-templates`).then(r => r.json()).catch(() => []);
+    scheduleTemplatesCache = templates;
+    sel.innerHTML = `<option value="">选择工作流模板</option>` +
+      templates.map(t => `<option value="${esc(t.id)}"${t.id === selectedId ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
   } catch {}
 }
 
 // 入口：页面切换到 schedules 时调用
 async function initSchedulesPage() {
   _initScheduleModal();
+  await _populateScheduleTemplateSelect('');
   await loadSchedules();
 }

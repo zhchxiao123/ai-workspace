@@ -7,6 +7,7 @@ class ChatLogRenderer {
     this.inner = null;        // .chat-log div
     this.toolMap = {};          // tool_use_id → { headerEl, badgeEl, outputEl, exitEl, toolName, input, wrap }
     this._buf = '';          // SSE 行缓冲
+    this._jsonLineBuffer = ''; // 跨行 JSON 事件缓冲
     this._footerRendered = false;
     this._isPending = false;   // renderPending() 后首次 push() 时清除占位 pill
     this.isRunning = isRunning;   // 是否正在运行
@@ -138,6 +139,7 @@ class ChatLogRenderer {
     this.inner = this.container.querySelector('.chat-log');
     this.toolMap = {};
     this._buf = '';
+    this._jsonLineBuffer = '';
     this._footerRendered = false;
     this.processWrapper = null;
     this.processBody = null;
@@ -158,9 +160,24 @@ class ChatLogRenderer {
     const lines = text.split('\n');
     let state = 'before';   // before | header | body | footer
     let headerLines = [];
+    let bodyLines = [];
     let footerLines = [];
 
-    for (const raw of lines) {
+    const nextNonEmptyLine = (start) => {
+      for (let i = start; i < lines.length; i++) {
+        const candidate = lines[i].trim();
+        if (candidate) return candidate;
+      }
+      return '';
+    };
+    const isFooterSeparator = (line, idx) => {
+      if (!line.startsWith('======')) return false;
+      const next = nextNonEmptyLine(idx + 1);
+      return next.startsWith('finished:') || next.startsWith('usage status:');
+    };
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const raw = lines[idx];
       const line = raw.trimEnd();
       if (state === 'before') {
         if (line.startsWith('=== CoderFleet Task Log ===') || line.startsWith('=== AICM Task Log ===')) { state = 'header'; headerLines = [line]; }
@@ -172,8 +189,8 @@ class ChatLogRenderer {
         continue;
       }
       if (state === 'body') {
-        if (line.startsWith('======')) { state = 'footer'; continue; }
-        if (line.trim()) this._processLine(line.trim());
+        if (isFooterSeparator(line, idx)) { this._renderBody(bodyLines); state = 'footer'; continue; }
+        bodyLines.push(raw);
         continue;
       }
       if (state === 'footer') {
@@ -181,7 +198,86 @@ class ChatLogRenderer {
       }
     }
 
+    if (state === 'body') this._renderBody(bodyLines);
     if (footerLines.length) this._renderFooter(footerLines.join(' '));
+  }
+
+  _renderBody(lines) {
+    if (!lines.length) return;
+    if (this.accountType === 'hermes' || this.accountType === 'grok' || this.accountType === 'kimi') {
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (line) this._processLine(line);
+      }
+      this._flushJsonLineBuffer();
+      return;
+    }
+    this._processJsonBodyText(lines.join('\n'));
+  }
+
+  _processJsonBodyText(text) {
+    let rawLine = '';
+    let jsonStart = -1;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    const flushRawLine = () => {
+      const line = rawLine.trim();
+      rawLine = '';
+      if (line) this._rawLine(line);
+    };
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+
+      if (jsonStart < 0) {
+        if (ch === '{') {
+          flushRawLine();
+          jsonStart = i;
+          depth = 1;
+          inString = false;
+          escape = false;
+        } else if (ch === '\n') {
+          flushRawLine();
+        } else {
+          rawLine += ch;
+        }
+        continue;
+      }
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === '{') depth += 1;
+      else if (ch === '}') depth -= 1;
+
+      if (depth === 0) {
+        const candidate = text.slice(jsonStart, i + 1);
+        try {
+          this._event(JSON.parse(candidate));
+        } catch {
+          this._rawLine(candidate);
+        }
+        jsonStart = -1;
+      }
+    }
+
+    flushRawLine();
+    if (jsonStart >= 0) {
+      this._rawLine(text.slice(jsonStart).trim());
+    }
   }
 
   // ── 增量推送（SSE 每行调用一次）─────────────────────────
@@ -194,6 +290,7 @@ class ChatLogRenderer {
       this._isPending = false;
       if (this.inner) this.inner.innerHTML = '';
       this.toolMap = {};
+      this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
       this.processBody = null;
@@ -209,6 +306,7 @@ class ChatLogRenderer {
         this.inner.innerHTML = '';
       }
       this.toolMap = {};
+      this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
       this.processBody = null;
@@ -236,6 +334,7 @@ class ChatLogRenderer {
       line.startsWith('project:') || line.startsWith('started:') ||
       line.startsWith('prompt:') || line.startsWith('container')) return;
     if (line.startsWith('finished:')) {
+      this._flushJsonLineBuffer();
       if (!this._footerRendered) this._renderFooter(line);
       return;
     }
@@ -247,10 +346,19 @@ class ChatLogRenderer {
     if (this.accountType === 'hermes') { this._hermesLine(line); return; }
     if (this.accountType === 'grok')   { this._grokLine(line);   return; }
     if (this.accountType === 'kimi')   { this._kimiLine(line);   return; }
-    if (!line.startsWith('{')) { this._rawLine(line); return; }
+    if (!line.startsWith('{') && !this._jsonLineBuffer) { this._rawLine(line); return; }
+    this._jsonLineBuffer = this._jsonLineBuffer ? (this._jsonLineBuffer + line) : line;
     let d;
-    try { d = JSON.parse(line); } catch { this._rawLine(line); return; }
+    try { d = JSON.parse(this._jsonLineBuffer); } catch { return; }
+    this._jsonLineBuffer = '';
     this._event(d);
+  }
+
+  _flushJsonLineBuffer() {
+    if (!this._jsonLineBuffer) return;
+    const pending = this._jsonLineBuffer;
+    this._jsonLineBuffer = '';
+    this._rawLine(pending);
   }
 
   // ── 私有：事件分发 ────────────────────────────────────────

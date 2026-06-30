@@ -138,6 +138,10 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             click.secho(f"  跳过项目 {pname}（ACTIVE=off）", fg="yellow")
             continue
 
+        if _truthy(p.get("EPHEMERAL", "off")):
+            click.secho(f"  跳过项目 {pname}（EPHEMERAL=true，临时容器模式，不生成持久服务）", fg="cyan")
+            continue
+
         acc = accounts.get(paccount)
         if not acc:
             click.secho(f"  警告：跳过项目 {pname}：账号 {paccount} 不存在", fg="yellow")

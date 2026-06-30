@@ -10,6 +10,7 @@ scheduler.py — 任务调度核心
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import os
 import random
@@ -79,6 +80,7 @@ class Scheduler:
         self.workflow_runs_dir = workspace_dir / "workflow_runs"   # v2 工作流执行记录（完整修改计划）
         self.schedules_dir  = workspace_dir / "schedules"
         self.digests_dir    = workspace_dir / "digests"
+        self.sessions_dir   = workspace_dir / "sessions"
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
@@ -223,6 +225,8 @@ class Scheduler:
                     ide_auth=parts.get("IDE_AUTH", "none"),
                     ide_remote=_truthy(parts.get("IDE_REMOTE", "off")),
                     image=parts.get("IMAGE", ""),
+                    ephemeral=_truthy(parts.get("EPHEMERAL", "off")),
+                    git_url=parts.get("GIT_URL", ""),
                 ))
 
         return projects
@@ -704,14 +708,15 @@ class Scheduler:
 
     async def _trigger_schedule(self, sched: Schedule) -> None:
         try:
-            task = await self.submit(
-                prompt=sched.prompt,
-                project_name=sched.project_name,
-                auto=sched.auto,
-                account_name=sched.account,
-            )
+            run_type, run_obj = await self._run_schedule_target(sched)
             sched.last_run_at = datetime.now().isoformat(timespec="seconds")
-            sched.last_task_id = task.id
+            sched.last_run_type = run_type
+            if run_type == "workflow":
+                sched.last_workflow_run_id = run_obj.id
+                sched.last_task_id = ""
+            else:
+                sched.last_task_id = run_obj.id
+                sched.last_workflow_run_id = ""
             sched.next_run_at = self._compute_next_run_at(sched)
             sched.updated = datetime.now().isoformat(timespec="seconds")
             sched.save(self.schedules_dir)
@@ -719,6 +724,47 @@ class Scheduler:
             import traceback
             print(f"Error triggering schedule {sched.id}: {e}")
             traceback.print_exc()
+
+    async def _run_schedule_target(self, sched: Schedule) -> tuple[str, object]:
+        target_type = (getattr(sched, "target_type", "task") or "task").strip()
+        if target_type == "workflow":
+            if not getattr(sched, "template_id", ""):
+                raise ValueError(f"定时计划 '{sched.name}' 未配置工作流模板")
+            pipeline = await self.run_template(
+                template_id=getattr(sched, "template_id", ""),
+                input_str=getattr(sched, "workflow_input", "") or getattr(sched, "prompt", ""),
+                project_map=dict(getattr(sched, "project_map", {}) or {}),
+                default_project=getattr(sched, "default_project", ""),
+                default_account=getattr(sched, "default_account", "") or (getattr(sched, "account", "") or ""),
+                workspace_policy=getattr(sched, "workspace_policy", "isolated"),
+            )
+            return "workflow", pipeline
+
+        retention = self._normalize_ephemeral_retention(getattr(sched, "ephemeral_retention", "release_on_finish"))
+        conversation_name = f"schedule:{sched.id}"
+        conversation_id = ""
+        if retention != "release_on_finish":
+            existing = next(
+                (
+                    c for c in self.list_conversations(include_archived=True)
+                    if getattr(c, "ephemeral", False) and c.name == conversation_name
+                ),
+                None,
+            )
+            conversation_id = existing.id if existing else ""
+        task = await self.submit(
+            prompt=sched.prompt,
+            project_name=sched.project_name,
+            auto=sched.auto,
+            account_name=sched.account,
+            execution_mode=getattr(sched, "execution_mode", "inherit"),
+            output_dir=getattr(sched, "output_dir", ""),
+            conversation_id=conversation_id or None,
+            conversation_name=conversation_name if retention != "release_on_finish" and not conversation_id else None,
+            ephemeral_retention=retention,
+            ephemeral_ttl_minutes=getattr(sched, "ephemeral_ttl_minutes", 120),
+        )
+        return "task", task
 
     @staticmethod
     def new_conversation_id() -> str:
@@ -943,6 +989,9 @@ class Scheduler:
         path = self.conversations_dir / f"{conversation_id}.json"
         if not path.exists():
             raise ValueError(f"任务链 '{conversation_id}' 不存在")
+        conversation = self.get_conversation(conversation_id)
+        if conversation and getattr(conversation, "ephemeral_container_name", ""):
+            self.close_ephemeral_conversation(conversation_id)
         path.unlink()
 
     def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
@@ -1000,6 +1049,7 @@ class Scheduler:
                 await self._check_and_trigger_schedules()
                 await self.schedule_next_tasks()
                 await self._check_auto_digest()
+                await self._cleanup_expired_ephemeral_sessions()
             except Exception as e:
                 import traceback
                 print("Error in schedule_next_tasks:")
@@ -1113,6 +1163,43 @@ class Scheduler:
                 self._write_failed_log(task, f"账号 '{task.account}' 不存在")
                 return
 
+            task_is_ephemeral = (
+                getattr(task, "ephemeral", False)
+                or getattr(task, "execution_mode", "persistent") == "ephemeral"
+            )
+            if task_is_ephemeral:
+                conversation = self.get_conversation(task.conversation_id) if task.conversation_id else None
+                project = self.find_project_by_name(task.project_name) if task.project_name else None
+                session_dir: Optional[Path] = None
+                if conversation:
+                    session_dir = self._get_session_dir(conversation.id)
+
+                task.ephemeral = True
+                task.execution_mode = "ephemeral"
+                task.update_status(TaskStatus.running, self.tasks_dir)
+                self._sync_board_card_for_task(task)
+
+                log_path = self.get_log_path(task.id)
+                self._write_log_header(log_path, task, acc)
+
+                bg = asyncio.create_task(
+                    self._run_ephemeral_task(
+                        task,
+                        acc,
+                        log_path,
+                        getattr(task, "auto", False),
+                        conversation,
+                        session_dir,
+                        getattr(task, "output_dir", ""),
+                        dict(getattr(task, "task_secrets", {}) or {}),
+                        getattr(task, "images", []),
+                        project=project,
+                    ),
+                    name=f"task-{task.id}",
+                )
+                self._running[task.id] = bg
+                return
+
             project = self.find_project_for_path(task.project, task.account)
             if project is None:
                 task.update_status(TaskStatus.failed, self.tasks_dir)
@@ -1186,6 +1273,12 @@ class Scheduler:
         depends_on:     list[str]             = [],
         pipeline_id:    Optional[str]         = None,
         board_card_id:  Optional[str]         = None,
+        ephemeral:      bool                  = False,
+        execution_mode: Optional[str]         = None,
+        secrets:        dict                  = {},
+        output_dir:     str                   = "",
+        ephemeral_retention: Optional[str]    = None,
+        ephemeral_ttl_minutes: Optional[int]  = None,
     ) -> Task:
         """
         提交任务，异步在后台执行，立即返回 Task 对象。
@@ -1214,6 +1307,15 @@ class Scheduler:
             prefer_type = conversation.type
             prefer_project = conversation.project
             project_name = conversation.project_name or project_name
+            # Propagate ephemeral flag from conversation
+            if conversation.ephemeral:
+                ephemeral = True
+                if not output_dir and conversation.output_dir:
+                    output_dir = conversation.output_dir
+                if ephemeral_retention is None:
+                    ephemeral_retention = getattr(conversation, "ephemeral_retention", "release_on_finish")
+                if ephemeral_ttl_minutes is None:
+                    ephemeral_ttl_minutes = getattr(conversation, "ephemeral_ttl_minutes", 120)
 
         selected_project: Optional[Project] = None
         if project_name:
@@ -1226,6 +1328,10 @@ class Scheduler:
                 )
             account_name = selected_project.account
             prefer_project = selected_project.path
+
+        mode = (execution_mode or "inherit").strip().lower()
+        if mode not in ("inherit", "persistent", "ephemeral"):
+            mode = "inherit"
 
         # 确定账号
         acc: Optional[Account] = None
@@ -1254,6 +1360,146 @@ class Scheduler:
                     f"没有匹配的可用账号{('（' + hint_str + '）') if hint_str else ''}"
                 )
 
+        # ── Ephemeral 路径：跳过持久容器，直接 docker run --rm ──
+        # 触发条件：显式传 ephemeral=True / execution_mode=ephemeral，
+        # 或 execution_mode=inherit 且选中项目本身是 ephemeral 项目。
+        _is_ephemeral = (
+            ephemeral
+            or mode == "ephemeral"
+            or (mode == "inherit" and selected_project is not None and selected_project.ephemeral)
+        )
+        if not _is_ephemeral and project_name and selected_project is None:
+            _proj = self.find_project_by_name(project_name)
+            if _proj and _proj.ephemeral and mode == "inherit":
+                _is_ephemeral = True
+                selected_project = _proj
+
+        if _is_ephemeral:
+            retention = self._normalize_ephemeral_retention(ephemeral_retention)
+            ttl_minutes = self._normalize_ephemeral_ttl(ephemeral_ttl_minutes)
+            # Resolve conversation. Retained ephemeral containers need a
+            # conversation record so later turns can locate the same container.
+            if conversation is None and (conversation_name or retention != "release_on_finish"):
+                conv_id = self.new_conversation_id()
+                proj_path = selected_project.path if selected_project else "ephemeral"
+                proj_name = selected_project.name if selected_project else ""
+                conversation = Conversation(
+                    id           = conv_id,
+                    name         = conversation_name or (prompt.strip()[:32] or conv_id),
+                    account      = acc.name,
+                    type         = acc.type,
+                    project      = proj_path,
+                    project_name = proj_name,
+                    ephemeral    = True,
+                    output_dir   = output_dir,
+                    ephemeral_retention = retention,
+                    ephemeral_ttl_minutes = ttl_minutes,
+                    ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes) if retention == "keep_until_ttl" else "",
+                )
+                conversation.save(self.conversations_dir)
+            elif conversation and not conversation.ephemeral:
+                # Existing conversation just detected as ephemeral — update its flag
+                conversation.ephemeral = True
+                conversation.ephemeral_retention = retention
+                conversation.ephemeral_ttl_minutes = ttl_minutes
+                conversation.ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes) if retention == "keep_until_ttl" else ""
+                conversation.save(self.conversations_dir)
+            elif conversation:
+                conversation.ephemeral_retention = retention
+                conversation.ephemeral_ttl_minutes = ttl_minutes
+                if retention == "keep_until_ttl":
+                    conversation.ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes)
+                elif retention == "release_on_finish":
+                    if getattr(conversation, "ephemeral_container_name", ""):
+                        subprocess.run(
+                            ["docker", "rm", "-f", conversation.ephemeral_container_name],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        conversation.ephemeral_container_name = ""
+                    conversation.ephemeral_expires_at = ""
+                conversation.save(self.conversations_dir)
+
+            # Carry output_dir from conversation if not overridden in this request
+            if not output_dir and conversation and conversation.output_dir:
+                output_dir = conversation.output_dir
+
+            session_dir: Optional[Path] = None
+            if conversation:
+                session_dir = self._get_session_dir(conversation.id)
+
+            task_project = str(session_dir) if session_dir else "ephemeral"
+            proj_name    = (selected_project.name if selected_project else
+                            (conversation.project_name if conversation else ""))
+            task_id      = self.new_task_id()
+            dag_parent   = parent_task_id or ""
+            dag_depends  = list(depends_on)
+            dag_pipeline = pipeline_id or ""
+            log_path     = self.get_log_path(task_id)
+
+            status = TaskStatus.running
+            valid_execute_at = False
+            if execute_at:
+                try:
+                    valid_execute_at = datetime.fromisoformat(execute_at) > datetime.now()
+                except ValueError:
+                    valid_execute_at = False
+            if valid_execute_at:
+                status = TaskStatus.scheduled
+            elif is_pending:
+                status = TaskStatus.pending
+
+            task = Task(
+                id           = task_id,
+                status       = status,
+                account      = acc.name,
+                type         = acc.type,
+                prompt       = prompt,
+                project      = task_project,
+                project_name = proj_name,
+                conversation_id    = conversation.id if conversation else "",
+                native_session_id  = conversation.native_session_id if conversation else "",
+                auto         = auto,
+                images       = images,
+                parent_task_id = dag_parent,
+                depends_on     = dag_depends,
+                pipeline_id    = dag_pipeline,
+                board_card_id  = card_id,
+                execute_at     = execute_at if valid_execute_at else None,
+                ephemeral      = True,
+                execution_mode = "ephemeral",
+                output_dir     = output_dir,
+                ephemeral_retention = retention,
+                ephemeral_ttl_minutes = ttl_minutes,
+                ephemeral_container_name = getattr(conversation, "ephemeral_container_name", "") if conversation else "",
+                task_secrets   = dict(secrets),
+            )
+            task.save(self.tasks_dir)
+            if dag_pipeline:
+                self._register_task_in_pipeline(task_id, dag_pipeline)
+            if card_id:
+                self.add_task_to_board_card(card_id, task_id)
+
+            if task.status != TaskStatus.running:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text("", encoding="utf-8")
+                if task.status == TaskStatus.pending:
+                    asyncio.create_task(self.schedule_next_tasks())
+                return task
+
+            self._write_log_header(log_path, task, acc)
+            bg = asyncio.create_task(
+                self._run_ephemeral_task(
+                    task, acc, log_path, auto, conversation,
+                    session_dir, output_dir, dict(secrets), images,
+                    project=selected_project,
+                ),
+                name=f"task-{task_id}",
+            )
+            self._running[task_id] = bg
+            return task
+
+        # ── 持久容器路径（原有逻辑） ──────────────────────────────
         task_project = self.resolve_task_project(acc, prefer_project)
         selected_project = selected_project or self.find_project_for_path(task_project, acc.name)
         if selected_project is None:
@@ -1297,6 +1543,7 @@ class Scheduler:
                         depends_on     = dag_depends,
                         pipeline_id    = dag_pipeline,
                         board_card_id  = card_id,
+                        execution_mode = "persistent",
                     )
                     task.save(self.tasks_dir)
                     if dag_pipeline:
@@ -1331,6 +1578,7 @@ class Scheduler:
                 depends_on     = dag_depends,
                 pipeline_id    = dag_pipeline,
                 board_card_id  = card_id,
+                execution_mode = "persistent",
             )
             task.save(self.tasks_dir)
             if dag_pipeline:
@@ -1365,6 +1613,7 @@ class Scheduler:
             depends_on     = dag_depends,
             pipeline_id    = dag_pipeline,
             board_card_id  = card_id,
+            execution_mode = "persistent",
         )
         task.save(self.tasks_dir)
         if dag_pipeline:
@@ -1557,6 +1806,406 @@ class Scheduler:
         self._extract_and_save_token_usage(task, log_path)
         asyncio.create_task(self._notify(task))
         return rc
+
+    # ── Ephemeral task helpers ────────────────────────────────
+
+    def _get_session_dir(self, conversation_id: str) -> Path:
+        """Return (and create) the session workspace dir for a conversation."""
+        d = self.sessions_dir / conversation_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @staticmethod
+    def _normalize_ephemeral_retention(value: Optional[str]) -> str:
+        retention = (value or "release_on_finish").strip()
+        if retention not in {"release_on_finish", "keep_until_ttl", "keep_until_manual_close"}:
+            return "release_on_finish"
+        return retention
+
+    @staticmethod
+    def _normalize_ephemeral_ttl(value: Optional[int]) -> int:
+        try:
+            ttl = int(value or 120)
+        except (TypeError, ValueError):
+            ttl = 120
+        return max(1, min(ttl, 24 * 60))
+
+    @staticmethod
+    def _ephemeral_expires_at(ttl_minutes: int) -> str:
+        return (datetime.now() + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds")
+
+    @staticmethod
+    def _docker_container_running(container_name: str) -> bool:
+        if not container_name:
+            return False
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0 and result.stdout.strip().lower() == "true"
+        except Exception:
+            return False
+
+    def close_ephemeral_conversation(self, conversation_id: str) -> bool:
+        conversation = self.get_conversation(conversation_id)
+        if conversation is None or not getattr(conversation, "ephemeral", False):
+            return False
+        container_name = getattr(conversation, "ephemeral_container_name", "")
+        if container_name:
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        conversation.ephemeral_container_name = ""
+        conversation.ephemeral_expires_at = ""
+        conversation.ephemeral_retention = "release_on_finish"
+        conversation.save(self.conversations_dir)
+        return True
+
+    async def _cleanup_expired_ephemeral_sessions(self) -> None:
+        now = datetime.now()
+        for conversation in self.list_conversations(include_archived=True):
+            if not getattr(conversation, "ephemeral", False):
+                continue
+            if getattr(conversation, "ephemeral_retention", "release_on_finish") != "keep_until_ttl":
+                continue
+            expires_at = getattr(conversation, "ephemeral_expires_at", "")
+            if not expires_at:
+                continue
+            try:
+                if datetime.fromisoformat(expires_at) > now:
+                    continue
+            except ValueError:
+                continue
+            self.close_ephemeral_conversation(conversation.id)
+
+    def delete_session(self, conversation_id: str) -> bool:
+        """Delete the session workspace dir for a conversation. Returns True if it existed."""
+        import shutil
+        d = self.sessions_dir / conversation_id
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            return True
+        return False
+
+    def _get_ephemeral_network(self, acc: Account) -> Optional[str]:
+        """
+        Detect the coderfleet internal docker network for proxy-relay accounts.
+        Inspects the coderfleet-proxy-relay container to find the intnet network.
+        Returns None for proxy=off accounts (use default bridge).
+        """
+        from coderfleet.server.models import AccountProxy
+        if acc.proxy == AccountProxy.off:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    "docker", "inspect", "coderfleet-proxy-relay",
+                    "--format",
+                    "{{range $k,$v := .NetworkSettings.Networks}}{{$k}}\n{{end}}",
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+            for net in result.stdout.splitlines():
+                net = net.strip()
+                if net and "intnet" in net:
+                    return net
+        except Exception:
+            pass
+        return None
+
+    def _get_account_image(self, acc: Account, project: Optional["Project"] = None) -> str:
+        """Return the docker image to use for ephemeral containers."""
+        from coderfleet.config import load_config
+        # Project-level IMAGE override (highest priority)
+        if project and project.image:
+            return project.image
+        # Fall back to any ephemeral project for this account that has IMAGE set
+        for p in self.get_projects():
+            if p.account == acc.name and p.ephemeral and p.image:
+                return p.image
+        # Global config: IMAGE_NAME:IMAGE_TAG (same logic as compose.py)
+        cfg = load_config(self.workspace_dir)
+        name = cfg.get("IMAGE_NAME", "coderfleet")
+        tag  = cfg.get("IMAGE_TAG",  "latest")
+        return f"{name}:{tag}"
+
+    async def _run_ephemeral_task(
+        self,
+        task: Task,
+        acc: Account,
+        log_path: Path,
+        auto: bool,
+        conversation: Optional[Conversation] = None,
+        session_dir: Optional[Path] = None,
+        output_dir: str = "",
+        task_secrets: Optional[dict] = None,
+        images: list[str] = [],
+        project: Optional["Project"] = None,
+    ) -> None:
+        """
+        后台协程：用 docker run --rm 执行一次性任务，stdout 直接流入日志文件。
+        不依赖持久容器，任务结束后容器自动销毁。
+        """
+        from coderfleet.account_type_registry import get_spec
+        from coderfleet.config import load_config
+        from coderfleet.server.models import AccountProxy
+
+        retention = self._normalize_ephemeral_retention(
+            getattr(task, "ephemeral_retention", None)
+            or (getattr(conversation, "ephemeral_retention", None) if conversation else None)
+        )
+        ttl_minutes = self._normalize_ephemeral_ttl(
+            getattr(task, "ephemeral_ttl_minutes", None)
+            or (getattr(conversation, "ephemeral_ttl_minutes", None) if conversation else None)
+        )
+        keep_container = bool(conversation and retention != "release_on_finish")
+        container_name = (
+            getattr(conversation, "ephemeral_container_name", "") if keep_container and conversation else ""
+        ) or (
+            f"coderfleet-eph-session-{conversation.id}" if keep_container and conversation
+            else f"coderfleet-ephemeral-{task.id}"
+        )
+        proc: Optional[asyncio.subprocess.Process] = None
+
+        try:
+            spec = get_spec(acc.type.value)
+            cfg  = load_config(self.workspace_dir)
+
+            inner_cmd = spec.build_inner_cmd(
+                task.prompt, auto, task.id,
+                shlex.quote(Scheduler.task_process_marker(task.id)),
+                shlex.quote(task.id),
+                conversation.native_session_id if conversation else "",
+                list(images),
+            )
+
+            auth_src = self.workspace_dir / "accounts" / acc.name
+            auth_dst = spec.auth_dir
+            image    = self._get_account_image(acc, project)
+
+            docker_args = [
+                "docker", "run", "--pull", "never",
+                "--name", container_name,
+                "-v", f"{auth_src}:{auth_dst}",
+            ]
+            if not keep_container:
+                docker_args.insert(2, "--rm")
+
+            if session_dir is not None:
+                docker_args += ["-v", f"{session_dir}:/workspace"]
+            else:
+                # No session dir → still need /workspace for the log mechanism
+                tmp_ws = self.sessions_dir / f"task-{task.id}"
+                tmp_ws.mkdir(parents=True, exist_ok=True)
+                docker_args += ["-v", f"{tmp_ws}:/workspace"]
+
+            if output_dir:
+                out_path = Path(output_dir).expanduser().resolve()
+                out_path.mkdir(parents=True, exist_ok=True)
+                docker_args += ["-v", f"{out_path}:/output"]
+
+            # Proxy / network
+            network = self._get_ephemeral_network(acc)
+            if network:
+                relay_ip   = cfg.get("RELAY_IP",           "172.21.0.2")
+                relay_port = cfg.get("RELAY_LISTEN_PORT",  "7890")
+                proxy_url  = f"http://{relay_ip}:{relay_port}"
+                no_proxy   = cfg.get("NO_PROXY", "localhost,127.0.0.1")
+                for ev in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy",
+                           "HTTP_PROXY", "http_proxy"):
+                    docker_args += ["-e", f"{ev}={proxy_url}"]
+                docker_args += [
+                    "-e", f"NO_PROXY={no_proxy}",
+                    "-e", f"no_proxy={no_proxy}",
+                    "-e", f"CODERFLEET_RELAY_IP={relay_ip}",
+                    "-e", f"CODERFLEET_RELAY_PORT={relay_port}",
+                ]
+                docker_args += ["--network", network]
+
+            # Standard env vars (matching compose.py baseline — always set for all types)
+            docker_args += [
+                "-e", "CODEX_HOME=/home/byclaw/.codex",
+                "-e", "CLAUDE_CONFIG_DIR=/home/byclaw/.claude",
+                "-e", f"CODERFLEET_ACCOUNT_NAME={acc.name}",
+                "-e", f"CODERFLEET_ACCOUNT_TYPE={acc.type.value}",
+                "-e", f"CODERFLEET_ACCOUNT_AUTH={acc.auth.value}",
+                "-e", f"CODERFLEET_ACCOUNT_PROXY={acc.proxy.value}",
+            ]
+
+            # Account-type static env vars
+            for k, v in spec.env_vars.items():
+                docker_args += ["-e", f"{k}={v}"]
+
+            # Project-level env (if project_name set)
+            if task.project_name:
+                try:
+                    for k, v in self.get_project_env(task.project_name).items():
+                        docker_args += ["-e", f"{k}={v}"]
+                except Exception:
+                    pass
+
+            # Account env (for env-auth accounts, API keys, etc.)
+            try:
+                for k, v in self.get_account_env(acc.name).items():
+                    docker_args += ["-e", f"{k}={v}"]
+            except Exception:
+                pass
+
+            # Task-level secrets (highest priority, override everything)
+            for k, v in (task_secrets or {}).items():
+                docker_args += ["-e", f"{k}={v}"]
+
+            # Wrap inner_cmd in explicit subshell so exec -a replaces the subshell,
+            # not the outer bash (which must stay alive to propagate the exit code).
+            # Use bash -c (not -lc) and set PATH explicitly to avoid login-profile issues.
+            path_prefix = (
+                "export PATH=/home/byclaw/.local/bin:/usr/local/bin"
+                ":/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH && "
+            )
+            wrapped_cmd = path_prefix + f"( {inner_cmd} )"
+
+            if keep_container:
+                if not self._docker_container_running(container_name):
+                    try:
+                        subprocess.run(
+                            ["docker", "rm", "-f", container_name],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except Exception:
+                        pass
+                    start_args = docker_args + ["-d", "-w", "/workspace", image, "tail", "-f", "/dev/null"]
+                    start_proc = await asyncio.create_subprocess_exec(
+                        *start_args,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    start_out, _ = await start_proc.communicate()
+                    if start_proc.returncode != 0:
+                        msg = start_out.decode("utf-8", errors="replace") if start_out else "unknown error"
+                        raise RuntimeError(f"启动临时会话容器失败：{msg}")
+                    if conversation:
+                        conversation.ephemeral_container_name = container_name
+                        conversation.ephemeral_retention = retention
+                        conversation.ephemeral_ttl_minutes = ttl_minutes
+                        if retention == "keep_until_ttl":
+                            conversation.ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes)
+                        conversation.save(self.conversations_dir)
+
+                task.ephemeral_container_name = container_name
+                task.save(self.tasks_dir)
+                exec_env_args: list[str] = []
+                for i, arg in enumerate(docker_args[:-1]):
+                    if arg == "-e":
+                        exec_env_args += ["-e", docker_args[i + 1]]
+                run_args = ["docker", "exec", *exec_env_args, "-w", "/workspace", container_name, "bash", "-c", wrapped_cmd]
+            else:
+                docker_args += ["-w", "/workspace", image, "bash", "-c", wrapped_cmd]
+                run_args = docker_args
+
+            proc = await asyncio.create_subprocess_exec(
+                *run_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            task.pid = str(proc.pid)
+            task.ephemeral_container_name = container_name
+            task.save(self.tasks_dir)
+
+            captured_session_id = ""
+            session_scan_buffer = ""
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            import aiofiles
+            async with aiofiles.open(log_path, mode="a", encoding="utf-8") as f:
+                while proc.stdout is not None:
+                    raw_chunk = await proc.stdout.read(8192)
+                    if not raw_chunk:
+                        break
+                    text = decoder.decode(raw_chunk)
+                    if text:
+                        await f.write(text)
+                        await f.flush()
+                        if not captured_session_id:
+                            session_scan_buffer = (session_scan_buffer + text)[-65536:]
+                            captured_session_id = self.extract_native_session_id(
+                                acc.type, session_scan_buffer
+                            )
+                            if captured_session_id:
+                                task.native_session_id = captured_session_id
+                                task.save(self.tasks_dir)
+                                if conversation:
+                                    self.update_conversation_native_session(
+                                        conversation.id, captured_session_id, task.id
+                                    )
+                final_text = decoder.decode(b"", final=True)
+                if final_text:
+                    await f.write(final_text)
+                    await f.flush()
+
+            await proc.wait()
+            rc = proc.returncode if proc.returncode is not None else -1
+
+            if rc == 0:
+                if conversation:
+                    if not conversation.native_session_id and captured_session_id:
+                        self.update_conversation_native_session(
+                            conversation.id, captured_session_id, task.id
+                        )
+                    else:
+                        conversation.touch(self.conversations_dir, last_task_id=task.id)
+                    if keep_container:
+                        conversation = self.get_conversation(conversation.id) or conversation
+                        conversation.ephemeral_container_name = container_name
+                        conversation.ephemeral_retention = retention
+                        conversation.ephemeral_ttl_minutes = ttl_minutes
+                        if retention == "keep_until_ttl":
+                            conversation.ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes)
+                        conversation.save(self.conversations_dir)
+                task.update_status(TaskStatus.done, self.tasks_dir)
+                self._sync_board_card_for_task(task)
+                self._append_log_footer(log_path, "done")
+            else:
+                task.update_status(TaskStatus.failed, self.tasks_dir)
+                self._sync_board_card_for_task(task)
+                self._append_log_footer(log_path, f"failed (exit={rc})")
+
+            self._extract_and_save_token_usage(task, log_path)
+            asyncio.create_task(self._notify(task))
+
+        except asyncio.CancelledError:
+            if proc is not None:
+                if keep_container:
+                    subprocess.run(
+                        ["docker", "exec", container_name, "pkill", "-f", task.id],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    subprocess.run(
+                        ["docker", "rm", "-f", container_name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+            task.update_status(TaskStatus.killed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
+            self._append_log_footer(log_path, "killed")
+            asyncio.create_task(self._notify(task))
+        except Exception as e:
+            task.update_status(TaskStatus.failed, self.tasks_dir)
+            self._sync_board_card_for_task(task)
+            try:
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n任务运行异常：{e}\n")
+            except Exception:
+                pass
+            self._append_log_footer(log_path, f"failed: {e}")
+            asyncio.create_task(self._notify(task))
+        finally:
+            self._running.pop(task.id, None)
+            asyncio.create_task(self.schedule_next_tasks())
 
     async def _run(
         self,
@@ -2107,6 +2756,11 @@ class Scheduler:
                 target_mode      = nr.target_mode,
                 project_name     = nr.project_name,
                 project_role     = nr.project_role,
+                account          = getattr(nr, "account", ""),
+                execution_mode   = getattr(nr, "execution_mode", "inherit"),
+                output_dir       = getattr(nr, "output_dir", ""),
+                ephemeral_retention = getattr(nr, "ephemeral_retention", "release_on_finish"),
+                ephemeral_ttl_minutes = getattr(nr, "ephemeral_ttl_minutes", 120),
                 task_id          = nr.task_id,
                 attempt_count    = 1 if nr.task_id else 0,
                 resolved_project = nr.resolved_project,
@@ -2126,6 +2780,10 @@ class Scheduler:
             updated            = pipeline.updated,
             legacy_pipeline_id = pipeline.id,
             project_map        = pipeline.project_map,
+            default_account    = getattr(pipeline, "default_account", ""),
+            workspace_policy   = getattr(pipeline, "workspace_policy", "isolated"),
+            shared_conversation_id = getattr(pipeline, "shared_conversation_id", ""),
+            artifact_dir       = getattr(pipeline, "artifact_dir", ""),
         )
 
     @staticmethod
@@ -2155,6 +2813,11 @@ class Scheduler:
                 target_mode      = getattr(node, "target_mode", "default") or "default",
                 project_name     = getattr(node, "project_name", ""),
                 project_role     = getattr(node, "project_role", ""),
+                account          = getattr(node, "account", ""),
+                execution_mode   = getattr(node, "execution_mode", "inherit") or "inherit",
+                output_dir       = getattr(node, "output_dir", "") or "",
+                ephemeral_retention = getattr(node, "ephemeral_retention", "release_on_finish") or "release_on_finish",
+                ephemeral_ttl_minutes = getattr(node, "ephemeral_ttl_minutes", 120) or 120,
                 resolved_project = resolved_projects.get(node.node_id, ""),
             )
             for node in sorted_nodes
@@ -2171,6 +2834,10 @@ class Scheduler:
             updated            = now,
             legacy_pipeline_id = pipeline.id,
             project_map        = dict(pipeline.project_map),
+            default_account    = getattr(pipeline, "default_account", ""),
+            workspace_policy   = getattr(pipeline, "workspace_policy", "isolated"),
+            shared_conversation_id = getattr(pipeline, "shared_conversation_id", ""),
+            artifact_dir       = getattr(pipeline, "artifact_dir", ""),
         )
         run.save(self.workflow_runs_dir)
         return run
@@ -2297,6 +2964,7 @@ class Scheduler:
         # ── 重建 resolved_projects（优先用存储的 project_map / default_project）──
         project_map     = dict(pipeline.project_map)
         default_project = pipeline.default_project
+        default_account = getattr(pipeline, "default_account", "")
         resolved_projects: dict[str, str] = {}
         for node in sorted_nodes:
             node_type = getattr(node, "node_type", NodeType.task)
@@ -2314,6 +2982,7 @@ class Scheduler:
                 resolved_projects[node.node_id] = ""
             else:
                 target_mode = getattr(node, "target_mode", "default") or "default"
+                execution_mode = getattr(node, "execution_mode", "inherit") or "inherit"
                 if target_mode == "fixed_project":
                     resolved_projects[node.node_id] = node.project_name
                 elif target_mode == "runtime_role":
@@ -2321,6 +2990,8 @@ class Scheduler:
                 else:
                     resolved_projects[node.node_id] = project_map.get(node.node_id) or default_project
                 if not resolved_projects[node.node_id]:
+                    if execution_mode == "ephemeral" and (getattr(node, "account", "") or default_account):
+                        continue
                     raise ValueError(f"节点「{node.name or node.node_id}」无法解析执行项目，请重新运行模板")
 
         # ── 构建仅含待执行节点的 level_groups ────────────────
@@ -2421,12 +3092,65 @@ class Scheduler:
             visit(node.node_id)
         return result
 
+    def _create_shared_workflow_conversation(
+        self,
+        pipeline: Pipeline,
+        sorted_nodes: list[TemplateNode],
+        resolved_projects: dict[str, str],
+    ) -> Conversation:
+        account_names: set[str] = set()
+        ttl_minutes = 120
+        for node in sorted_nodes:
+            if getattr(node, "node_type", NodeType.task) != NodeType.task:
+                continue
+            if (getattr(node, "execution_mode", "inherit") or "inherit") != "ephemeral":
+                continue
+            ttl_minutes = max(ttl_minutes, self._normalize_ephemeral_ttl(getattr(node, "ephemeral_ttl_minutes", None)))
+            project_name = resolved_projects.get(node.node_id, "")
+            if project_name:
+                project = self.find_project_by_name(project_name)
+                if project:
+                    account_names.add(project.account)
+            else:
+                node_account = getattr(node, "account", "") or getattr(pipeline, "default_account", "")
+                if node_account:
+                    account_names.add(node_account)
+
+        if not account_names:
+            raise ValueError("共享临时沙箱需要至少一个 execution_mode=ephemeral 且能解析账号的任务节点")
+        if len(account_names) > 1:
+            raise ValueError(f"共享临时沙箱要求所有临时节点使用同一个账号，当前为：{', '.join(sorted(account_names))}")
+
+        account_name = next(iter(account_names))
+        acc = next((a for a in self.get_accounts() if a.name == account_name), None)
+        if acc is None:
+            raise ValueError(f"账号 '{account_name}' 不存在")
+
+        conv_id = self.new_conversation_id()
+        conversation = Conversation(
+            id           = conv_id,
+            name         = f"workflow:{pipeline.id}:shared",
+            account      = acc.name,
+            type         = acc.type,
+            project      = "ephemeral",
+            project_name = "",
+            ephemeral    = True,
+            ephemeral_retention = "keep_until_ttl",
+            ephemeral_ttl_minutes = ttl_minutes,
+            ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes),
+        )
+        conversation.save(self.conversations_dir)
+        self._get_session_dir(conversation.id)
+        return conversation
+
     async def run_template(
         self,
         template_id:     str,
         input_str:       str,
         project_map:     dict[str, str],  # role/node_id → project_name
         default_project: str = "",
+        default_account: str = "",
+        workspace_policy: str = "isolated",
     ) -> Pipeline:
         tpl = self.get_template(template_id)
         if tpl is None:
@@ -2435,6 +3159,9 @@ class Scheduler:
             raise ValueError("模板没有任何节点，无法执行")
 
         sorted_nodes = self._topo_sort_nodes(tpl.nodes)
+        workspace_policy = (workspace_policy or "isolated").strip()
+        if workspace_policy not in {"isolated", "shared_ephemeral", "artifact_sync"}:
+            workspace_policy = "isolated"
         resolved_projects: dict[str, str] = {}
         for node in sorted_nodes:
             node_type = getattr(node, "node_type", NodeType.task)
@@ -2444,6 +3171,8 @@ class Scheduler:
                 continue
 
             target_mode = getattr(node, "target_mode", "default") or "default"
+            execution_mode = getattr(node, "execution_mode", "inherit") or "inherit"
+            node_account = getattr(node, "account", "") or default_account or ""
             if target_mode == "fixed_project":
                 project_name = node.project_name
             elif target_mode == "runtime_role":
@@ -2452,6 +3181,9 @@ class Scheduler:
                 project_name = project_map.get(node.node_id) or default_project
 
             if not project_name:
+                if execution_mode == "ephemeral" and node_account:
+                    resolved_projects[node.node_id] = ""
+                    continue
                 label = node.name or node.node_id
                 raise ValueError(f"节点「{label}」未指定执行项目")
             if self.find_project_by_name(project_name) is None:
@@ -2496,7 +3228,16 @@ class Scheduler:
             status          = "running",
             project_map     = dict(project_map),
             default_project = default_project,
+            default_account = default_account,
+            workspace_policy = workspace_policy,
         )
+        if workspace_policy == "artifact_sync":
+            artifact_dir = self.workspace_dir / "workflow_artifacts" / pipeline.id
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            pipeline.artifact_dir = str(artifact_dir.resolve())
+        if workspace_policy == "shared_ephemeral":
+            shared_conv = self._create_shared_workflow_conversation(pipeline, sorted_nodes, resolved_projects)
+            pipeline.shared_conversation_id = shared_conv.id
         pipeline.save(self.pipelines_dir)
         self._create_workflow_run_for_pipeline(pipeline, tpl, sorted_nodes, resolved_projects)
 
@@ -2584,24 +3325,41 @@ class Scheduler:
         self._validate_step_references(node, node_outputs)
         actual_prompt = self._render_prompt(node.prompt_tpl, input_str, node_outputs)
         pname = resolved_projects[node.node_id]
+        pipeline = self.get_pipeline(pipeline_id)
+        node_account = getattr(node, "account", "") or (getattr(pipeline, "default_account", "") if pipeline else "") or ""
+        node_execution_mode = getattr(node, "execution_mode", "inherit") or "inherit"
+        node_output_dir = getattr(node, "output_dir", "") or ""
+        node_retention = self._normalize_ephemeral_retention(getattr(node, "ephemeral_retention", None))
+        node_ttl = self._normalize_ephemeral_ttl(getattr(node, "ephemeral_ttl_minutes", None))
         self._update_workflow_node(
             pipeline_id,
             node.node_id,
             state=WorkflowNodeState.running,
             resolved_project=pname,
             actual_prompt=actual_prompt,
+            account=node_account,
+            execution_mode=node_execution_mode,
+            output_dir=node_output_dir,
+            ephemeral_retention=node_retention,
+            ephemeral_ttl_minutes=node_ttl,
             started_at=datetime.now().isoformat(timespec="seconds"),
         )
 
         task = await self.submit(
             prompt       = actual_prompt,
             project_name = pname,
+            account_name = node_account or None,
             auto         = True,
             pipeline_id  = pipeline_id,
+            execution_mode = node_execution_mode,
+            output_dir     = node_output_dir,
+            conversation_id = self._workflow_node_conversation_id(pipeline_id, node, node_retention),
+            conversation_name = self._workflow_node_conversation_name(pipeline_id, node, node_retention),
+            ephemeral_retention = node_retention,
+            ephemeral_ttl_minutes = node_ttl,
         )
 
         # Update pipeline: add task_id + node_run record
-        pipeline = self.get_pipeline(pipeline_id)
         if pipeline:
             if task.id not in pipeline.task_ids:
                 pipeline.task_ids.append(task.id)
@@ -2614,8 +3372,13 @@ class Scheduler:
                 target_mode      = getattr(node, "target_mode", "default") or "default",
                 project_name     = getattr(node, "project_name", ""),
                 project_role     = getattr(node, "project_role", ""),
+                account          = node_account,
                 resolved_project = pname,
                 actual_prompt    = actual_prompt,
+                execution_mode   = node_execution_mode,
+                output_dir       = node_output_dir,
+                ephemeral_retention = node_retention,
+                ephemeral_ttl_minutes = node_ttl,
             ))
             pipeline.touch(self.pipelines_dir)
             self._update_workflow_node(
@@ -2625,9 +3388,53 @@ class Scheduler:
                 attempt_count=1,
                 resolved_project=pname,
                 actual_prompt=actual_prompt,
+                account=node_account,
+                execution_mode=node_execution_mode,
+                output_dir=node_output_dir,
+                ephemeral_retention=node_retention,
+                ephemeral_ttl_minutes=node_ttl,
             )
 
         return task
+
+    def _workflow_node_conversation_id(
+        self,
+        pipeline_id: str,
+        node: "TemplateNode",
+        retention: str,
+    ) -> Optional[str]:
+        if (getattr(node, "execution_mode", "inherit") or "inherit") != "ephemeral":
+            return None
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
+            return getattr(pipeline, "shared_conversation_id", "") or None
+        if retention == "release_on_finish":
+            return None
+        name = f"workflow:{pipeline_id}:{node.node_id}"
+        return next(
+            (
+                c.id for c in self.list_conversations(include_archived=True)
+                if getattr(c, "ephemeral", False) and c.name == name
+            ),
+            None,
+        )
+
+    def _workflow_node_conversation_name(
+        self,
+        pipeline_id: str,
+        node: "TemplateNode",
+        retention: str,
+    ) -> Optional[str]:
+        if (getattr(node, "execution_mode", "inherit") or "inherit") != "ephemeral":
+            return None
+        pipeline = self.get_pipeline(pipeline_id)
+        if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
+            return None
+        if retention == "release_on_finish":
+            return None
+        name = f"workflow:{pipeline_id}:{node.node_id}"
+        existing = self._workflow_node_conversation_id(pipeline_id, node, retention)
+        return None if existing else name
 
     async def _execute_pipeline_levels(
         self,

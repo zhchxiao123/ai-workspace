@@ -2,6 +2,13 @@
 
 // 加载会话列表及数据
 async function loadConversations(renderWorkspace = true) {
+  // Restore active conversation from sessionStorage on first load after page refresh
+  if (activeConversationId === null && renderWorkspace) {
+    try {
+      const saved = sessionStorage.getItem('coderfleet.activeConvId');
+      if (saved) activeConversationId = saved;
+    } catch (_) {}
+  }
   try {
     const [convs, projects, tasks] = await Promise.all([
       fetch(`${API}/api/conversations`).then(r => r.json()),
@@ -152,21 +159,23 @@ function renderConversations(convs, projects, tasks) {
         <span class="proj-collapse-icon">${isCollapsed ? '+' : '-'}</span>
         ${folderSvg}
         <span>${esc(proj.name)}</span>
+        ${proj.ephemeral ? `<span style="font-size:10px;color:var(--accent);opacity:.8;margin-left:4px" title="临时容器项目">⚡</span>` : ''}
         ${isPinned ? `<span class="proj-pin-dot" title="已置顶"></span>` : ''}
       </div>
       <div class="proj-header-actions">
         <button class="proj-dots-btn" onclick="event.stopPropagation(); openProjMenu(event, '${encodedProjectName}', ${isPinned})" title="更多操作" aria-label="更多操作">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
-        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewTerminalConversation('${esc(proj.name)}')" title="新建终端会话" aria-label="新建终端会话">
+        ${proj.ephemeral ? '' : `<button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewTerminalConversation('${esc(proj.name)}')" title="新建终端会话" aria-label="新建终端会话">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
           </svg>
-        </button>
-        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); startNewChat({ projectName: '${esc(proj.name)}' })" title="新建对话" aria-label="新建对话">
+        </button>`}
+        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); ${proj.ephemeral ? `openEphemeralModalForProject('${esc(proj.name)}', '${esc(proj.account)}')` : `startNewChat({ projectName: '${esc(proj.name)}' })`}" title="${proj.ephemeral ? '新建临时任务' : '新建对话'}" aria-label="${proj.ephemeral ? '新建临时任务' : '新建对话'}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-            <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            ${proj.ephemeral
+              ? '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>'
+              : '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>'}
           </svg>
         </button>
       </div>
@@ -222,6 +231,60 @@ function renderConversations(convs, projects, tasks) {
   </div>
 `;
   });
+
+  // ── 临时任务分组：ephemeral 会话 + 独立 ephemeral 任务 ──
+  const ephemeralConvs  = convs.filter(c => c.ephemeral);
+  const ephemeralTasks  = tasks.filter(t => t.ephemeral && !t.conversation_id);
+  if (ephemeralConvs.length || ephemeralTasks.length) {
+    const EPHEMERAL_KEY  = '__ephemeral__';
+    const isCollapsed    = chatCollapsedProjectNames.has(EPHEMERAL_KEY);
+    const encodedEphKey  = encodeURIComponent(EPHEMERAL_KEY).replace(/'/g, '%27');
+    const ephItems = [];
+    ephemeralConvs.forEach(c => {
+      const convTasks = tasks.filter(t => t.conversation_id === c.id)
+        .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
+      const latestStatus = convTasks[0]?.status || 'done';
+      ephItems.push({ type: 'conversation', id: c.id, name: c.name || c.id, time: c.updated || c.created || 0, status: latestStatus, mode: c.mode || 'chat' });
+    });
+    ephemeralTasks.forEach(t => {
+      ephItems.push({ type: 'one-off', id: `task-${t.id}`, name: t.prompt, time: t.created || 0, status: t.status || 'done' });
+    });
+    ephItems.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    let ephItemsHtml = '';
+    if (!isCollapsed) {
+      if (!ephItems.length) {
+        ephItemsHtml = `<div class="chat-project-empty">暂无临时任务</div>`;
+      } else {
+        ephItems.forEach(item => {
+          const isActive = item.id === activeConversationId || item.id === (activeConversationId ? 'task-' + activeConversationId : '');
+          const dotClass = item.status === 'running' ? 'running' : item.status === 'pending' ? 'pending' : item.status === 'failed' ? 'failed' : 'done';
+          ephItemsHtml += `<div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
+            <span class="chat-session-dot ${dotClass}"></span>
+            <span class="chat-session-name">${esc(item.name)}</span>
+            <span class="chat-session-time">${fmtTime(item.time)}</span>
+          </div>`;
+        });
+      }
+    }
+
+    html += `
+  <div class="chat-project-group ${isCollapsed ? 'collapsed' : ''}">
+    <div class="chat-project-header" onclick="toggleChatProjectGroup('${encodedEphKey}')" title="${isCollapsed ? '展开' : '收起'}临时任务">
+      <div class="proj-header-title">
+        <span class="proj-collapse-icon">${isCollapsed ? '+' : '-'}</span>
+        <span style="margin-right:4px;opacity:.8">⚡</span>
+        <span>临时任务</span>
+      </div>
+      <div class="proj-header-actions">
+        <button class="proj-new-chat-btn" onclick="event.stopPropagation(); openEphemeralModal()" title="新建临时任务" aria-label="新建临时任务">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="chat-project-items">${ephItemsHtml}</div>
+  </div>`;
+  }
 
   list.innerHTML = html;
 }
@@ -613,6 +676,7 @@ function toggleChatProjectItems(encodedProjectName) {
 async function selectConversation(convId) {
   stopChatFollow();
   activeConversationId = convId;
+  try { sessionStorage.setItem('coderfleet.activeConvId', convId || ''); } catch (_) {}
   activeTabId = upsertConversationTab(convId);
   renderTopbarTabs();
   await loadConversations();
@@ -622,6 +686,7 @@ async function selectConversation(convId) {
 function startNewChat(options = {}) {
   stopChatFollow();
   activeConversationId = null;
+  try { sessionStorage.removeItem('coderfleet.activeConvId'); } catch (_) {}
   currentChatTaskId = null;
   activeTabId = 'chat';
   chatNewSessionProject = options.projectName || '';
@@ -651,21 +716,48 @@ function renderEmptyChatState() {
     <div class="chat-main-title">新对话</div>
     <div class="chat-main-subtitle">项目: <strong style="color: var(--accent);">${esc(projectLabel)}</strong></div>
   </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button id="files-panel-toggle-btn" class="btn files-panel-toggle-btn" onclick="toggleFilePanel()" title="浏览工作区文件">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5A2.5 2.5 0 015.5 4H10l2 2h6.5A2.5 2.5 0 0121 8.5v8A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5z"/></svg>
+      文件
+    </button>
+  </div>
 </div>
 
-<div class="chat-viewport-wrap">
-  <div class="chat-main-viewport" id="chat-viewport">
-    <div id="chat-content">
-      <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发</div>
+<div class="chat-content-row">
+  <div class="chat-messages-column">
+    <div class="chat-viewport-wrap">
+      <div class="chat-main-viewport" id="chat-viewport">
+        <div id="chat-content">
+          <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发</div>
+        </div>
+      </div>
+      <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        跳到底部
+      </button>
+    </div>
+    ${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Enter 换行)', '发送第一条消息后将自动创建会话链')}
+  </div>
+  <div class="files-resize-handle" id="files-resize-handle" style="display:none"></div>
+  <div class="chat-files-panel" id="chat-files-panel" style="display:none">
+    <div class="files-panel-header">
+      <span>工作区文件</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="files-panel-icon-btn" onclick="loadFilePanelDir(_filePanelPath)" title="刷新">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </button>
+        <button class="files-panel-icon-btn" onclick="closeFilePanel()" title="关闭">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="files-panel-breadcrumb" id="files-panel-breadcrumb"></div>
+    <div class="files-panel-tree" id="files-panel-tree">
+      <div class="files-panel-empty">加载中...</div>
     </div>
   </div>
-  <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-    跳到底部
-  </button>
 </div>
-
-${buildChatInputHTML('输入您的开发指令... (按 Enter 发送，Shift+Enter 换行)', '发送第一条消息后将自动创建会话链')}
   `;
 
   const textarea = document.getElementById('chat-input');
@@ -861,32 +953,63 @@ async function renderChatWorkspace(conv) {
 <!-- 会话头部 -->
 <div class="chat-main-header">
   <div class="chat-main-title-area">
-    <div class="chat-main-title" title="${esc(conv.name)}">${esc(conv.name)}</div>
+    <div class="chat-main-title" title="${esc(conv.name)}">${esc(conv.name)}${conv.ephemeral ? ' <span style="font-size:11px;color:var(--accent);font-weight:normal" title="临时容器会话，每条消息在独立容器中运行">⚡ 临时</span>' : ''}</div>
     <div class="chat-main-subtitle">
-      项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> · 
-      账号: <span>${esc(conv.account || '未指定')}</span> · 
+      项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
+      账号: <span>${esc(conv.account || '未指定')}</span> ·
       活跃: <span>${fmtTime(conv.updated)}</span>
     </div>
   </div>
-  <div style="display: flex; gap: 8px;" id="chat-header-actions">
-    <!-- 动态渲染当前任务动作 -->
+  <div style="display: flex; gap: 8px; align-items: center;">
+    <div id="chat-header-actions" style="display:contents">
+      <!-- 动态渲染当前任务动作 -->
+    </div>
+    <button id="files-panel-toggle-btn" class="btn files-panel-toggle-btn" onclick="toggleFilePanel()" title="浏览工作区文件">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5A2.5 2.5 0 015.5 4H10l2 2h6.5A2.5 2.5 0 0121 8.5v8A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5z"/></svg>
+      文件
+    </button>
   </div>
 </div>
 
-<!-- 对话渲染区 -->
-<div class="chat-viewport-wrap">
-  <div class="chat-main-viewport" id="chat-viewport">
-    <div id="chat-content"></div>
+<!-- 中间区域（横向布局） -->
+<div class="chat-content-row">
+  <!-- 消息列（消息流 + 输入框） -->
+  <div class="chat-messages-column">
+    <div class="chat-viewport-wrap">
+      <div class="chat-main-viewport" id="chat-viewport">
+        <div id="chat-content"></div>
+      </div>
+      <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        跳到底部
+      </button>
+    </div>
+    ${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+Enter 换行)', conv.isOneOff ? '一次性单任务 (发送消息升级为任务链)' : 'AI 连续问答 · 会话链模式')}
   </div>
-  <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-    跳到底部
-  </button>
+  <!-- 拖拽分隔线 -->
+  <div class="files-resize-handle" id="files-resize-handle" style="display:none"></div>
+  <!-- 文件面板 -->
+  <div class="chat-files-panel" id="chat-files-panel" style="display:none">
+    <div class="files-panel-header">
+      <span>工作区文件</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button class="files-panel-icon-btn" onclick="loadFilePanelDir(_filePanelPath)" title="刷新">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        </button>
+        <button class="files-panel-icon-btn" onclick="closeFilePanel()" title="关闭">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="files-panel-breadcrumb" id="files-panel-breadcrumb"></div>
+    <div class="files-panel-tree" id="files-panel-tree">
+      <div class="files-panel-empty">加载中...</div>
+    </div>
+  </div>
 </div>
-
-<!-- 底部输入框 -->
-${buildChatInputHTML('输入您下一轮的指令... (按 Enter 发送，Shift+Enter 换行)', conv.isOneOff ? '一次性单任务 (发送消息升级为任务链)' : 'AI 连续问答 · 会话链模式')}
   `;
+
+  restoreFilePanelIfOpen();
 
   const textarea = document.getElementById('chat-input');
   bindChatTextareaEvents(textarea);
@@ -1926,4 +2049,116 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Enter') { e.preventDefault(); selectQuickJumpItem(quickJumpSelectedIdx); return; }
 });
+
+// ── 临时任务弹窗 ──────────────────────────────────────────────
+
+async function openEphemeralModalForProject(projectName, accountName) {
+  await openEphemeralModal();
+  if (accountName) {
+    const sel = document.getElementById('eph-account');
+    if (sel) {
+      for (const opt of sel.options) {
+        if (opt.value === accountName) { sel.value = accountName; break; }
+      }
+    }
+  }
+  if (projectName) {
+    const convInput = document.getElementById('eph-conv-name');
+    if (convInput && !convInput.value) convInput.value = projectName;
+  }
+}
+
+async function openEphemeralModal() {
+  const modal = document.getElementById('ephemeral-modal');
+  if (!modal) return;
+
+  // Load account options
+  const sel = document.getElementById('eph-account');
+  try {
+    const accounts = await fetch(`${API}/api/accounts`).then(r => r.json());
+    sel.innerHTML = accounts.map(a =>
+      `<option value="${esc(a.name)}">${esc(a.name)} (${esc(a.type)})</option>`
+    ).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">加载失败</option>';
+  }
+
+  document.getElementById('eph-msg').style.display = 'none';
+  modal.style.display = '';
+  setTimeout(() => document.getElementById('eph-prompt').focus(), 50);
+}
+
+function closeEphemeralModal(e) {
+  if (e && e.target !== document.getElementById('ephemeral-modal')) return;
+  document.getElementById('ephemeral-modal').style.display = 'none';
+}
+
+async function submitEphemeralTask() {
+  const account = document.getElementById('eph-account').value;
+  const prompt  = document.getElementById('eph-prompt').value.trim();
+  const secretsRaw = document.getElementById('eph-secrets').value.trim();
+  const outputDir  = document.getElementById('eph-output-dir').value.trim();
+  const convName   = document.getElementById('eph-conv-name').value.trim();
+  const retention  = document.getElementById('eph-retention')?.value || 'release_on_finish';
+  const ttlMinutes = parseInt(document.getElementById('eph-ttl-minutes')?.value || '120', 10);
+  const auto       = document.getElementById('eph-auto').checked;
+  const msg        = document.getElementById('eph-msg');
+  const btn        = document.getElementById('eph-submit-btn');
+
+  if (!account) { alert('请选择账号'); return; }
+  if (!prompt)  { alert('请填写任务描述'); return; }
+
+  // Parse secrets KEY=VAL lines
+  const secrets = {};
+  for (const line of secretsRaw.split('\n')) {
+    const l = line.trim();
+    if (!l || l.startsWith('#')) continue;
+    const idx = l.indexOf('=');
+    if (idx < 1) { alert(`Secrets 格式错误：${l}\n应为 KEY=VAL`); return; }
+    secrets[l.slice(0, idx).trim()] = l.slice(idx + 1);
+  }
+
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+  msg.style.display = 'none';
+
+  const body = { prompt, account, auto, ephemeral: true, secrets };
+  if (outputDir)  body.output_dir = outputDir;
+  if (convName)   body.conversation_name = convName;
+  body.ephemeral_retention = retention;
+  body.ephemeral_ttl_minutes = Number.isFinite(ttlMinutes) ? ttlMinutes : 120;
+
+  try {
+    const r = await fetch(`${API}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.statusText);
+
+    // Reset form fields (keep account)
+    document.getElementById('eph-prompt').value = '';
+    document.getElementById('eph-secrets').value = '';
+    document.getElementById('eph-output-dir').value = '';
+    document.getElementById('eph-conv-name').value = '';
+    const retentionEl = document.getElementById('eph-retention');
+    if (retentionEl) retentionEl.value = 'release_on_finish';
+    const ttlEl = document.getElementById('eph-ttl-minutes');
+    if (ttlEl) ttlEl.value = '120';
+
+    // Close modal and navigate directly to the task in the main chat area
+    // so the user sees execution progress inline (not in a disposable popup).
+    closeEphemeralModal();
+    const navId = data.conversation_id || `task-${data.id}`;
+    selectConversation(navId);
+    if (typeof loadTasks === 'function') loadTasks();
+  } catch (e) {
+    msg.style.display = '';
+    msg.innerHTML = `<div style="color:var(--red)">提交失败：${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '提交任务';
+  }
+}
 // 直接调用即可，此处无需再定义包装函数（否则会覆盖 window.renderTaskFileAttachments，导致无限递归）

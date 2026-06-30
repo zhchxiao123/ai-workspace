@@ -18,7 +18,10 @@ from coderfleet.server.models import (
     AccountType,
     BoardCardStatus,
     Conversation,
+    Pipeline,
     Project,
+    Schedule,
+    ScheduleType,
     Task,
     TaskStatus,
     TemplateNode,
@@ -506,6 +509,206 @@ def test_run_template_validates_runtime_target_before_creating_pipeline(
     assert sched.list_pipelines() == []
 
 
+def test_run_template_allows_ephemeral_node_account_without_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    tpl = sched.create_template(
+        "scratch",
+        "",
+        [
+            TemplateNode(
+                node_id="ask",
+                name="Ask",
+                prompt_tpl="ask {{input}}",
+                execution_mode="ephemeral",
+                account="alice",
+            )
+        ],
+    )
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-ask",
+            status=TaskStatus.running,
+            account=kwargs["account_name"],
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+        )
+
+    async def _instant_done(_task_id: str, **_kw) -> "TaskStatus":
+        return TaskStatus.done
+
+    async def run_and_wait() -> None:
+        monkeypatch.setattr(sched, "submit", fake_submit)
+        monkeypatch.setattr(sched, "_wait_for_task_done", _instant_done)
+        monkeypatch.setattr(sched, "get_log_path", lambda tid: tmp_path / "tasks" / f"{tid}.log")
+        pipeline = await sched.run_template(tpl.id, "input", project_map={}, default_project="")
+        pending = [
+            t for t in asyncio.all_tasks()
+            if t.get_name().startswith(f"pipeline-{pipeline.id}")
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(run_and_wait())
+
+    assert captured["project_name"] == ""
+    assert captured["account_name"] == "alice"
+    assert captured["execution_mode"] == "ephemeral"
+
+
+def test_run_template_shared_ephemeral_reuses_one_conversation_for_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+    tpl = sched.create_template(
+        "shared scratch",
+        "",
+        [
+            TemplateNode(
+                node_id="clone",
+                name="Clone",
+                prompt_tpl="clone {{input}}",
+                execution_mode="ephemeral",
+                account="alice",
+            ),
+            TemplateNode(
+                node_id="fix",
+                name="Fix",
+                prompt_tpl="fix",
+                execution_mode="ephemeral",
+                account="alice",
+                depends_on=["clone"],
+            ),
+        ],
+    )
+    captured: list[dict] = []
+
+    async def fake_submit(**kwargs):
+        captured.append(dict(kwargs))
+        return Task(
+            id=f"task-{len(captured)}",
+            status=TaskStatus.running,
+            account=kwargs["account_name"],
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+            conversation_id=kwargs.get("conversation_id") or "",
+        )
+
+    async def _instant_done(_task_id: str, **_kw) -> "TaskStatus":
+        return TaskStatus.done
+
+    async def run_and_wait() -> "Pipeline":
+        monkeypatch.setattr(sched, "submit", fake_submit)
+        monkeypatch.setattr(sched, "_wait_for_task_done", _instant_done)
+        monkeypatch.setattr(sched, "get_log_path", lambda tid: tmp_path / "tasks" / f"{tid}.log")
+        pipeline = await sched.run_template(
+            tpl.id,
+            "repo",
+            project_map={},
+            default_project="",
+            workspace_policy="shared_ephemeral",
+        )
+        pending = [
+            t for t in asyncio.all_tasks()
+            if t.get_name().startswith(f"pipeline-{pipeline.id}")
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return sched.get_pipeline(pipeline.id) or pipeline
+
+    pipeline = asyncio.run(run_and_wait())
+
+    assert pipeline.workspace_policy == "shared_ephemeral"
+    assert pipeline.shared_conversation_id
+    assert [c["conversation_id"] for c in captured] == [
+        pipeline.shared_conversation_id,
+        pipeline.shared_conversation_id,
+    ]
+    conv = sched.get_conversation(pipeline.shared_conversation_id)
+    assert conv is not None
+    assert conv.name == f"workflow:{pipeline.id}:shared"
+
+
+def test_run_template_shared_ephemeral_uses_runtime_default_account(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+    tpl = sched.create_template(
+        "runtime account",
+        "",
+        [
+            TemplateNode(
+                node_id="fix",
+                name="Fix",
+                prompt_tpl="fix {{input}}",
+                execution_mode="ephemeral",
+            )
+        ],
+    )
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-fix",
+            status=TaskStatus.running,
+            account=kwargs["account_name"],
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+            conversation_id=kwargs.get("conversation_id") or "",
+        )
+
+    async def _instant_done(_task_id: str, **_kw) -> "TaskStatus":
+        return TaskStatus.done
+
+    async def run_and_wait() -> "Pipeline":
+        monkeypatch.setattr(sched, "submit", fake_submit)
+        monkeypatch.setattr(sched, "_wait_for_task_done", _instant_done)
+        monkeypatch.setattr(sched, "get_log_path", lambda tid: tmp_path / "tasks" / f"{tid}.log")
+        pipeline = await sched.run_template(
+            tpl.id,
+            "repo",
+            project_map={},
+            default_project="",
+            default_account="alice",
+            workspace_policy="shared_ephemeral",
+        )
+        pending = [
+            t for t in asyncio.all_tasks()
+            if t.get_name().startswith(f"pipeline-{pipeline.id}")
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return sched.get_pipeline(pipeline.id) or pipeline
+
+    pipeline = asyncio.run(run_and_wait())
+
+    assert pipeline.default_account == "alice"
+    assert pipeline.shared_conversation_id
+    assert captured["account_name"] == "alice"
+    assert captured["conversation_id"] == pipeline.shared_conversation_id
+
+
 def test_run_template_creates_first_class_workflow_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -819,3 +1022,501 @@ def test_submit_uses_project_account_and_project_path(
 
     assert task.account == "alice"
     assert task.project == str(project_path.resolve())
+
+
+def test_submit_schedules_ephemeral_task_without_running_immediately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_projects",
+        lambda: [Project(name="repo", account="alice", path=str(project_path))],
+    )
+
+    async def fail_if_started(*_args, **_kwargs):
+        raise AssertionError("scheduled ephemeral task should not start immediately")
+
+    monkeypatch.setattr(sched, "_run_ephemeral_task", fail_if_started)
+
+    task = asyncio.run(
+        sched.submit(
+            "hello",
+            project_name="repo",
+            execution_mode="ephemeral",
+            execute_at="2999-01-01T00:00:00",
+        )
+    )
+
+    assert task.status == TaskStatus.scheduled
+    assert task.ephemeral is True
+    assert task.execution_mode == "ephemeral"
+    assert task.id not in sched._running
+    assert sched.get_log_path(task.id).read_text(encoding="utf-8") == ""
+
+
+def test_start_pending_ephemeral_task_uses_ephemeral_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="task-pending-eph",
+        status=TaskStatus.pending,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project="ephemeral",
+        project_name="",
+        ephemeral=True,
+        execution_mode="ephemeral",
+    )
+    task.save(sched.tasks_dir)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+
+    called = asyncio.Event()
+
+    async def fake_ephemeral_runner(*_args, **_kwargs):
+        called.set()
+        await asyncio.sleep(60)
+
+    async def run_start() -> None:
+        monkeypatch.setattr(sched, "_run_ephemeral_task", fake_ephemeral_runner)
+        await sched._start_pending_task(task)
+        await asyncio.wait_for(called.wait(), timeout=1)
+        bg = sched._running.pop(task.id)
+        bg.cancel()
+        await asyncio.gather(bg, return_exceptions=True)
+
+    asyncio.run(run_start())
+
+    saved = sched.get_task(task.id)
+    assert saved is not None
+    assert saved.status == TaskStatus.running
+    assert saved.ephemeral is True
+    assert saved.execution_mode == "ephemeral"
+
+
+def test_submit_ephemeral_conversation_records_retention_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+
+    started = asyncio.Event()
+
+    async def fake_ephemeral_runner(*_args, **_kwargs):
+        started.set()
+        await asyncio.sleep(60)
+
+    async def run_submit() -> Task:
+        monkeypatch.setattr(sched, "_run_ephemeral_task", fake_ephemeral_runner)
+        task = await sched.submit(
+            "hello",
+            account_name="alice",
+            execution_mode="ephemeral",
+            conversation_name="scratch",
+            ephemeral_retention="keep_until_ttl",
+            ephemeral_ttl_minutes=30,
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        bg = sched._running.pop(task.id)
+        bg.cancel()
+        await asyncio.gather(bg, return_exceptions=True)
+        return task
+
+    task = asyncio.run(run_submit())
+    conv = sched.get_conversation(task.conversation_id)
+
+    assert task.ephemeral_retention == "keep_until_ttl"
+    assert task.ephemeral_ttl_minutes == 30
+    assert conv is not None
+    assert conv.ephemeral is True
+    assert conv.ephemeral_retention == "keep_until_ttl"
+    assert conv.ephemeral_ttl_minutes == 30
+    assert conv.ephemeral_expires_at
+
+
+def test_trigger_schedule_passes_execution_mode_and_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    schedule = Schedule(
+        id="sched-1",
+        name="nightly",
+        prompt="hello",
+        project_name="repo",
+        schedule_type=ScheduleType.daily,
+        execution_mode="ephemeral",
+        output_dir="/tmp/out",
+    )
+
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-1",
+            status=TaskStatus.running,
+            account="alice",
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+        )
+
+    monkeypatch.setattr(sched, "submit", fake_submit)
+
+    asyncio.run(sched._trigger_schedule(schedule))
+
+    assert captured["execution_mode"] == "ephemeral"
+    assert captured["output_dir"] == "/tmp/out"
+    assert schedule.last_task_id == "task-1"
+
+
+def test_trigger_ephemeral_schedule_allows_account_without_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    schedule = Schedule(
+        id="sched-eph",
+        name="scratch",
+        prompt="hello",
+        project_name="",
+        account="alice",
+        schedule_type=ScheduleType.daily,
+        execution_mode="ephemeral",
+        ephemeral_retention="keep_until_ttl",
+    )
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-eph-sched",
+            status=TaskStatus.running,
+            account=kwargs["account_name"],
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+        )
+
+    monkeypatch.setattr(sched, "submit", fake_submit)
+
+    asyncio.run(sched._trigger_schedule(schedule))
+
+    assert captured["project_name"] == ""
+    assert captured["account_name"] == "alice"
+    assert captured["execution_mode"] == "ephemeral"
+    assert captured["conversation_name"] == "schedule:sched-eph"
+
+
+def test_trigger_schedule_runs_workflow_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    schedule = Schedule(
+        id="sched-wf",
+        name="nightly workflow",
+        prompt="fallback input",
+        project_name="",
+        target_type="workflow",
+        template_id="tpl-1",
+        workflow_input="openclaw/openclaw",
+        default_account="alice",
+        workspace_policy="shared_ephemeral",
+        schedule_type=ScheduleType.daily,
+    )
+    captured: dict = {}
+
+    async def fake_run_template(**kwargs):
+        captured.update(kwargs)
+        return Pipeline(
+            id="pipe-1",
+            name="run",
+            template_id=kwargs["template_id"],
+            trigger_input=kwargs["input_str"],
+            default_account=kwargs["default_account"],
+            workspace_policy=kwargs["workspace_policy"],
+        )
+
+    monkeypatch.setattr(sched, "run_template", fake_run_template)
+
+    asyncio.run(sched._trigger_schedule(schedule))
+
+    assert captured == {
+        "template_id": "tpl-1",
+        "input_str": "openclaw/openclaw",
+        "project_map": {},
+        "default_project": "",
+        "default_account": "alice",
+        "workspace_policy": "shared_ephemeral",
+    }
+    assert schedule.last_run_type == "workflow"
+    assert schedule.last_workflow_run_id == "pipe-1"
+    assert schedule.last_task_id == ""
+
+
+def test_submit_pipeline_node_passes_node_execution_mode_and_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    node = TemplateNode(
+        node_id="build",
+        name="Build",
+        prompt_tpl="build {{input}}",
+        execution_mode="ephemeral",
+        output_dir="/tmp/node-out",
+    )
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-build",
+            status=TaskStatus.running,
+            account="alice",
+            type=AccountType.claude,
+            prompt=kwargs["prompt"],
+            project="ephemeral",
+        )
+
+    monkeypatch.setattr(sched, "submit", fake_submit)
+
+    task = asyncio.run(
+        sched._submit_pipeline_node(
+            node,
+            pipeline.id,
+            {"build": "repo"},
+            "input",
+            {},
+        )
+    )
+
+    updated = sched.get_pipeline(pipeline.id)
+    assert task.id == "task-build"
+    assert captured["execution_mode"] == "ephemeral"
+    assert captured["output_dir"] == "/tmp/node-out"
+    assert updated is not None
+    assert updated.node_runs[0].execution_mode == "ephemeral"
+    assert updated.node_runs[0].output_dir == "/tmp/node-out"
+
+
+def test_ephemeral_task_retention_starts_session_container_then_execs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyStdout:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class FakeStartProcess:
+        pid = 111
+        returncode = 0
+
+        async def communicate(self):
+            self.returncode = 0
+            return (b"container-id\n", None)
+
+    class FakeExecProcess:
+        pid = 222
+        returncode = 0
+        stdout = EmptyStdout()
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    calls: list[tuple[str, ...]] = []
+    sched = Scheduler(tmp_path)
+    conversation = Conversation(
+        id="conv-eph",
+        name="scratch",
+        account="alice",
+        type=AccountType.claude,
+        project="ephemeral",
+        ephemeral=True,
+        ephemeral_retention="keep_until_ttl",
+        ephemeral_ttl_minutes=45,
+    )
+    conversation.save(sched.conversations_dir)
+    task = Task(
+        id="task-eph-retain",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project=str(sched._get_session_dir(conversation.id)),
+        conversation_id=conversation.id,
+        ephemeral=True,
+        execution_mode="ephemeral",
+        ephemeral_retention="keep_until_ttl",
+        ephemeral_ttl_minutes=45,
+    )
+    task.save(sched.tasks_dir)
+    acc = Account(name="alice", type=AccountType.claude)
+    log_path = sched.get_log_path(task.id)
+    sched._write_log_header(log_path, task, acc)
+
+    async def fake_create_subprocess_exec(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("docker", "run"):
+            return FakeStartProcess()
+        return FakeExecProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(sched, "_docker_container_running", lambda _name: False)
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    asyncio.run(sched._run_ephemeral_task(task, acc, log_path, auto=False, conversation=conversation, session_dir=sched._get_session_dir(conversation.id)))
+
+    assert calls[0][:2] == ("docker", "run")
+    assert "--rm" not in calls[0]
+    assert "-d" in calls[0]
+    assert calls[1][:2] == ("docker", "exec")
+    saved_conv = sched.get_conversation(conversation.id)
+    assert saved_conv is not None
+    assert saved_conv.ephemeral_container_name == "coderfleet-eph-session-conv-eph"
+    assert saved_conv.ephemeral_expires_at
+
+
+def test_ephemeral_task_records_stdout_chunks_without_newlines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStdout:
+        def __init__(self, chunks: list[bytes]):
+            self.chunks = chunks
+
+        async def read(self, _size: int) -> bytes:
+            await asyncio.sleep(0)
+            if not self.chunks:
+                return b""
+            return self.chunks.pop(0)
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            utf8_text = "中文过程".encode("utf-8")
+            self.pid = 1234
+            self.returncode = 0
+            self.stdout = FakeStdout([
+                b'{"type":"system","session_id":"',
+                b'sess-ephemeral-1"}',
+                b'partial-without-newline',
+                utf8_text[:2],
+                utf8_text[2:],
+            ])
+
+        async def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="task-eph",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project="ephemeral",
+        ephemeral=True,
+    )
+    acc = Account(name="alice", type=AccountType.claude)
+    log_path = sched.get_log_path(task.id)
+    sched._write_log_header(log_path, task, acc)
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    asyncio.run(sched._run_ephemeral_task(task, acc, log_path, auto=False))
+
+    saved = sched.get_task(task.id)
+    assert saved is not None
+    assert saved.status == TaskStatus.done
+    assert saved.native_session_id == "sess-ephemeral-1"
+    text = log_path.read_text(encoding="utf-8")
+    assert '{"type":"system","session_id":"sess-ephemeral-1"}' in text
+    assert "partial-without-newline" in text
+    assert "中文过程" in text
+
+
+def test_ephemeral_task_passes_configured_proxy_to_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyStdout:
+        async def read(self, _size: int) -> bytes:
+            return b""
+
+    class FakeProcess:
+        pid = 5678
+        returncode = 0
+        stdout = EmptyStdout()
+
+        async def wait(self) -> int:
+            return 0
+
+    captured_args: tuple[str, ...] = ()
+    (tmp_path / "config.conf").write_text(
+        "RELAY_IP=10.8.0.2 RELAY_LISTEN_PORT=18080 NO_PROXY=localhost,127.0.0.1,example.test\n",
+        encoding="utf-8",
+    )
+
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="task-eph-proxy",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project="ephemeral",
+        ephemeral=True,
+    )
+    acc = Account(name="alice", type=AccountType.claude)
+    log_path = sched.get_log_path(task.id)
+    sched._write_log_header(log_path, task, acc)
+
+    async def fake_create_subprocess_exec(*args, **_kwargs):
+        nonlocal captured_args
+        captured_args = args
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: "coderfleet_intnet")
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    asyncio.run(sched._run_ephemeral_task(task, acc, log_path, auto=False))
+
+    assert "HTTP_PROXY=http://10.8.0.2:18080" in captured_args
+    assert "HTTPS_PROXY=http://10.8.0.2:18080" in captured_args
+    assert "ALL_PROXY=http://10.8.0.2:18080" in captured_args
+    assert "NO_PROXY=localhost,127.0.0.1,example.test" in captured_args
+    assert "CODERFLEET_RELAY_IP=10.8.0.2" in captured_args
+    assert "CODERFLEET_RELAY_PORT=18080" in captured_args
+    assert "coderfleet_intnet" in captured_args
