@@ -6,7 +6,11 @@
 //   - Ctrl+Shift+C/V 复制粘贴
 //   - 右键 context menu
 
-function createEnhancedTerminal(mountEl) {
+function createEnhancedTerminal(mountEl, options = {}) {
+  const interceptScroll = options.interceptScroll !== false;
+  const onScrollGesture = typeof options.onScrollGesture === 'function'
+    ? options.onScrollGesture
+    : null;
   const terminal = new window.Terminal({
     cursorBlink:       true,
     fontFamily:        "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -40,6 +44,68 @@ function createEnhancedTerminal(mountEl) {
   }
 
   terminal.open(mountEl);
+
+  // ── 滚轮 & 触摸屏始终滚动视口，不转发给后端 ────────────
+  // xterm.js 在鼠标追踪模式（tmux / vim 等程序开启 \e[?1000h）下会把
+  // 滚轮/触摸事件转成鼠标转义码发往后端，bash 将其解释为上/下方向键
+  // 从而滚动命令历史，而不是滚动终端内容。
+  // 使用 capture:true 在 xterm 处理之前拦截事件，手动调用 scrollLines。
+  const _termEl = terminal.element;
+  if (_termEl && interceptScroll) {
+    // 鼠标滚轮 & 触摸板（touchpad 生成 wheel 事件，不是 touch 事件）
+    // 触摸板：deltaMode=0（像素），每次 deltaY 很小（1-5px），需要累加到一行阈值再滚动
+    // 物理鼠标滚轮：deltaMode=1（行）或 deltaMode=0 但 deltaY 较大（100px+）
+    let _wheelPixelAccum = 0;
+    _termEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let lines;
+      if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        // 行模式：deltaY 直接是行数（物理鼠标滚轮常见）
+        lines = Math.round(e.deltaY);
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        lines = Math.round(e.deltaY) * (terminal.rows || 24);
+      } else {
+        // 像素模式（触摸板）：累加像素，满一行（20px）才实际滚动，保证顺滑
+        _wheelPixelAccum += e.deltaY;
+        lines = Math.trunc(_wheelPixelAccum / 20);
+        _wheelPixelAccum -= lines * 20;
+      }
+      if (lines !== 0) {
+        if (onScrollGesture) onScrollGesture(lines);
+        else terminal.scrollLines(lines);
+      }
+    }, { passive: false, capture: true });
+
+    // 触摸屏：记录起始 Y，在 touchmove 中计算位移后滚动
+    let _touchStartY = 0;
+    let _touchLastY  = 0;
+    _termEl.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      _touchStartY = e.touches[0].clientY;
+      _touchLastY  = _touchStartY;
+    }, { passive: true, capture: true });
+
+    _termEl.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const currentY = e.touches[0].clientY;
+      const deltaY   = _touchLastY - currentY;   // 向上滑 → deltaY > 0 → 内容向上（视口向下）
+      _touchLastY    = currentY;
+      const lines = Math.round(Math.abs(deltaY) / 20) || 1;
+      if (Math.abs(deltaY) >= 2) {
+        const signedLines = deltaY > 0 ? lines : -lines;
+        if (onScrollGesture) onScrollGesture(signedLines);
+        else terminal.scrollLines(signedLines);
+      }
+    }, { passive: false, capture: true });
+
+    _termEl.addEventListener('touchend', () => {
+      _touchStartY = 0;
+      _touchLastY  = 0;
+    }, { passive: true, capture: true });
+  }
 
   // ── IME 中文/日文/韩文输入法支持 ──────────────────────
   // xterm.js 在部分浏览器/IME（fcitx、ibus、搜狗等）下存在竞态：

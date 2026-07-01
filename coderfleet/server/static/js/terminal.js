@@ -22,9 +22,29 @@ function getOrCreateConvTerminalContext(convId) {
       resizeTimer: null,
       lastState: 'closed',
       mountEl: null,
+      outputBacklog: '',
+      selectionActive: false,
+      selectionFlushTimer: null,
     };
   }
   return convTerminalContexts[convId];
+}
+
+function writeConversationTerminal(ctx, data) {
+  const text = String(data || '');
+  if (!text || !ctx.terminal) return;
+  if (ctx.selectionActive && ctx.terminal.getSelection()) {
+    ctx.outputBacklog += text;
+    return;
+  }
+  ctx.terminal.write(text);
+}
+
+function flushConversationTerminalBacklog(ctx) {
+  if (!ctx.terminal || !ctx.outputBacklog) return;
+  const pending = ctx.outputBacklog;
+  ctx.outputBacklog = '';
+  ctx.terminal.write(pending);
 }
 
 function connectConversationTerminal(convId, mountEl) {
@@ -59,6 +79,21 @@ function connectConversationTerminal(convId, mountEl) {
   ctx.terminal = terminal;
   ctx.fitAddon = fitAddon;
   ctx.inputReady = false;
+  ctx.outputBacklog = '';
+  ctx.selectionActive = false;
+  clearTimeout(ctx.selectionFlushTimer);
+  ctx.selectionFlushTimer = null;
+  terminal.onSelectionChange(() => {
+    const hasSelection = !!terminal.getSelection();
+    ctx.selectionActive = hasSelection;
+    clearTimeout(ctx.selectionFlushTimer);
+    if (!hasSelection) {
+      ctx.selectionFlushTimer = setTimeout(() => {
+        ctx.selectionActive = false;
+        flushConversationTerminalBacklog(ctx);
+      }, 700);
+    }
+  });
   terminal.onData(imeFilter(data => {
     if (!ctx.inputReady) return;   // block during history replay and tmux handshake
     if (ctx.socket && ctx.socket.readyState === WebSocket.OPEN) {
@@ -81,7 +116,7 @@ function connectConversationTerminal(convId, mountEl) {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     if (msg.type === 'output') {
-      terminal.write(String(msg.data || ''));
+      writeConversationTerminal(ctx, msg.data);
     } else if (msg.type === 'history') {
       // Replay historical transcript before the live stream starts
       terminal.write('\x1b[?25l');           // hide cursor during replay
@@ -159,6 +194,7 @@ function disconnectConversationTerminal(convId, dispose = true) {
     delete convTerminalContexts[convId];
   }
   clearTimeout(ctx.resizeTimer);
+  clearTimeout(ctx.selectionFlushTimer);
 }
 
 function updateConvTerminalStatusBar(convId, state, message) {

@@ -3964,33 +3964,49 @@
       width: 100%;
     }
 
-    .chat-image-thumb {
+    /* 统一的附件 chip（图片和非图片文件共用） */
+    .chat-attach-chip {
       position: relative;
-      width: 64px;
-      height: 64px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 28px 5px 6px;
       border-radius: 6px;
-      overflow: hidden;
       border: 1px solid var(--border-md);
+      background: var(--surface-2);
+      flex-shrink: 0;
+      max-width: 220px;
+    }
+
+    .chat-attach-chip-thumb {
+      width: 32px;
+      height: 32px;
+      object-fit: cover;
+      border-radius: 4px;
       flex-shrink: 0;
     }
 
-    .chat-image-thumb img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
+    .chat-attach-chip-name {
+      font-size: 11px;
+      color: var(--text-1);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 140px;
     }
 
-    .chat-image-thumb-remove {
+    .chat-attach-chip-remove {
       position: absolute;
-      top: 2px;
-      right: 2px;
-      width: 18px;
-      height: 18px;
-      background: rgba(0, 0, 0, 0.6);
+      top: 50%;
+      right: 4px;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      background: rgba(0, 0, 0, 0.45);
       border: none;
       border-radius: 50%;
       color: white;
-      font-size: 12px;
+      font-size: 11px;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -3999,40 +4015,8 @@
       line-height: 1;
     }
 
-    .chat-image-thumb-remove:hover {
+    .chat-attach-chip-remove:hover {
       background: rgba(200, 30, 30, 0.85);
-    }
-
-    /* 非图片文件 pending 预览 */
-    .chat-file-thumb {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 28px 5px 8px;
-      border-radius: 6px;
-      border: 1px solid var(--border-md);
-      background: var(--surface-2);
-      flex-shrink: 0;
-      max-width: 200px;
-    }
-
-    .chat-file-thumb .file-attach-name {
-      font-size: 11px;
-      color: var(--text-1);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 130px;
-    }
-
-    .chat-file-thumb .chat-image-thumb-remove {
-      position: absolute;
-      top: 50%;
-      right: 4px;
-      transform: translateY(-50%);
-      width: 16px;
-      height: 16px;
     }
 
     .welcome-container {

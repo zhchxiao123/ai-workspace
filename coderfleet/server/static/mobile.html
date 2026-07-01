@@ -493,25 +493,38 @@
       max-height: 78px; overflow-y: auto; overflow-x: hidden;
       padding: 0 2px 2px 2px;
     }
-    .image-thumb {
+    .chat-attach-chip {
       position: relative;
-      width: 58px; height: 58px;
-      border-radius: 8px; overflow: hidden;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 28px 5px 6px;
+      border-radius: 6px;
       border: 1px solid var(--border-md);
       background: var(--surface2);
       flex-shrink: 0;
+      max-width: 220px;
     }
-    .image-thumb img {
-      width: 100%; height: 100%; object-fit: cover; display: block;
+    .chat-attach-chip-thumb {
+      width: 32px; height: 32px;
+      object-fit: cover; border-radius: 4px; flex-shrink: 0;
     }
-    .image-remove {
-      position: absolute; top: 2px; right: 2px;
-      width: 18px; height: 18px; border-radius: 50%;
+    .chat-attach-chip-name {
+      font-size: 11px; color: var(--text1);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 140px;
+    }
+    .chat-attach-chip-remove {
+      position: absolute; top: 50%; right: 4px;
+      transform: translateY(-50%);
+      width: 16px; height: 16px; border-radius: 50%;
       border: 0; padding: 0;
-      background: rgba(0,0,0,.62); color: #fff;
-      font-size: 13px; line-height: 18px;
+      background: rgba(0,0,0,.45); color: #fff;
+      font-size: 11px; line-height: 1;
       display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
     }
+    .chat-attach-chip-remove:hover { background: rgba(200,30,30,.85); }
     .upload-status {
       display: none;
       padding: 0 4px;
@@ -1794,8 +1807,6 @@ function renderImagePreviews() {
   if (typeof renderPendingPreviews === 'function') {
     renderPendingPreviews({
       containerId: 'image-previews',
-      thumbClass: 'image-thumb',
-      removeClass: 'image-remove',
       getImages: () => pendingImages,
       removeImage: (index) => pendingImages.splice(index, 1),
       clearImages: () => { pendingImages = []; },
@@ -2026,6 +2037,31 @@ function ensureMobileTerminal() {
   mobileTerminal.terminal.loadAddon(mobileTerminal.fitAddon);
   mobileTerminal.terminal.open(mount);
   mobileTerminal.terminal.onData(data => sendTerminalKey(data));
+
+  // 触摸滚动：拦截 xterm.js 将触摸事件转成转义码（会被 bash 解读为方向键/命令历史）
+  // 改为直接调用 scrollLines 滚动视口内容
+  const _termEl = mobileTerminal.terminal.element;
+  if (_termEl) {
+    let _touchLastY = 0;
+    _termEl.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      _touchLastY = e.touches[0].clientY;
+    }, { passive: true, capture: true });
+    _termEl.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const currentY = e.touches[0].clientY;
+      const deltaY = _touchLastY - currentY;
+      _touchLastY = currentY;
+      if (Math.abs(deltaY) >= 2) {
+        const lines = Math.round(Math.abs(deltaY) / 18) || 1;
+        mobileTerminal.terminal.scrollLines(deltaY > 0 ? lines : -lines);
+      }
+    }, { passive: false, capture: true });
+    _termEl.addEventListener('touchend', () => { _touchLastY = 0; }, { passive: true, capture: true });
+  }
+
   setTimeout(fitMobileTerminal, 60);
   return true;
 }

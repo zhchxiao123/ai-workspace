@@ -198,6 +198,17 @@ async def setup_tmux_session(
     )
     await asyncio.wait_for(proc.wait(), timeout=10)
 
+    options_cmd = (
+        f"tmux set-option -t {shlex.quote(session_name)} mouse off && "
+        f"tmux set-option -t {shlex.quote(session_name)} history-limit 50000"
+    )
+    proc_options = await asyncio.create_subprocess_exec(
+        "docker", "exec", container_name, "bash", "-c", options_cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.wait_for(proc_options.wait(), timeout=10)
+
     # Ensure log directory exists and enable pipe-pane (idempotent)
     log_dir = str(Path(log_path_in_container).parent)
     pipe_cmd = (

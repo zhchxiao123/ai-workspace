@@ -197,6 +197,21 @@ def test_bottom_terminal_tabs_keep_independent_sessions() -> None:
     assert "window.addEventListener('beforeunload', disconnectAllBottomTerminals)" in source
 
 
+def test_tmux_conversation_terminal_uses_local_scroll_and_selection_hold() -> None:
+    source = read_ui_source()
+
+    assert "function createEnhancedTerminal(mountEl, options = {})" in source
+    assert "const interceptScroll = options.interceptScroll !== false" in source
+    assert "function writeConversationTerminal(ctx, data)" in source
+    assert "ctx.outputBacklog += text" in source
+    assert "function flushConversationTerminalBacklog(ctx)" in source
+    assert "terminal.onSelectionChange(() => {" in source
+    assert "writeConversationTerminal(ctx, msg.data)" in source
+    assert "ctx.socket.send(JSON.stringify({ type: 'scroll', lines }))" not in source
+    assert "createEnhancedTerminal(mount)" in source
+    assert "createEnhancedTerminal(pane)" in source
+
+
 def test_sidebar_can_collapse_with_persisted_state() -> None:
     html = read_index()
     source = read_ui_source()

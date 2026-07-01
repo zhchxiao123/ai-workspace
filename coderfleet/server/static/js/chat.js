@@ -1815,8 +1815,6 @@ function updateChatUploadState() {
 function renderImagePreviews() {
   renderPendingPreviews({
     containerId: 'chat-image-previews',
-    thumbClass: 'chat-image-thumb',
-    removeClass: 'chat-image-thumb-remove',
     getImages: () => pendingImages,
     removeImage: (index) => pendingImages.splice(index, 1),
     clearImages: () => { pendingImages = []; },

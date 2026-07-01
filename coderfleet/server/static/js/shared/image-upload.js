@@ -128,8 +128,6 @@ function renderTaskFileAttachments(task, fallbackProjectName = '') {
 function renderPendingPreviews(config = {}) {
   const {
     containerId = 'chat-image-previews',
-    thumbClass = 'chat-image-thumb',
-    removeClass = 'chat-image-thumb-remove',
     getImages = () => (Array.isArray(window.pendingImages) ? window.pendingImages : []),
     removeImage = (index) => {
       if (Array.isArray(window.pendingImages)) window.pendingImages.splice(index, 1);
@@ -161,12 +159,12 @@ function renderPendingPreviews(config = {}) {
   container.innerHTML = imgs.map((img, i) => {
     const safeName = escFn(img.name);
     const src = getSseUrl(`${getApi()}${img.preview_url}`);
-    const removeBtn = `<button class="${removeClass}" type="button" onclick="removePendingImage(${i})" title="移除">×</button>`;
+    const removeBtn = `<button class="chat-attach-chip-remove" type="button" onclick="removePendingImage(${i})" title="移除">×</button>`;
     if (_isImagePath(img.name)) {
-      return `<div class="${thumbClass}" title="${safeName}"><img src="${src}" alt="${safeName}">${removeBtn}</div>`;
+      return `<div class="chat-attach-chip" title="${safeName}"><img class="chat-attach-chip-thumb" src="${src}" alt="${safeName}"><span class="chat-attach-chip-name">${safeName}</span>${removeBtn}</div>`;
     } else {
       const ext = escFn((img.name.split('.').pop() || 'file').toUpperCase().slice(0, 6));
-      return `<div class="chat-file-thumb" title="${safeName}"><span class="file-ext-badge">${ext}</span><span class="file-attach-name">${safeName}</span>${removeBtn}</div>`;
+      return `<div class="chat-attach-chip" title="${safeName}"><span class="file-ext-badge">${ext}</span><span class="chat-attach-chip-name">${safeName}</span>${removeBtn}</div>`;
     }
   }).join('');
   afterRender();

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -26,6 +27,35 @@ def test_terminal_command_enters_project_container_workdir(tmp_path: Path) -> No
     )
 
     assert command == ["docker", "exec", "-it", "-w", "/workspace", "codex-repo", "bash", "-l"]
+
+
+def test_setup_tmux_session_configures_scrollback_without_mouse_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    from coderfleet.server import terminal
+
+    commands: list[tuple[str, ...]] = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*args: str, **_kwargs: object) -> FakeProc:
+        commands.append(args)
+        return FakeProc()
+
+    monkeypatch.setattr(terminal.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    asyncio.run(terminal.setup_tmux_session(
+        container_name="codex-repo",
+        session_name="cf-test",
+        workdir="/workspace",
+        log_path_in_container="/workspace/.coderfleet-terminals/cf-test.log",
+    ))
+
+    bash_commands = [cmd[-1] for cmd in commands if cmd[:4] == ("docker", "exec", "codex-repo", "bash")]
+    assert any("tmux set-option -t cf-test mouse off" in cmd for cmd in bash_commands)
+    assert any("tmux set-option -t cf-test history-limit 50000" in cmd for cmd in bash_commands)
 
 
 def test_terminal_session_resize_delegates_to_pty(monkeypatch: pytest.MonkeyPatch) -> None:
