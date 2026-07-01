@@ -754,6 +754,7 @@ class ChatLogRenderer {
       ? model.replace(/^claude-/, '').split('-').slice(0, 2).join('-')
       : 'AI';
     const displayText = this._injectDownloadCards(text);
+    const showTranslate = isMostlyNonChinese(text);
     const el = document.createElement('div');
     el.className = 'chat-bubble-wrap';
     el.classList.add('timeline-node');
@@ -763,7 +764,10 @@ class ChatLogRenderer {
     <div class="bubble">
       <div class="bubble-label-row">
         <div class="bubble-label">${esc(label)}</div>
-        <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+        <div class="bubble-actions">
+          ${showTranslate ? `<button class="bubble-translate-btn" title="翻译">${translateBtnSVG()}</button>` : ''}
+          <button class="bubble-copy-btn" title="复制">${copyBtnSVG()}</button>
+        </div>
       </div>
       <div class="bubble-content">${renderMd(displayText)}</div>
     </div>
@@ -772,6 +776,13 @@ class ChatLogRenderer {
     el.querySelector('.bubble-copy-btn').addEventListener('click', () => {
       copyTextToClipboard(text, el.querySelector('.bubble-copy-btn'));
     });
+
+    const tbtn = el.querySelector('.bubble-translate-btn');
+    if (tbtn) {
+      tbtn.addEventListener('click', () => {
+        toggleBubbleTranslation(tbtn, el.querySelector('.bubble-content'), text);
+      });
+    }
 
     // 如果之前有渲染过 AI 回复，说明之前的回复并非最后一条，需要移入折叠包中
     if (this.lastBubbleEl) {

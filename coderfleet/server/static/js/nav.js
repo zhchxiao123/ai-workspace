@@ -6,7 +6,7 @@ function showPage(name) {
   document.getElementById('page-' + name).classList.add('active');
   document.querySelector(`[data-page="${name}"]`).classList.add('active');
 
-  const titles = { chat: '任务开发', tasks: '任务监控', boards: '开发看板', workflows: '工作流', projects: '项目管理', accounts: '账号状态', schedules: '定时计划', digest: '任务日报' };
+  const titles = { chat: '任务开发', tasks: '任务监控', boards: '开发看板', workflows: '工作流', projects: '项目管理', accounts: '账号状态', schedules: '定时计划', digest: '任务日报', settings: '系统设置' };
   document.getElementById('page-title').textContent = titles[name] || name;
 
   // 顶部 Tab 只在任务开发页展示，用于多任务链切换。
@@ -30,6 +30,7 @@ function showPage(name) {
   else if (name === 'boards') loadBoards();
   else if (name === 'schedules') initSchedulesPage();
   else if (name === 'digest') initDigestPage();
+  else if (name === 'settings') loadSettings();
   else refreshCurrent();
 }
 
@@ -42,6 +43,7 @@ function refreshCurrent() {
   else if (currentPage === 'accounts') loadAccounts();
   else if (currentPage === 'schedules') initSchedulesPage();
   else if (currentPage === 'digest') initDigestPage();
+  else if (currentPage === 'settings') loadSettings();
 }
 
 // ── 主题切换 ──────────────────────────────────────────────

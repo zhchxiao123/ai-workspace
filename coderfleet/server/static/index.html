@@ -102,7 +102,14 @@
         </div>
       </nav>
       <div class="sidebar-footer">
-        <div class="flex gap-8 text-sm text-muted">
+        <div class="nav-item" data-page="settings" onclick="showPage('settings')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span class="sidebar-label">系统设置</span>
+        </div>
+        <div class="footer-status text-sm text-muted">
           <span class="health-dot" id="health-dot"></span>
           <span class="health-text" id="health-text">连接中...</span>
           <button class="pwa-notif-btn" id="pwa-notif-btn" onclick="togglePushNotification()" aria-label="开启推送通知" title="开启任务完成推送通知">
@@ -142,14 +149,6 @@
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
           <span>安装</span>
-        </button>
-        <button class="btn top-logout-btn" onclick="logoutApiKey()" title="退出登录" aria-label="退出登录">
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <path d="M16 17l5-5-5-5" />
-            <path d="M21 12H9" />
-          </svg>
-          <span>退出</span>
         </button>
       </div>
 
@@ -618,6 +617,20 @@
           </div>
         </div>
 
+        <!-- 系统设置页 -->
+        <div class="page" id="page-settings">
+          <div class="section-head">
+            <div>
+              <div class="section-title">系统设置</div>
+              <div class="section-subtitle">配置 config.conf 与账号登录。标注「需 apply」的项修改后须执行 coderfleet apply 并重启容器生效。</div>
+            </div>
+            <button class="btn" style="font-size:12px" onclick="loadSettings()">刷新</button>
+          </div>
+          <div class="settings-wrap" id="settings-wrap">
+            <div class="empty">加载中...</div>
+          </div>
+        </div>
+
       </div>
 
     </div>
@@ -1030,6 +1043,7 @@
   <script src="/static/js/app.js?v=__BUILD__"></script>
   <script src="/static/js/schedules.js?v=__BUILD__"></script>
   <script src="/static/js/digest.js?v=__BUILD__"></script>
+  <script src="/static/js/settings.js?v=__BUILD__"></script>
   <script src="/static/js/pwa.js?v=__BUILD__"></script>
   <script src="/static/js/files.js?v=__BUILD__"></script>
   <script>

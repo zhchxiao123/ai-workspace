@@ -25,6 +25,8 @@ let currentChatProjectName = '';
 let pendingImages = [];
 let chatUploadingImages = 0;
 let chatUserScrolledUp = false;
+// 注：气泡翻译相关状态（systemLlmConfigured / bubbleTranslations）声明在 utils.js，
+// 因为移动端只加载 utils.js + renderer.js，不加载本文件。
 const CHAT_PROJECT_VISIBLE_LIMIT = 5;
 let chatExpandedProjectNames = new Set();
 let chatCollapsedProjectNames = (function() {

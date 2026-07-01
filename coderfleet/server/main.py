@@ -73,6 +73,10 @@ from coderfleet.server.models import (
 from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
+from coderfleet.server.system_llm import SystemLLM, SystemLLMError
+from coderfleet.server.translate import translate_text
+from coderfleet.server.settings_schema import SETTINGS_GROUPS, field_for, mask_secret
+from coderfleet.config import load_config as _load_config, set_config as _set_config
 from coderfleet.server.search import SCOPES, SearchResponse, search_records
 from coderfleet.server.terminal import (
     TerminalSession,
@@ -113,6 +117,19 @@ class AccountUpdateRequest(BaseModel):
 
 class EnvVarsRequest(BaseModel):
     vars: dict[str, str]
+
+
+class TranslateRequest(BaseModel):
+    text:   str
+    target: str = "简体中文"
+
+
+class TranslateResponse(BaseModel):
+    translated: str
+
+
+class ConfigUpdateRequest(BaseModel):
+    updates: dict[str, str]
 
 
 class ProjectCreateRequest(BaseModel):
@@ -332,6 +349,78 @@ async def push_test():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "workspace": str(WORKSPACE_DIR)}
+
+
+# ── 系统级 LLM（翻译等系统功能，不走池化配额） ────────────
+
+@app.get("/api/system-llm/status")
+async def system_llm_status():
+    """前端据此决定是否显示翻译等入口。"""
+    llm = SystemLLM.from_config(WORKSPACE_DIR)
+    return {"configured": llm.is_configured(), "provider": llm.provider}
+
+
+@app.post("/api/translate", response_model=TranslateResponse)
+async def translate(req: TranslateRequest):
+    llm = SystemLLM.from_config(WORKSPACE_DIR)
+    if not llm.is_configured():
+        raise HTTPException(status_code=503, detail="系统 LLM 未配置，请在 config.conf 设置 SYSTEM_LLM_*")
+    try:
+        translated = await translate_text(llm, req.text, req.target)
+    except SystemLLMError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return TranslateResponse(translated=translated)
+
+
+# ── 系统设置（config.conf 读写，由 settings_schema 登记表驱动） ──
+
+@app.get("/api/config")
+async def get_config():
+    """按登记表返回分组配置与当前值（密钥脱敏）。"""
+    cfg = _load_config(WORKSPACE_DIR)
+    groups = []
+    for g in SETTINGS_GROUPS:
+        fields = []
+        for f in g.fields:
+            raw = cfg.get(f.key, "")
+            fields.append({
+                "key": f.key, "label": f.label, "placeholder": f.placeholder,
+                "help": f.help, "secret": f.secret, "requires_apply": f.requires_apply,
+                "options": list(f.options),
+                "value": (mask_secret(raw) if f.secret else raw),
+                "is_set": bool(raw.strip()),
+            })
+        groups.append({"id": g.id, "title": g.title, "help": g.help, "fields": fields})
+    return {"groups": groups}
+
+
+@app.put("/api/config")
+async def update_config(req: ConfigUpdateRequest):
+    """写入 config.conf。只接受登记表中的键；密钥留空表示保持不变。"""
+    saved: list[str] = []
+    requires_apply = False
+    for key, value in req.updates.items():
+        f = field_for(key)
+        if f is None:
+            raise HTTPException(status_code=400, detail=f"未知配置项: {key}")
+        value = (value or "").strip()
+        if any(ch.isspace() for ch in value):
+            raise HTTPException(status_code=400, detail=f"{f.key} 的值不能包含空格")
+        if f.options and value and value not in f.options:
+            raise HTTPException(status_code=400, detail=f"{f.key} 取值须为 {list(f.options)} 之一")
+        if f.secret and value == "":
+            continue  # 密钥留空 = 保持不变
+        _set_config(WORKSPACE_DIR, f.key, value)
+        saved.append(f.key)
+        requires_apply = requires_apply or f.requires_apply
+    # config.conf 现在可能含密钥，收紧文件权限
+    conf = WORKSPACE_DIR / "config.conf"
+    if conf.exists():
+        try:
+            conf.chmod(0o600)
+        except OSError:
+            pass
+    return {"saved": saved, "requires_apply": requires_apply}
 
 
 # ── 用量统计 ──────────────────────────────────────────────

@@ -535,11 +535,6 @@
       justify-content: center;
     }
 
-    .layout.sidebar-collapsed .sidebar-footer .flex {
-      justify-content: center;
-      width: 100%;
-    }
-
     .health-dot {
       width: 7px;
       height: 7px;
@@ -2261,11 +2256,38 @@
       flex-shrink: 0;
     }
 
-    .bubble:hover .bubble-copy-btn {
+    .bubble-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .bubble-translate-btn {
+      opacity: 0;
+      transition: opacity 0.15s, background 0.1s, color 0.15s;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: var(--text-3);
+      display: none;
+      align-items: center;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    /* 翻译按钮仅在系统 LLM 已配置时出现 */
+    body.sysllm-ready .bubble-translate-btn { display: flex; }
+
+    .bubble:hover .bubble-copy-btn,
+    .bubble:hover .bubble-translate-btn {
       opacity: 1;
     }
 
-    .bubble-copy-btn:hover {
+    .bubble-copy-btn:hover,
+    .bubble-translate-btn:hover {
       background: rgba(255, 255, 255, 0.08);
       color: var(--text);
     }
@@ -2274,6 +2296,15 @@
       color: var(--green);
       opacity: 1;
     }
+
+    .bubble-translate-btn.active { color: #5eead4; opacity: 1; }
+    .bubble-translate-btn.failed { color: var(--red); opacity: 1; }
+    .bubble-translate-btn.loading {
+      opacity: 1;
+      color: #5eead4;
+      animation: sysllm-pulse 0.9s ease-in-out infinite;
+    }
+    @keyframes sysllm-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
     .bubble-label.think-label {
       color: var(--text-3);
@@ -6355,3 +6386,131 @@
     .file-preview-markdown pre code { background: none; padding: 0; }
     .file-preview-markdown a { color: var(--accent); }
     .file-preview-markdown blockquote { border-left: 3px solid var(--accent); margin: 0; padding-left: 12px; color: var(--text-2); }
+
+    /* ── 系统设置页 ──────────────────────────────────── */
+    .settings-wrap {
+      max-width: 640px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 4px 0 40px;
+    }
+
+    .settings-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+
+    .settings-card-head { margin-bottom: 14px; }
+
+    .settings-card-title {
+      font-size: 14px;
+      font-weight: 650;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .settings-card-help {
+      font-size: 12px;
+      color: var(--text-3);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+
+    .settings-fields { margin-bottom: 4px; }
+
+    .settings-card-foot {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .settings-msg { font-size: 12px; color: var(--text-3); }
+    .settings-msg.ok { color: var(--green); }
+    .settings-msg.err { color: var(--red); }
+
+    .apply-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--amber, #d97706);
+      background: var(--amber-bg, rgba(217, 119, 6, .12));
+      border-radius: 4px;
+      padding: 1px 6px;
+      letter-spacing: .3px;
+    }
+
+    .field-help {
+      font-size: 11px;
+      color: var(--text-3);
+      margin-top: 4px;
+    }
+
+    .settings-logout-btn {
+      color: var(--red);
+      border-color: var(--border-md);
+    }
+    .settings-logout-btn:hover {
+      background: var(--red-bg);
+      border-color: var(--red);
+    }
+
+    /* ── 侧栏 footer：系统设置入口 + 状态行 ─────────────── */
+    .sidebar-footer {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: auto;
+      padding: 8px 10px 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* footer 里的入口要比主导航轻一号，避免大块高亮 */
+    .sidebar-footer .nav-item {
+      margin: 0;
+      min-height: 34px;
+      padding: 7px 10px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-2);
+    }
+    .sidebar-footer .nav-item.active {
+      background: var(--surface-2);
+      color: var(--text);
+      font-weight: 600;
+      border-color: var(--border);
+    }
+    .sidebar-footer .nav-item.active svg { color: var(--accent); }
+
+    .footer-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 6px;
+    }
+    .footer-status .health-text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* 铃铛与主题切换成组靠右，取消原先的 auto 撑开 */
+    .footer-status .theme-toggle-btn { margin-left: 0; }
+
+    /* 折叠态：竖向居中堆叠 */
+    .layout.sidebar-collapsed .sidebar-footer {
+      align-items: center;
+      gap: 6px;
+      padding-left: 0;
+      padding-right: 0;
+    }
+    .layout.sidebar-collapsed .footer-status {
+      flex-direction: column;
+      gap: 6px;
+      padding: 0;
+    }

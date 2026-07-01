@@ -259,6 +259,83 @@ function copyTextToClipboard(text, btn) {
   }
 }
 
+// ── 气泡翻译 ───────────────────────────────────────────────
+// 状态声明在此（而非 state.js）：移动端只加载 utils.js + renderer.js。
+// 系统级 LLM 是否已配置，决定翻译入口是否出现
+let systemLlmConfigured = false;
+// 每个气泡的翻译状态缓存（键为 .bubble-content 元素，弱引用随 DOM 回收）
+const bubbleTranslations = new WeakMap();
+
+function translateBtnSVG() {
+  return '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8h9M9 4v1M12 8c0 5-3.5 8-7 9M7 8c0 4 3 6.5 6 7.5"/><path d="M14 20l3.5-8 3.5 8M15.2 17.5h4.6"/></svg>';
+}
+
+// 一段文本是否主要为非中文（据此决定要不要显示「译」按钮，纯中文气泡不打扰）
+function isMostlyNonChinese(text) {
+  const s = String(text || '');
+  const letters = s.match(/[A-Za-z一-鿿]/g) || [];
+  if (letters.length < 8) return false;               // 太短不值得
+  const cjk = (s.match(/[一-鿿]/g) || []).length;
+  return cjk / letters.length < 0.5;
+}
+
+// 启动时探一次系统 LLM 是否配置；未配置则所有翻译入口不出现
+async function initSystemLlmStatus() {
+  try {
+    const r = await fetch('/api/system-llm/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    systemLlmConfigured = !!d.configured;
+    document.body.classList.toggle('sysllm-ready', systemLlmConfigured);
+  } catch { /* 探测失败当作未配置，静默 */ }
+}
+document.addEventListener('DOMContentLoaded', initSystemLlmStatus);
+
+// 切换某个气泡的原文 / 译文。btn=触发按钮，contentEl=.bubble-content，rawText=原始 markdown
+async function toggleBubbleTranslation(btn, contentEl, rawText) {
+  let st = bubbleTranslations.get(contentEl);
+  if (!st) { st = { showing: 'original', originalHtml: contentEl.innerHTML }; bubbleTranslations.set(contentEl, st); }
+
+  if (st.showing === 'translated') {                  // 译文 → 原文
+    contentEl.innerHTML = st.originalHtml;
+    st.showing = 'original';
+    btn.classList.remove('active');
+    return;
+  }
+  if (st.translatedHtml) {                             // 命中缓存，直接切回译文
+    contentEl.innerHTML = st.translatedHtml;
+    st.showing = 'translated';
+    btn.classList.add('active');
+    return;
+  }
+
+  if (btn.classList.contains('loading')) return;      // 正在翻译，忽略重复点击
+  btn.classList.add('loading');
+  try {
+    const r = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: rawText }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || `翻译失败 (${r.status})`);
+    }
+    const d = await r.json();
+    st.originalHtml = contentEl.innerHTML;            // 以当前渲染为准
+    st.translatedHtml = renderMd(d.translated || '');
+    contentEl.innerHTML = st.translatedHtml;
+    st.showing = 'translated';
+    btn.classList.add('active');
+  } catch (err) {
+    btn.classList.add('failed');
+    btn.title = String(err && err.message || err);
+    setTimeout(() => { btn.classList.remove('failed'); btn.title = '翻译'; }, 2500);
+  } finally {
+    btn.classList.remove('loading');
+  }
+}
+
 // 用于用户气泡（onclick 内联调用）
 function copyUserBubble(btn) {
   const content = btn.closest('.user-bubble').querySelector('.user-bubble-content');

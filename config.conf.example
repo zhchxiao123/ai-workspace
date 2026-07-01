@@ -29,3 +29,17 @@ RELAY_LISTEN_PORT=10808
 
 # 代理中继镜像
 RELAY_IMAGE=gogost/gost:3
+
+# ── 系统级 LLM ────────────────────────────────────────────
+# CoderFleet 自身的系统功能（对话气泡翻译等）调用的模型。
+# 独立于池化任务账号——系统调用不消耗你的编码配额。
+# 密钥为明文，config.conf 已在 .gitignore 中；建议 chmod 600 config.conf。
+#
+# provider: anthropic | openai（openai 格式同时兼容 Ollama / vLLM / OpenRouter 等）
+#SYSTEM_LLM_PROVIDER=anthropic
+#SYSTEM_LLM_API_KEY=sk-xxxxxxxx
+#SYSTEM_LLM_MODEL=claude-haiku-4-5-20251001
+# 可选：覆盖默认端点（OpenAI 兼容口 / 私有网关）
+#SYSTEM_LLM_BASE_URL=
+# 可选：出站代理（与容器保持一致，如 http://127.0.0.1:10808）
+#SYSTEM_LLM_PROXY=

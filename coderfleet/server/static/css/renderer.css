@@ -143,15 +143,30 @@
 
 .bubble-label.think-label { color: #94a3b8; }
 
-.bubble-copy-btn {
-  opacity: 0; transition: opacity .15s;
+.bubble-actions { display: flex; align-items: center; gap: 2px; }
+
+.bubble-copy-btn, .bubble-translate-btn {
+  opacity: 0; transition: opacity .15s, color .15s;
   background: none; border: none; cursor: pointer;
   padding: 2px 5px; border-radius: 4px; color: var(--text3);
   display: flex; align-items: center; line-height: 1;
 }
 
-.chat-bubble-wrap:hover .bubble-copy-btn { opacity: 1; }
+.chat-bubble-wrap:hover .bubble-copy-btn,
+.chat-bubble-wrap:hover .bubble-translate-btn { opacity: 1; }
 .bubble-copy-btn.copied { color: var(--green); opacity: 1; }
+
+/* 翻译按钮仅在系统 LLM 已配置时出现 */
+.bubble-translate-btn { display: none; }
+body.sysllm-ready .bubble-translate-btn { display: flex; }
+.bubble-translate-btn:hover { color: #5eead4; }
+.bubble-translate-btn.active { color: #5eead4; opacity: 1; }
+.bubble-translate-btn.failed { color: var(--red, #f87171); opacity: 1; }
+.bubble-translate-btn.loading {
+  opacity: 1; color: #5eead4;
+  animation: sysllm-pulse .9s ease-in-out infinite;
+}
+@keyframes sysllm-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 
 .bubble {
   background: var(--bubble-bg);
