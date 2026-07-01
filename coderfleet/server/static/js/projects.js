@@ -206,6 +206,7 @@ async function openProjectFormModal(name) {
       document.getElementById('project-form-ide-port').value = project.ide_port || '';
       document.getElementById('project-form-ide-auth').value = project.ide_auth || 'none';
       document.getElementById('project-form-ide-remote').checked = !!project.ide_remote;
+      document.getElementById('project-form-docker-socket').value = project.docker_socket || '';
     }
   } else {
     nameInput.value = '';
@@ -216,6 +217,7 @@ async function openProjectFormModal(name) {
     document.getElementById('project-form-ide-port').value = '';
     document.getElementById('project-form-ide-auth').value = 'none';
     document.getElementById('project-form-ide-remote').checked = false;
+    document.getElementById('project-form-docker-socket').value = '';
   }
   toggleProjectIdePort();
 
@@ -237,6 +239,7 @@ async function saveProjectForm() {
   const idePort = idePortRaw ? Number(idePortRaw) : null;
   const ideAuth   = document.getElementById('project-form-ide-auth').value || 'none';
   const ideRemote = document.getElementById('project-form-ide-remote').checked;
+  const dockerSocket = document.getElementById('project-form-docker-socket').value.trim();
   if (!name)    { showProjectFormMsg('请填写项目名', 'error'); return; }
   if (!account) { showProjectFormMsg('请选择账号',   'error'); return; }
   if (!path)    { showProjectFormMsg('请填写路径',   'error'); return; }
@@ -254,8 +257,8 @@ async function saveProjectForm() {
       method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isEdit
-        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote }
-        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote }),
+        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket }
+        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) { showProjectFormMsg(data.detail || '保存失败', 'error'); return; }

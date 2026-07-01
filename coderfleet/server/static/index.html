@@ -963,6 +963,10 @@
           <input id="project-form-active" type="checkbox" checked>
           <span>启用容器（apply 时启动）</span>
         </label>
+        <div class="form-group">
+          <label class="form-label">Docker socket <span style="color:var(--text-3);font-size:11px">（留空使用全局设置）</span></label>
+          <input id="project-form-docker-socket" class="form-input" placeholder="off | auto | /var/run/docker.sock" autocomplete="off">
+        </div>
         <label class="toggle-row">
           <input id="project-form-ide-enabled" type="checkbox" onchange="toggleProjectIdePort()">
           <span>启用浏览器 IDE（code-server）</span>

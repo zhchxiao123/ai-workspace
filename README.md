@@ -396,6 +396,11 @@ IMAGE_NAME=coderfleet
 IMAGE_TAG=latest
 BUILD_PLATFORM=linux/amd64   # Apple Silicon 改为 linux/arm64
 
+# 可选：把宿主机 Docker socket 挂进项目容器
+# off | auto | /path/to/docker.sock | unix:///path/to/docker.sock
+DOCKER_SOCKET=off
+DOCKER_SOCKET_TARGET=/var/run/docker.sock
+
 # 宿主机代理（容器通过 host.docker.internal 访问）
 PROXY_HOST=host.docker.internal
 PROXY_HTTP_PORT=7890
@@ -408,6 +413,13 @@ RELAY_LISTEN_PORT=7890
 
 # 代理中继镜像
 RELAY_IMAGE=gogost/gost:3
+```
+
+`DOCKER_SOCKET=auto` 会识别 Colima / Docker Desktop / Linux / rootless Docker 的常见 Unix socket。也可以通过界面「系统设置 → Docker」配置；命令行等价操作是：
+
+```bash
+coderfleet config set DOCKER_SOCKET auto
+coderfleet apply
 ```
 
 ### accounts.conf
@@ -463,6 +475,18 @@ NAME=my-app      ACCOUNT=alice  PATH=~/projects/my-app
 NAME=my-app-ide  ACCOUNT=alice  PATH=~/projects/my-app  IDE=on IDE_PORT=18080
 NAME=api-server  ACCOUNT=bob    PATH=~/projects/api-server
 NAME=grok-app    ACCOUNT=eve    PATH=~/projects/grok-app
+NAME=docker-app  ACCOUNT=alice  PATH=~/projects/docker-app DOCKER_SOCKET=auto
+```
+
+项目行里的 `DOCKER_SOCKET` 会覆盖全局设置；留空继承全局，`off` 表示该项目禁用，`auto` 表示自动识别，也可填写显式 socket 路径。页面中编辑项目时也可以单独配置这一项。
+
+命令行也可以配置：
+
+```bash
+coderfleet project add docker-app alice ~/projects/docker-app --docker-socket auto
+coderfleet project set-docker-socket docker-app off
+coderfleet project set-docker-socket docker-app -   # 清除覆盖，继承全局配置
+coderfleet apply
 ```
 
 ---

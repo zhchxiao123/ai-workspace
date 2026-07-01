@@ -120,6 +120,15 @@ def test_dashboard_exposes_project_workspace() -> None:
     assert "function terminalWsUrl" in source
 
 
+def test_project_form_exposes_docker_socket_override() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    assert 'id="project-form-docker-socket"' in html
+    assert "project-form-docker-socket" in source
+    assert "docker_socket: dockerSocket" in source
+
+
 def test_development_board_page_is_exposed() -> None:
     html = read_index()
     source = read_ui_source()

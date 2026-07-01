@@ -43,7 +43,12 @@ def run_coderfleet(workspace: Path, path: str, *args: str) -> subprocess.Complet
     return subprocess.run(
         ["coderfleet", *args],
         cwd=workspace,
-        env={**os.environ, "PATH": path, "CODERFLEET_WORKSPACE": str(workspace)},
+        env={
+            **os.environ,
+            "PATH": path,
+            "PYTHONPATH": str(ROOT),
+            "CODERFLEET_WORKSPACE": str(workspace),
+        },
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -260,6 +265,56 @@ def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
     assert "PROXY=off" in accounts_conf
+
+
+def test_project_add_accepts_project_docker_socket(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "project",
+        "add",
+        "repo",
+        "api-codex",
+        str(workspace / "repo"),
+        "--docker-socket",
+        "auto",
+    )
+
+    assert result.returncode == 0, result.stderr
+    projects_conf = (workspace / "projects.conf").read_text(encoding="utf-8")
+    assert "DOCKER_SOCKET=auto" in projects_conf
+
+
+def test_project_set_docker_socket_updates_existing_project(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-codex PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "project",
+        "set-docker-socket",
+        "repo",
+        "off",
+    )
+
+    assert result.returncode == 0, result.stderr
+    projects_conf = (workspace / "projects.conf").read_text(encoding="utf-8")
+    assert "DOCKER_SOCKET=off" in projects_conf
 
 
 def test_project_add_rejects_proxy_option(tmp_path: Path) -> None:

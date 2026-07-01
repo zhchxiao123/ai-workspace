@@ -201,6 +201,8 @@ def project_group() -> None:
 @click.option("--ide-port", type=int, default=None, help="Host port for browser IDE, auto-assigned when omitted")
 @click.option("--disabled", is_flag=True, help="Add project in disabled state (no container on apply)")
 @click.option("--image", default=None, metavar="IMAGE", help="自定义 Docker 镜像（如 my-image:latest），留空使用共享镜像")
+@click.option("--docker-socket", default=None, metavar="SOCKET",
+              help="项目级 Docker socket 覆盖：off / auto / /path/to/docker.sock")
 @click.pass_context
 def cmd_project_add(
     ctx: click.Context,
@@ -211,6 +213,7 @@ def cmd_project_add(
     ide_port: int | None,
     disabled: bool,
     image: Optional[str],
+    docker_socket: Optional[str],
 ) -> None:
     """Add a new project."""
     ws: Path = ctx.obj["workspace"]
@@ -246,6 +249,8 @@ def cmd_project_add(
         tokens["ACTIVE"] = "off"
     if image:
         tokens["IMAGE"] = image
+    if docker_socket:
+        tokens["DOCKER_SOCKET"] = docker_socket
     write_conf_line(projects_conf, tokens)
 
     expanded = str(Path(path).expanduser())
@@ -253,6 +258,8 @@ def cmd_project_add(
     click.secho(f"✓ 项目 '{name}' 已添加{state_label}（账号：{account}  路径：{expanded}）", fg="green")
     if image:
         click.secho(f"  镜像：{image}", dim=True)
+    if docker_socket:
+        click.secho(f"  Docker socket：{docker_socket}", dim=True)
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 
@@ -298,6 +305,42 @@ def cmd_project_set_image(ctx: click.Context, name: str, image: str) -> None:
         update_conf_field(projects_conf, name, "IMAGE", image)
         click.secho(f"✓ 项目 '{name}' 已设置镜像：{image}", fg="green")
 
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+@project_group.command("set-docker-socket")
+@click.argument("name")
+@click.argument("socket")
+@click.pass_context
+def cmd_project_set_docker_socket(ctx: click.Context, name: str, socket: str) -> None:
+    """Set, disable, or clear a project's Docker socket override.
+
+    \b
+    Examples:
+      coderfleet project set-docker-socket my-project auto
+      coderfleet project set-docker-socket my-project off
+      coderfleet project set-docker-socket my-project -     # 清除，继承全局配置
+    """
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+
+    if not any(p.get("NAME") == name for p in parse_conf(projects_conf)):
+        raise click.ClickException(f"项目 '{name}' 不存在")
+
+    if socket == "-":
+        lines = projects_conf.read_text(encoding="utf-8").splitlines(keepends=True)
+        new_lines = []
+        for line in lines:
+            if re.search(rf"\bNAME={re.escape(name)}(\s|$)", line):
+                tokens = [t for t in line.rstrip("\n").split() if not t.upper().startswith("DOCKER_SOCKET=")]
+                new_lines.append("  ".join(tokens) + "\n")
+            else:
+                new_lines.append(line)
+        projects_conf.write_text("".join(new_lines), encoding="utf-8")
+        click.secho(f"✓ 项目 '{name}' 已清除 Docker socket 覆盖（继承全局配置）", fg="green")
+    else:
+        update_conf_field(projects_conf, name, "DOCKER_SOCKET", socket)
+        click.secho(f"✓ 项目 '{name}' 已设置 DOCKER_SOCKET={socket}", fg="green")
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 

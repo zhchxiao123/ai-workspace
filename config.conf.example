@@ -10,6 +10,13 @@ IMAGE_TAG=latest
 # 构建平台（Mac M 系列芯片固定用 linux/amd64，由 Docker Rosetta 模拟运行）
 BUILD_PLATFORM=linux/arm64
 
+# ── Docker socket（可选，高权限）──────────────────────────
+# off 关闭；auto 自动识别 Colima / Docker Desktop / Linux / rootless Docker；
+# 也可填写 unix:// 或绝对路径，例如 /var/run/docker.sock。
+# 开启后项目容器可控制宿主机 Docker，仅用于可信镜像。
+DOCKER_SOCKET=off
+DOCKER_SOCKET_TARGET=/var/run/docker.sock
+
 # ── 代理配置 ──────────────────────────────────────────────
 # 宿主机代理地址（容器通过 host.docker.internal 访问宿主机）
 PROXY_HOST=host.docker.internal

@@ -75,6 +75,7 @@ from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
 from coderfleet.server.translate import translate_text
+from coderfleet.server.translation_cache import TranslationCache
 from coderfleet.server.settings_schema import SETTINGS_GROUPS, field_for, mask_secret
 from coderfleet.config import load_config as _load_config, set_config as _set_config
 from coderfleet.server.search import SCOPES, SearchResponse, search_records
@@ -126,6 +127,7 @@ class TranslateRequest(BaseModel):
 
 class TranslateResponse(BaseModel):
     translated: str
+    cached:     bool = False
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -142,6 +144,7 @@ class ProjectCreateRequest(BaseModel):
     ide_auth:    str = "none"
     ide_remote:  bool = False
     image:       str = ""
+    docker_socket: str = ""
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -153,6 +156,7 @@ class ProjectUpdateRequest(BaseModel):
     ide_auth:    Optional[str]  = None
     ide_remote:  Optional[bool] = None
     image:       Optional[str]  = None
+    docker_socket: Optional[str] = None
 
 
 class BoardCreateRequest(BaseModel):
@@ -190,6 +194,7 @@ WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".c
 scheduler        = Scheduler(WORKSPACE_DIR)
 push_manager     = PushManager(WORKSPACE_DIR)
 marketplace_mgr  = MarketplaceManager(WORKSPACE_DIR / "cache")
+translation_cache = TranslationCache(WORKSPACE_DIR / "translations")
 DIGEST_DIR       = WORKSPACE_DIR / "digests"
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -362,6 +367,13 @@ async def system_llm_status():
 
 @app.post("/api/translate", response_model=TranslateResponse)
 async def translate(req: TranslateRequest):
+    if not req.text.strip():
+        return TranslateResponse(translated="")
+    # 内容寻址缓存命中即返回，跳过 LLM（抗刷新、跨端共享、省 token）
+    cached = translation_cache.get(req.text, req.target)
+    if cached is not None:
+        return TranslateResponse(translated=cached, cached=True)
+
     llm = SystemLLM.from_config(WORKSPACE_DIR)
     if not llm.is_configured():
         raise HTTPException(status_code=503, detail="系统 LLM 未配置，请在 config.conf 设置 SYSTEM_LLM_*")
@@ -369,7 +381,9 @@ async def translate(req: TranslateRequest):
         translated = await translate_text(llm, req.text, req.target)
     except SystemLLMError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return TranslateResponse(translated=translated)
+    if translated.strip():
+        translation_cache.put(req.text, req.target, translated)
+    return TranslateResponse(translated=translated, cached=False)
 
 
 # ── 系统设置（config.conf 读写，由 settings_schema 登记表驱动） ──
@@ -839,7 +853,7 @@ async def create_project(req: ProjectCreateRequest):
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
     try:
-        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote, req.image)
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote, req.image, req.docker_socket)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -858,13 +872,14 @@ async def update_project(name: str, req: ProjectUpdateRequest):
     new_ide_auth   = existing.ide_auth   if req.ide_auth   is None else req.ide_auth
     new_ide_remote = existing.ide_remote if req.ide_remote is None else req.ide_remote
     new_image = existing.image if req.image is None else req.image
+    new_docker_socket = existing.docker_socket if req.docker_socket is None else req.docker_socket
     if not new_ide_enabled:
         new_ide_port = None
     _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
     try:
-        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote, new_image)
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote, new_image, new_docker_socket)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)

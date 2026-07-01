@@ -65,6 +65,20 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
         ),
     ),
     SettingGroup(
+        "docker", "Docker",
+        help="把宿主机 Docker socket 挂进项目容器。开启后容器可控制宿主 Docker，请只用于可信镜像。",
+        fields=(
+            SettingField("DOCKER_SOCKET", "Docker socket",
+                         placeholder="off | auto | /var/run/docker.sock",
+                         help="off 关闭；auto 自动识别 Colima / Docker Desktop / Linux；也可填写 unix:// 或绝对路径",
+                         requires_apply=True),
+            SettingField("DOCKER_SOCKET_TARGET", "容器内 socket 路径",
+                         placeholder="/var/run/docker.sock",
+                         help="通常保持默认；容器内 DOCKER_HOST 会指向此路径",
+                         requires_apply=True),
+        ),
+    ),
+    SettingGroup(
         "proxy", "代理",
         help="修改后需执行 coderfleet apply 并重启容器才生效，改错可能导致容器断网。",
         fields=(

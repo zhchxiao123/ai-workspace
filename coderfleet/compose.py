@@ -13,6 +13,7 @@ import click
 import yaml
 
 from coderfleet.config import load_config, parse_conf
+from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
 from coderfleet.account_type_registry import ACCOUNT_TYPES
 from coderfleet.ports import allocate_ide_port
 
@@ -203,6 +204,13 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             ],
             "working_dir": "/workspace",
         }
+
+        docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, p))
+        if docker_socket is not None:
+            svc["volumes"].append(docker_socket.volume)
+            environment["DOCKER_HOST"] = docker_socket.env
+            environment["CODERFLEET_HOST_WORKSPACE"] = ppath
+            environment["CODERFLEET_DOCKER_SOCKET"] = docker_socket.container_path
 
         if ide_enabled:
             ide_port = (

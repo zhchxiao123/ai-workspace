@@ -343,6 +343,7 @@ class Scheduler:
         ide_auth: str = "none",
         ide_remote: bool = False,
         image: str = "",
+        docker_socket: str = "",
     ) -> Project:
         """新增或修改 projects.conf 中的项目行。"""
         path_norm = str(Path(path).expanduser())
@@ -370,6 +371,8 @@ class Scheduler:
                 parts.append("IDE_REMOTE=on")
         if image:
             parts.append(f"IMAGE={image}")
+        if docker_socket:
+            parts.append(f"DOCKER_SOCKET={docker_socket}")
         self._rewrite_conf(self.projects_conf, name, " ".join(parts))
         return Project(
             name=name,
@@ -381,6 +384,7 @@ class Scheduler:
             ide_auth=ide_auth,
             ide_remote=ide_remote,
             image=image,
+            docker_socket=docker_socket,
         )
 
     def delete_project(self, name: str) -> None:
@@ -1890,7 +1894,7 @@ class Scheduler:
         """
         from coderfleet.account_type_registry import get_spec
         from coderfleet.config import load_config
-        from coderfleet.server.models import AccountProxy
+        from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
 
         retention = self._normalize_ephemeral_retention(
             getattr(task, "ephemeral_retention", None)
@@ -1931,16 +1935,28 @@ class Scheduler:
 
             if session_dir is not None:
                 mounts.append((str(session_dir), "/workspace"))
+                host_workspace = str(session_dir)
             else:
                 # No session dir → still need /workspace for the log mechanism
                 tmp_ws = self.sessions_dir / f"task-{task.id}"
                 tmp_ws.mkdir(parents=True, exist_ok=True)
                 mounts.append((str(tmp_ws), "/workspace"))
+                host_workspace = str(tmp_ws)
 
             if output_dir:
                 out_path = Path(output_dir).expanduser().resolve()
                 out_path.mkdir(parents=True, exist_ok=True)
                 mounts.append((str(out_path), "/output"))
+
+            project_socket_record = {}
+            if project and getattr(project, "docker_socket", ""):
+                project_socket_record["DOCKER_SOCKET"] = project.docker_socket
+            docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, project_socket_record))
+            if docker_socket is not None:
+                mounts.append((docker_socket.host_path, docker_socket.container_path))
+                env["DOCKER_HOST"] = docker_socket.env
+                env["CODERFLEET_DOCKER_SOCKET"] = docker_socket.container_path
+                env["CODERFLEET_HOST_WORKSPACE"] = host_workspace
 
             # Proxy / network
             network = self._get_ephemeral_network(acc)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from coderfleet.server.models import Account, AccountType, Task, TaskStatus
+from coderfleet.server.models import Account, AccountType, Project, Task, TaskStatus
 from coderfleet.server.runtime import (
     ContainerSpec,
     DockerRuntime,
@@ -224,3 +224,67 @@ def test_ephemeral_keep_container_via_fake_runtime(
     assert saved_conv.ephemeral_container_name == "coderfleet-eph-session-conv-eph"
     assert saved_conv.ephemeral_expires_at
     assert sched.get_task(task.id).status == TaskStatus.done
+
+
+def test_ephemeral_task_mounts_configured_docker_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_path = tmp_path / "docker.sock"
+    socket_path.touch()
+    (tmp_path / "config.conf").write_text(
+        f"DOCKER_SOCKET={socket_path}\n", encoding="utf-8"
+    )
+    rt = FakeRuntime().queue(FakeProcess(returncode=0))
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+    session_dir = tmp_path / "sessions" / "conv"
+    session_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    import asyncio as _a
+    _a.run(sched._run_ephemeral_task(
+        task, acc, log_path, auto=False, session_dir=session_dir,
+    ))
+
+    assert len(rt.runs) == 1
+    spec = rt.runs[0]
+    assert (str(socket_path), "/var/run/docker.sock") in spec.mounts
+    assert spec.env["DOCKER_HOST"] == "unix:///var/run/docker.sock"
+    assert spec.env["CODERFLEET_HOST_WORKSPACE"] == str(session_dir)
+
+
+def test_ephemeral_task_project_docker_socket_overrides_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_socket = tmp_path / "global.sock"
+    project_socket = tmp_path / "project.sock"
+    global_socket.touch()
+    project_socket.touch()
+    (tmp_path / "config.conf").write_text(
+        f"DOCKER_SOCKET={global_socket}\n", encoding="utf-8"
+    )
+    rt = FakeRuntime().queue(FakeProcess(returncode=0))
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+    session_dir = tmp_path / "sessions" / "conv"
+    session_dir.mkdir(parents=True)
+    project = Project(
+        name="repo",
+        account="alice",
+        path=str(session_dir),
+        docker_socket=str(project_socket),
+    )
+
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    import asyncio as _a
+    _a.run(sched._run_ephemeral_task(
+        task, acc, log_path, auto=False, session_dir=session_dir, project=project,
+    ))
+
+    spec = rt.runs[0]
+    assert (str(project_socket), "/var/run/docker.sock") in spec.mounts
+    assert (str(global_socket), "/var/run/docker.sock") not in spec.mounts

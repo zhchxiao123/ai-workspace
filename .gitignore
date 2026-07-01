@@ -17,6 +17,9 @@ tasks/*.log
 conversations/*.json
 !conversations/.gitkeep
 
+# ── 气泡翻译缓存 ──────────────────────────────────────────
+translations/
+
 # ── Python ────────────────────────────────────────────────
 __pycache__/
 *.pyc

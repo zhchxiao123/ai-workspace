@@ -9,6 +9,9 @@ IMAGE_NAME=coderfleet
 IMAGE_TAG=latest
 BUILD_PLATFORM=linux/amd64
 
+DOCKER_SOCKET=off
+DOCKER_SOCKET_TARGET=/var/run/docker.sock
+
 PROXY_HOST=host.docker.internal
 PROXY_HTTP_PORT=7890
 PROXY_SOCKS5_PORT=7891
@@ -25,6 +28,31 @@ RELAY_IMAGE=gogost/gost:3
 ```bash
 coderfleet apply
 ```
+
+### Docker socket
+
+如需在项目容器里执行 `docker` 并控制宿主机 Docker，可开启 Docker socket 挂载：
+
+```bash
+coderfleet config set DOCKER_SOCKET auto
+coderfleet apply
+```
+
+`auto` 会识别当前 Docker context / `DOCKER_HOST`，覆盖 Colima、Docker Desktop、Linux Docker、rootless Docker 的常见 Unix socket。也可以手动指定：
+
+```bash
+coderfleet config set DOCKER_SOCKET /Users/<you>/.colima/default/docker.sock
+coderfleet config set DOCKER_SOCKET_TARGET /var/run/docker.sock
+coderfleet apply
+```
+
+开启后项目容器内会得到 `DOCKER_HOST=unix:///var/run/docker.sock`，并注入 `CODERFLEET_HOST_WORKSPACE` 指向宿主机可见的项目路径。二级容器挂载项目目录时优先使用这个变量，例如：
+
+```bash
+docker run --rm -v "$CODERFLEET_HOST_WORKSPACE:/workspace" -w /workspace alpine pwd
+```
+
+挂载 Docker socket 等价于让项目容器拥有宿主机 Docker 控制权，只给可信镜像开启。Web 界面也可在「系统设置 → Docker」中配置，保存后执行 `coderfleet apply` 生效。
 
 ## accounts.conf
 
@@ -73,6 +101,7 @@ KIMI_MODEL_BASE_URL=https://api.moonshot.ai/v1
 NAME=my-app ACCOUNT=alice PATH=~/projects/my-app
 NAME=api-server ACCOUNT=bob PATH=~/projects/api-server
 NAME=grok-app ACCOUNT=eve PATH=~/projects/grok-app
+NAME=docker-app ACCOUNT=alice PATH=~/projects/docker-app DOCKER_SOCKET=auto
 ```
 
 字段：
@@ -82,3 +111,13 @@ NAME=grok-app ACCOUNT=eve PATH=~/projects/grok-app
 | `NAME` | 是 | 项目名 |
 | `ACCOUNT` | 是 | 绑定账号 |
 | `PATH` | 是 | 宿主机项目路径 |
+| `DOCKER_SOCKET` | 否 | 项目级 Docker socket 覆盖；留空继承全局，`off` 关闭，`auto` 自动识别，也可填绝对路径 |
+
+命令行配置项目级 Docker socket：
+
+```bash
+coderfleet project add docker-app alice ~/projects/docker-app --docker-socket auto
+coderfleet project set-docker-socket docker-app off
+coderfleet project set-docker-socket docker-app -   # 清除覆盖，继承全局配置
+coderfleet apply
+```

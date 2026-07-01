@@ -98,6 +98,7 @@ class Project(BaseModel):
     ide_auth:    str = "none"
     ide_remote:  bool = False
     image:       str = ""
+    docker_socket: str = ""
     ephemeral:   bool = False
     git_url:     str = ""
 
@@ -126,6 +127,7 @@ class Project(BaseModel):
             ide_auth=record.get("IDE_AUTH", "none"),
             ide_remote=truthy(record.get("IDE_REMOTE", "off")),
             image=record.get("IMAGE", ""),
+            docker_socket=record.get("DOCKER_SOCKET", ""),
             ephemeral=truthy(record.get("EPHEMERAL", "off")),
             git_url=record.get("GIT_URL", ""),
         )
@@ -480,6 +482,7 @@ class ProjectResponse(BaseModel):
     ide_remote:  bool = False
     ide_url:     str = ""
     image:       str = ""
+    docker_socket: str = ""
     ephemeral:   bool = False
     git_url:     str = ""
 
@@ -497,6 +500,7 @@ class ProjectResponse(BaseModel):
             ide_remote=p.ide_remote,
             ide_url=ide_url,
             image=p.image,
+            docker_socket=getattr(p, "docker_socket", ""),
             ephemeral=getattr(p, "ephemeral", False),
             git_url=getattr(p, "git_url", ""),
         )
