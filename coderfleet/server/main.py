@@ -73,6 +73,7 @@ from coderfleet.server.models import (
 from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
+from coderfleet.server.search import SCOPES, SearchResponse, search_records
 from coderfleet.server.terminal import (
     TerminalSession,
     TmuxTerminalSession,
@@ -166,31 +167,6 @@ class BoardCardUpdateRequest(BaseModel):
     archived:        Optional[bool] = None
 
 
-class SearchMatch(BaseModel):
-    field:   str
-    snippet: str
-
-
-class SearchResult(BaseModel):
-    type:            str
-    id:              str
-    title:           str
-    subtitle:        str = ""
-    project_name:    str = ""
-    project:         str = ""
-    conversation_id: str = ""
-    task_id:         str = ""
-    status:          str = ""
-    updated:         str = ""
-    score:           int = 0
-    matches:         list[SearchMatch] = []
-
-
-class SearchResponse(BaseModel):
-    query:   str
-    results: list[SearchResult]
-
-
 # ── 初始化 ────────────────────────────────────────────────
 
 WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
@@ -263,66 +239,6 @@ async def service_worker():
     return FileResponse(STATIC_DIR / "sw.js", media_type="application/javascript")
 
 
-def _contains_project_path(project_path: str, record_path: str) -> bool:
-    base = str(project_path or "").rstrip("/")
-    target = str(record_path or "").rstrip("/")
-    return bool(base) and (target == base or target.startswith(base + "/"))
-
-
-def _project_for_record(projects: list, project_name: str = "", project_path: str = ""):
-    if project_name:
-        found = next((p for p in projects if p.name == project_name), None)
-        if found:
-            return found
-    return next((p for p in projects if _contains_project_path(p.path, project_path)), None)
-
-
-def _record_project_name(projects: list, name: str = "", path: str = "") -> str:
-    project = _project_for_record(projects, name, path)
-    return project.name if project else name
-
-
-def _search_snippet(text: str, query: str, radius: int = 48) -> str:
-    source = str(text or "")
-    q = query.lower()
-    idx = source.lower().find(q)
-    if idx < 0:
-        return source[: radius * 2].strip()
-    start = max(0, idx - radius)
-    end = min(len(source), idx + len(query) + radius)
-    prefix = "..." if start else ""
-    suffix = "..." if end < len(source) else ""
-    return (prefix + source[start:end].strip() + suffix).replace("\n", " ")
-
-
-def _field_match_score(text: str, query: str, base: int) -> int:
-    value = str(text or "").lower()
-    q = query.lower()
-    if not value or q not in value:
-        return 0
-    if value == q:
-        return base + 80
-    if value.startswith(q):
-        return base + 40
-    return base
-
-
-def _collect_matches(fields: list[tuple[str, str, int]], query: str) -> tuple[int, list[SearchMatch]]:
-    score = 0
-    matches: list[SearchMatch] = []
-    for field, text, weight in fields:
-        field_score = _field_match_score(text, query, weight)
-        if not field_score:
-            continue
-        score += field_score
-        matches.append(SearchMatch(field=field, snippet=_search_snippet(text, query)))
-    return score, matches
-
-
-def _status_boost(status: str) -> int:
-    return 12 if status in {"running", "pending", "scheduled"} else 0
-
-
 @app.get("/api/search", response_model=SearchResponse)
 async def global_search(
     q: str = Query("", description="搜索项目、对话、任务或内容"),
@@ -336,131 +252,33 @@ async def global_search(
     if not query:
         return SearchResponse(query=query, results=[])
 
-    allowed_scopes = {"all", "projects", "conversations", "tasks", "content"}
-    if scope not in allowed_scopes:
+    if scope not in SCOPES:
         raise HTTPException(status_code=400, detail=f"无效搜索范围：{scope}")
 
-    projects = scheduler.list_projects()
-    conversations = scheduler.list_conversations(include_archived=include_archived)
     tasks = scheduler.list_tasks()
     if not include_archived:
         tasks = [t for t in tasks if not getattr(t, "archived", False)]
 
-    if project_name:
-        projects = [p for p in projects if p.name == project_name]
-        all_projects = scheduler.list_projects()
-        conversations = [c for c in conversations if _record_project_name(all_projects, c.project_name, c.project) == project_name]
-        tasks = [t for t in tasks if _record_project_name(all_projects, t.project_name, t.project) == project_name]
+    def read_log(task_id: str) -> Optional[str]:
+        path = scheduler.get_log_path(task_id)
+        if not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8", errors="ignore")[-262144:]
+        except OSError:
+            return None
 
-    project_by_name = {p.name: p for p in scheduler.list_projects()}
-    results: list[SearchResult] = []
-
-    if scope in {"all", "projects"}:
-        for project in projects:
-            score, matches = _collect_matches([
-                ("项目名", project.name, 120),
-                ("路径", project.path, 55),
-                ("账号", project.account, 40),
-            ], query)
-            if score:
-                results.append(SearchResult(
-                    type="project",
-                    id=project.name,
-                    title=project.name,
-                    subtitle=f"{project.path} · {project.account}",
-                    project_name=project.name,
-                    project=project.path,
-                    score=score,
-                    matches=matches,
-                ))
-
-    if scope in {"all", "conversations"}:
-        for conv in conversations:
-            project = project_by_name.get(conv.project_name) or _project_for_record(list(project_by_name.values()), "", conv.project)
-            pname = project.name if project else conv.project_name
-            score, matches = _collect_matches([
-                ("对话名", conv.name, 120),
-                ("对话 ID", conv.id, 70),
-                ("项目名", pname, 60),
-                ("项目路径", conv.project, 45),
-                ("账号", conv.account, 35),
-                ("原生会话", conv.native_session_id, 25),
-            ], query)
-            if score:
-                results.append(SearchResult(
-                    type="conversation",
-                    id=conv.id,
-                    title=conv.name or conv.id,
-                    subtitle=" · ".join(v for v in [pname, conv.account, conv.status.value] if v),
-                    project_name=pname or "",
-                    project=conv.project,
-                    conversation_id=conv.id,
-                    status=conv.status.value,
-                    updated=conv.updated or conv.created,
-                    score=score,
-                    matches=matches,
-                ))
-
-    if scope in {"all", "tasks"}:
-        for task in tasks:
-            project = project_by_name.get(task.project_name) or _project_for_record(list(project_by_name.values()), "", task.project)
-            pname = project.name if project else task.project_name
-            score, matches = _collect_matches([
-                ("任务描述", task.prompt, 120),
-                ("任务 ID", task.id, 70),
-                ("对话 ID", task.conversation_id, 50),
-                ("项目名", pname, 60),
-                ("项目路径", task.project, 45),
-                ("账号", task.account, 35),
-                ("状态", task.status.value, 30),
-            ], query)
-            if score:
-                score += _status_boost(task.status.value)
-                results.append(SearchResult(
-                    type="task",
-                    id=task.id,
-                    title=task.prompt or task.id,
-                    subtitle=" · ".join(v for v in [pname, task.account, task.status.value] if v),
-                    project_name=pname or "",
-                    project=task.project,
-                    conversation_id=task.conversation_id,
-                    task_id=task.id,
-                    status=task.status.value,
-                    updated=task.finished or task.created,
-                    score=score,
-                    matches=matches,
-                ))
-
-    if deep and scope in {"all", "content"}:
-        for task in tasks:
-            log_path = scheduler.get_log_path(task.id)
-            if not log_path.exists():
-                continue
-            try:
-                text = log_path.read_text(encoding="utf-8", errors="ignore")[-262144:]
-            except OSError:
-                continue
-            if query.lower() not in text.lower():
-                continue
-            project = project_by_name.get(task.project_name) or _project_for_record(list(project_by_name.values()), "", task.project)
-            pname = project.name if project else task.project_name
-            results.append(SearchResult(
-                type="content",
-                id=f"log-{task.id}",
-                title=task.prompt or task.id,
-                subtitle=" · ".join(v for v in [pname, task.status.value, f"{task.id}.log"] if v),
-                project_name=pname or "",
-                project=task.project,
-                conversation_id=task.conversation_id,
-                task_id=task.id,
-                status=task.status.value,
-                updated=task.finished or task.created,
-                score=35 + _status_boost(task.status.value),
-                matches=[SearchMatch(field="日志", snippet=_search_snippet(text, query))],
-            ))
-
-    results.sort(key=lambda r: (r.score, r.updated), reverse=True)
-    return SearchResponse(query=query, results=results[:limit])
+    results = search_records(
+        query, scope,
+        projects=scheduler.list_projects(),
+        conversations=scheduler.list_conversations(include_archived=include_archived),
+        tasks=tasks,
+        project_name=project_name,
+        deep=deep,
+        read_log=read_log,
+        limit=limit,
+    )
+    return SearchResponse(query=query, results=results)
 
 
 # ── Web Push ───────────────────────────────────────────────

@@ -10,6 +10,10 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
+from coderfleet.account_type_registry import env_auth_type_ids
+from coderfleet.config import parse_optional_int, truthy
+from coderfleet.server.store import JsonStore
+
 
 class TaskStatus(str, Enum):
     scheduled = "scheduled"
@@ -62,6 +66,27 @@ class Account(BaseModel):
     env_file: str = ""
     proxy:    AccountProxy = AccountProxy.relay
 
+    @classmethod
+    def from_conf_record(cls, record: dict[str, str]) -> "Account | None":
+        """把一条 accounts.conf 解析记录映射为 Account；不合法则返回 None（跳过）。
+
+        account/project 的「形状」由此集中在模型上 —— 无论谁读 .conf，都得到同一套类型。
+        """
+        if "NAME" not in record or "TYPE" not in record:
+            return None
+        try:
+            acc_type = AccountType(record["TYPE"])
+            auth = AccountAuth(record.get("AUTH", AccountAuth.login.value))
+            proxy = AccountProxy(record.get("PROXY", AccountProxy.relay.value))
+        except ValueError:
+            return None
+        env_file = record.get("ENV_FILE", "")
+        if auth == AccountAuth.env and acc_type.value not in env_auth_type_ids():
+            return None
+        if auth == AccountAuth.env and not env_file:
+            env_file = f"./accounts/{record['NAME']}/env"
+        return cls(name=record["NAME"], type=acc_type, auth=auth, env_file=env_file, proxy=proxy)
+
 
 class Project(BaseModel):
     name:        str
@@ -85,6 +110,25 @@ class Project(BaseModel):
 
     def service_name(self, account_type: AccountType) -> str:
         return f"{account_type.value}-project-{self.name}"
+
+    @classmethod
+    def from_conf_record(cls, record: dict[str, str]) -> "Project | None":
+        """把一条 projects.conf 解析记录映射为 Project；不合法则返回 None（跳过）。"""
+        if "NAME" not in record or "ACCOUNT" not in record or "PATH" not in record:
+            return None
+        return cls(
+            name=record["NAME"],
+            account=record["ACCOUNT"],
+            path=record["PATH"].replace("~", str(Path.home()), 1),
+            active=truthy(record.get("ACTIVE", "on")),
+            ide_enabled=truthy(record.get("IDE", "off")),
+            ide_port=parse_optional_int(record.get("IDE_PORT", "")),
+            ide_auth=record.get("IDE_AUTH", "none"),
+            ide_remote=truthy(record.get("IDE_REMOTE", "off")),
+            image=record.get("IMAGE", ""),
+            ephemeral=truthy(record.get("EPHEMERAL", "off")),
+            git_url=record.get("GIT_URL", ""),
+        )
 
 
 # ── 任务 ──────────────────────────────────────────────────
@@ -111,29 +155,15 @@ class Conversation(BaseModel):
     ephemeral_expires_at: str = ""
 
     def save(self, conversations_dir: Path) -> None:
-        conversations_dir.mkdir(parents=True, exist_ok=True)
-        path = conversations_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(Conversation, conversations_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "Conversation":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**data)
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, conversations_dir: Path) -> list["Conversation"]:
-        if not conversations_dir.exists():
-            return []
-        conversations = []
-        for p in sorted(conversations_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                conversations.append(cls.load(p))
-            except Exception:
-                pass
-        return conversations
+        return JsonStore(cls, conversations_dir).all()
 
     def touch(
         self,
@@ -157,28 +187,15 @@ class Board(BaseModel):
     updated: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, boards_dir: Path) -> None:
-        boards_dir.mkdir(parents=True, exist_ok=True)
-        path = boards_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(Board, boards_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "Board":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, boards_dir: Path) -> list["Board"]:
-        if not boards_dir.exists():
-            return []
-        boards = []
-        for p in sorted(boards_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                boards.append(cls.load(p))
-            except Exception:
-                pass
-        return boards
+        return JsonStore(cls, boards_dir).all()
 
     def touch(self, boards_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")
@@ -201,28 +218,15 @@ class BoardCard(BaseModel):
     updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, cards_dir: Path) -> None:
-        cards_dir.mkdir(parents=True, exist_ok=True)
-        path = cards_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(BoardCard, cards_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "BoardCard":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, cards_dir: Path) -> list["BoardCard"]:
-        if not cards_dir.exists():
-            return []
-        cards = []
-        for p in sorted(cards_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                cards.append(cls.load(p))
-            except Exception:
-                pass
-        return cards
+        return JsonStore(cls, cards_dir).all()
 
     def touch(self, cards_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")
@@ -267,29 +271,15 @@ class Task(BaseModel):
     # ── 持久化 ────────────────────────────────────────────
 
     def save(self, tasks_dir: Path) -> None:
-        tasks_dir.mkdir(parents=True, exist_ok=True)
-        path = tasks_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(Task, tasks_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "Task":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**data)
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, tasks_dir: Path) -> list["Task"]:
-        if not tasks_dir.exists():
-            return []
-        tasks = []
-        for p in sorted(tasks_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                tasks.append(cls.load(p))
-            except Exception:
-                pass
-        return tasks
+        return JsonStore(cls, tasks_dir).all()
 
     def update_status(self, status: TaskStatus, tasks_dir: Path) -> None:
         self.status = status
@@ -566,29 +556,15 @@ class Pipeline(BaseModel):
     updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, pipelines_dir: Path) -> None:
-        pipelines_dir.mkdir(parents=True, exist_ok=True)
-        path = pipelines_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(Pipeline, pipelines_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "Pipeline":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**data)
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, pipelines_dir: Path) -> list["Pipeline"]:
-        if not pipelines_dir.exists():
-            return []
-        pipelines = []
-        for p in sorted(pipelines_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                pipelines.append(cls.load(p))
-            except Exception:
-                pass
-        return pipelines
+        return JsonStore(cls, pipelines_dir).all()
 
     def touch(self, pipelines_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")
@@ -706,28 +682,15 @@ class WorkflowTemplate(BaseModel):
     updated:     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, templates_dir: Path) -> None:
-        templates_dir.mkdir(parents=True, exist_ok=True)
-        path = templates_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(WorkflowTemplate, templates_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "WorkflowTemplate":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, templates_dir: Path) -> list["WorkflowTemplate"]:
-        if not templates_dir.exists():
-            return []
-        result = []
-        for p in sorted(templates_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                result.append(cls.load(p))
-            except Exception:
-                pass
-        return result
+        return JsonStore(cls, templates_dir).all()
 
     def touch(self, templates_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")
@@ -908,16 +871,11 @@ class DailyDigest(BaseModel):
     updated:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, digests_dir: Path) -> None:
-        digests_dir.mkdir(parents=True, exist_ok=True)
-        path = digests_dir / f"{self.date}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(DailyDigest, digests_dir, key="date").save(self)
 
     @classmethod
     def load(cls, path: Path) -> "DailyDigest":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        return JsonStore(cls, path.parent, key="date").load(path)
 
 
 # ── 定时计划 ───────────────────────────────────────────────
@@ -964,28 +922,15 @@ class Schedule(BaseModel):
     updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def save(self, schedules_dir: Path) -> None:
-        schedules_dir.mkdir(parents=True, exist_ok=True)
-        path = schedules_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(Schedule, schedules_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "Schedule":
-        return cls(**json.loads(path.read_text(encoding="utf-8")))
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, schedules_dir: Path) -> list["Schedule"]:
-        if not schedules_dir.exists():
-            return []
-        result = []
-        for p in sorted(schedules_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                result.append(cls.load(p))
-            except Exception:
-                pass
-        return result
+        return JsonStore(cls, schedules_dir).all()
 
 
 class ScheduleResponse(BaseModel):
@@ -1162,29 +1107,15 @@ class WorkflowRun(BaseModel):
     approval_token:              str = ""
 
     def save(self, runs_dir: Path) -> None:
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        path = runs_dir / f"{self.id}.json"
-        path.write_text(
-            json.dumps(self.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        JsonStore(WorkflowRun, runs_dir).save(self)
 
     @classmethod
     def load(cls, path: Path) -> "WorkflowRun":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(**data)
+        return JsonStore(cls, path.parent).load(path)
 
     @classmethod
     def load_all(cls, runs_dir: Path) -> list["WorkflowRun"]:
-        if not runs_dir.exists():
-            return []
-        runs = []
-        for p in sorted(runs_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            try:
-                runs.append(cls.load(p))
-            except Exception:
-                pass
-        return runs
+        return JsonStore(cls, runs_dir).all()
 
     def touch(self, runs_dir: Path) -> None:
         self.updated = datetime.now().isoformat(timespec="seconds")

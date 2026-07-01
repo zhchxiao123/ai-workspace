@@ -10,6 +10,7 @@ INDEX_HTML = STATIC_DIR / "index.html"
 MOBILE_HTML = STATIC_DIR / "mobile.html"
 PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
 MAIN_PY = ROOT / "coderfleet" / "server" / "main.py"
+SEARCH_PY = ROOT / "coderfleet" / "server" / "search.py"
 RENDERER_CSS = STATIC_DIR / "css" / "renderer.css"
 
 
@@ -364,7 +365,8 @@ def test_chat_search_uses_global_search_results_not_tree_filter_only() -> None:
 
     assert 'placeholder="搜索项目、对话、任务或内容..."' in html
     assert '@app.get("/api/search", response_model=SearchResponse)' in main_py
-    assert "class SearchResult" in main_py
+    # SearchResult 现由 search 深模块持有（逻辑已移出 HTTP 处理器）
+    assert "class SearchResult" in SEARCH_PY.read_text(encoding="utf-8")
     assert "fetch(`${API}/api/search?${params.toString()}`)" in source
     assert "function renderChatSearchResults" in source
     assert "function openChatSearchResult" in source

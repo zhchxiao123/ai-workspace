@@ -22,8 +22,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from coderfleet.config import parse_conf
 from coderfleet.server import docker_mgr
-from coderfleet.account_type_registry import env_auth_type_ids as _env_auth_ids
+from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
 from coderfleet.ports import allocate_ide_port
 from coderfleet.server.models import (
     Account,
@@ -55,20 +56,17 @@ from coderfleet.server.models import (
 )
 
 
-def _truthy(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _parse_optional_int(value: str) -> Optional[int]:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 class Scheduler:
-    def __init__(self, workspace_dir: Path):
+    def __init__(
+        self,
+        workspace_dir: Path,
+        runtime: "ContainerRuntime | None" = None,
+    ):
         self.workspace_dir  = workspace_dir
+        # 容器运行时 seam：默认走真正的 docker，测试注入 FakeRuntime。
+        self.runtime: "ContainerRuntime" = runtime or DockerRuntime()
         self.accounts_conf  = workspace_dir / "accounts.conf"
         self.projects_conf  = workspace_dir / "projects.conf"
         self.tasks_dir      = workspace_dir / "tasks"
@@ -165,71 +163,17 @@ class Scheduler:
     # ── 账号管理 ──────────────────────────────────────────
 
     def get_accounts(self) -> list[Account]:
-        """解析 accounts.conf，返回所有账号"""
-        accounts = []
-        if not self.accounts_conf.exists():
-            return accounts
-        for line in self.accounts_conf.read_text(encoding="utf-8").splitlines():
-            line = line.strip().rstrip("\r")
-            if not line or line.startswith("#"):
-                continue
-            parts = {}
-            for token in line.split():
-                if "=" in token:
-                    k, v = token.split("=", 1)
-                    parts[k.upper()] = v
-            if "NAME" not in parts or "TYPE" not in parts:
-                continue
-            try:
-                acc_type = AccountType(parts["TYPE"])
-                auth = AccountAuth(parts.get("AUTH", AccountAuth.login.value))
-                proxy = AccountProxy(parts.get("PROXY", AccountProxy.relay.value))
-            except ValueError:
-                continue
-            env_file = parts.get("ENV_FILE", "")
-            if auth == AccountAuth.env and acc_type.value not in _env_auth_ids():
-                continue
-            if auth == AccountAuth.env and not env_file:
-                env_file = f"./accounts/{parts['NAME']}/env"
-            accounts.append(Account(
-                name     = parts["NAME"],
-                type     = acc_type,
-                auth     = auth,
-                env_file = env_file,
-                proxy    = proxy,
-            ))
-        return accounts
+        """解析 accounts.conf，返回所有账号。词法与「形状」分别由 parse_conf 与模型持有。"""
+        return [
+            acc for acc in (Account.from_conf_record(r) for r in parse_conf(self.accounts_conf))
+            if acc is not None
+        ]
 
     def get_projects(self) -> list[Project]:
-        projects: list[Project] = []
-        if self.projects_conf.exists():
-            for line in self.projects_conf.read_text(encoding="utf-8").splitlines():
-                line = line.strip().rstrip("\r")
-                if not line or line.startswith("#"):
-                    continue
-                parts = {}
-                for token in line.split():
-                    if "=" in token:
-                        k, v = token.split("=", 1)
-                        parts[k.upper()] = v
-                if "NAME" not in parts or "ACCOUNT" not in parts or "PATH" not in parts:
-                    continue
-                path = parts["PATH"].replace("~", str(Path.home()), 1)
-                projects.append(Project(
-                    name=parts["NAME"],
-                    account=parts["ACCOUNT"],
-                    path=path,
-                    active=_truthy(parts.get("ACTIVE", "on")),
-                    ide_enabled=_truthy(parts.get("IDE", "off")),
-                    ide_port=_parse_optional_int(parts.get("IDE_PORT", "")),
-                    ide_auth=parts.get("IDE_AUTH", "none"),
-                    ide_remote=_truthy(parts.get("IDE_REMOTE", "off")),
-                    image=parts.get("IMAGE", ""),
-                    ephemeral=_truthy(parts.get("EPHEMERAL", "off")),
-                    git_url=parts.get("GIT_URL", ""),
-                ))
-
-        return projects
+        return [
+            proj for proj in (Project.from_conf_record(r) for r in parse_conf(self.projects_conf))
+            if proj is not None
+        ]
 
     # ── conf 文件写入 ──────────────────────────────────────
 
@@ -1834,18 +1778,11 @@ class Scheduler:
     def _ephemeral_expires_at(ttl_minutes: int) -> str:
         return (datetime.now() + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds")
 
-    @staticmethod
-    def _docker_container_running(container_name: str) -> bool:
+    def _docker_container_running(self, container_name: str) -> bool:
         if not container_name:
             return False
         try:
-            result = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.returncode == 0 and result.stdout.strip().lower() == "true"
+            return self.runtime.is_running(container_name)
         except Exception:
             return False
 
@@ -1988,26 +1925,22 @@ class Scheduler:
             auth_dst = spec.auth_dir
             image    = self._get_account_image(acc, project)
 
-            docker_args = [
-                "docker", "run", "--pull", "never",
-                "--name", container_name,
-                "-v", f"{auth_src}:{auth_dst}",
-            ]
-            if not keep_container:
-                docker_args.insert(2, "--rm")
+            # 用领域词汇描述容器：环境变量、挂载、网络 —— docker argv 细节交给 runtime。
+            env: dict[str, str] = {}
+            mounts: list[tuple[str, str]] = [(str(auth_src), str(auth_dst))]
 
             if session_dir is not None:
-                docker_args += ["-v", f"{session_dir}:/workspace"]
+                mounts.append((str(session_dir), "/workspace"))
             else:
                 # No session dir → still need /workspace for the log mechanism
                 tmp_ws = self.sessions_dir / f"task-{task.id}"
                 tmp_ws.mkdir(parents=True, exist_ok=True)
-                docker_args += ["-v", f"{tmp_ws}:/workspace"]
+                mounts.append((str(tmp_ws), "/workspace"))
 
             if output_dir:
                 out_path = Path(output_dir).expanduser().resolve()
                 out_path.mkdir(parents=True, exist_ok=True)
-                docker_args += ["-v", f"{out_path}:/output"]
+                mounts.append((str(out_path), "/output"))
 
             # Proxy / network
             network = self._get_ephemeral_network(acc)
@@ -2018,47 +1951,38 @@ class Scheduler:
                 no_proxy   = cfg.get("NO_PROXY", "localhost,127.0.0.1")
                 for ev in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy",
                            "HTTP_PROXY", "http_proxy"):
-                    docker_args += ["-e", f"{ev}={proxy_url}"]
-                docker_args += [
-                    "-e", f"NO_PROXY={no_proxy}",
-                    "-e", f"no_proxy={no_proxy}",
-                    "-e", f"CODERFLEET_RELAY_IP={relay_ip}",
-                    "-e", f"CODERFLEET_RELAY_PORT={relay_port}",
-                ]
-                docker_args += ["--network", network]
+                    env[ev] = proxy_url
+                env["NO_PROXY"] = no_proxy
+                env["no_proxy"] = no_proxy
+                env["CODERFLEET_RELAY_IP"] = relay_ip
+                env["CODERFLEET_RELAY_PORT"] = relay_port
 
             # Standard env vars (matching compose.py baseline — always set for all types)
-            docker_args += [
-                "-e", "CODEX_HOME=/home/byclaw/.codex",
-                "-e", "CLAUDE_CONFIG_DIR=/home/byclaw/.claude",
-                "-e", f"CODERFLEET_ACCOUNT_NAME={acc.name}",
-                "-e", f"CODERFLEET_ACCOUNT_TYPE={acc.type.value}",
-                "-e", f"CODERFLEET_ACCOUNT_AUTH={acc.auth.value}",
-                "-e", f"CODERFLEET_ACCOUNT_PROXY={acc.proxy.value}",
-            ]
+            env["CODEX_HOME"] = "/home/byclaw/.codex"
+            env["CLAUDE_CONFIG_DIR"] = "/home/byclaw/.claude"
+            env["CODERFLEET_ACCOUNT_NAME"] = acc.name
+            env["CODERFLEET_ACCOUNT_TYPE"] = acc.type.value
+            env["CODERFLEET_ACCOUNT_AUTH"] = acc.auth.value
+            env["CODERFLEET_ACCOUNT_PROXY"] = acc.proxy.value
 
             # Account-type static env vars
-            for k, v in spec.env_vars.items():
-                docker_args += ["-e", f"{k}={v}"]
+            env.update(spec.env_vars)
 
             # Project-level env (if project_name set)
             if task.project_name:
                 try:
-                    for k, v in self.get_project_env(task.project_name).items():
-                        docker_args += ["-e", f"{k}={v}"]
+                    env.update(self.get_project_env(task.project_name))
                 except Exception:
                     pass
 
             # Account env (for env-auth accounts, API keys, etc.)
             try:
-                for k, v in self.get_account_env(acc.name).items():
-                    docker_args += ["-e", f"{k}={v}"]
+                env.update(self.get_account_env(acc.name))
             except Exception:
                 pass
 
             # Task-level secrets (highest priority, override everything)
-            for k, v in (task_secrets or {}).items():
-                docker_args += ["-e", f"{k}={v}"]
+            env.update(task_secrets or {})
 
             # Wrap inner_cmd in explicit subshell so exec -a replaces the subshell,
             # not the outer bash (which must stay alive to propagate the exit code).
@@ -2079,12 +2003,15 @@ class Scheduler:
                         )
                     except Exception:
                         pass
-                    start_args = docker_args + ["-d", "-w", "/workspace", image, "tail", "-f", "/dev/null"]
-                    start_proc = await asyncio.create_subprocess_exec(
-                        *start_args,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                    )
+                    start_proc = await self.runtime.run(ContainerSpec(
+                        image=image,
+                        command=["tail", "-f", "/dev/null"],
+                        env=env,
+                        mounts=mounts,
+                        network=network,
+                        name=container_name,
+                        detached=True,
+                    ))
                     start_out, _ = await start_proc.communicate()
                     if start_proc.returncode != 0:
                         msg = start_out.decode("utf-8", errors="replace") if start_out else "unknown error"
@@ -2099,20 +2026,20 @@ class Scheduler:
 
                 task.ephemeral_container_name = container_name
                 task.save(self.tasks_dir)
-                exec_env_args: list[str] = []
-                for i, arg in enumerate(docker_args[:-1]):
-                    if arg == "-e":
-                        exec_env_args += ["-e", docker_args[i + 1]]
-                run_args = ["docker", "exec", *exec_env_args, "-w", "/workspace", container_name, "bash", "-c", wrapped_cmd]
+                proc = await self.runtime.exec(
+                    container_name, ["bash", "-c", wrapped_cmd], env=env, workdir="/workspace",
+                )
             else:
-                docker_args += ["-w", "/workspace", image, "bash", "-c", wrapped_cmd]
-                run_args = docker_args
+                proc = await self.runtime.run(ContainerSpec(
+                    image=image,
+                    command=["bash", "-c", wrapped_cmd],
+                    env=env,
+                    mounts=mounts,
+                    network=network,
+                    name=container_name,
+                    remove=True,
+                ))
 
-            proc = await asyncio.create_subprocess_exec(
-                *run_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
             task.pid = str(proc.pid)
             task.ephemeral_container_name = container_name
             task.save(self.tasks_dir)
@@ -2237,15 +2164,8 @@ class Scheduler:
                 except Exception:
                     pass
 
-            docker_exec_args = ["docker", "exec"]
-            for k, v in project_env.items():
-                docker_exec_args += ["-e", f"{k}={v}"]
-            docker_exec_args += [container_name, "bash", "-c", cmd]
-
-            proc = await asyncio.create_subprocess_exec(
-                *docker_exec_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            proc = await self.runtime.exec(
+                container_name, ["bash", "-c", cmd], env=project_env,
             )
             await proc.wait()
 

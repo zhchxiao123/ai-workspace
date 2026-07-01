@@ -47,6 +47,19 @@ def parse_conf(path: Path) -> list[dict[str, str]]:
     return records
 
 
+def truthy(value: str) -> bool:
+    """Coerce a .conf flag token to bool (on/1/true/yes → True)."""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_optional_int(value: str) -> int | None:
+    """Coerce a .conf token to int, or None when empty/invalid."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def write_conf_line(path: Path, tokens: dict[str, str]) -> None:
     """Append a KEY=value line to a conf file."""
     parts = [f"{k}={v}" for k, v in tokens.items()]
