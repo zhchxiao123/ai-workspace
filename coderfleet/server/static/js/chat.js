@@ -1764,7 +1764,7 @@ async function handleFileSelect(input) {
 async function handleChatPaste(event) {
   const items = Array.from(event.clipboardData?.items || []);
   const files = items
-    .filter(item => item.kind === 'file')
+    .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
     .map(item => item.getAsFile())
     .filter(Boolean);
 

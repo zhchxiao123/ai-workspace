@@ -71,6 +71,7 @@ from coderfleet.server.models import (
     WorkflowTemplateResponse,
 )
 from coderfleet.server.auth import AuthMiddleware, load_api_key
+from coderfleet.server.image_builds import ImageBuildRegistry
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
@@ -196,6 +197,7 @@ push_manager     = PushManager(WORKSPACE_DIR)
 marketplace_mgr  = MarketplaceManager(WORKSPACE_DIR / "cache")
 translation_cache = TranslationCache(WORKSPACE_DIR / "translations")
 DIGEST_DIR       = WORKSPACE_DIR / "digests"
+image_builds     = ImageBuildRegistry()
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -926,6 +928,7 @@ class DockerfileUpdateRequest(BaseModel):
 
 class ImageBuildRequest(BaseModel):
     image_tag: str = ""
+    build_id: str = ""
 
 
 @app.get("/api/projects/{name}/dockerfile")
@@ -964,11 +967,14 @@ async def build_project_image(name: str, req: ImageBuildRequest = None):
         raise HTTPException(status_code=400, detail="Dockerfile 不存在，请先保存 Dockerfile")
 
     image_tag = req.image_tag.strip() or existing.image or _default_project_image(name)
+    build_id = req.build_id.strip() or uuid.uuid4().hex
     cfg = __import__("coderfleet.config", fromlist=["load_config"]).load_config(WORKSPACE_DIR)
     platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
 
     async def _stream() -> AsyncIterator[str]:
+        proc = None
         try:
+            yield f">>> 构建 ID：{build_id}\n"
             yield f">>> 构建镜像 {image_tag}（平台：{platform}）...\n"
             proc = await asyncio.create_subprocess_exec(
                 "docker", "build",
@@ -979,6 +985,7 @@ async def build_project_image(name: str, req: ImageBuildRequest = None):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
+            image_builds.track(build_id, name, proc)
             assert proc.stdout is not None
             async for line in proc.stdout:
                 yield line.decode("utf-8", errors="replace")
@@ -993,12 +1000,32 @@ async def build_project_image(name: str, req: ImageBuildRequest = None):
                         name, existing.account, existing.path,
                         existing.active, existing.ide_enabled, existing.ide_port,
                         existing.ide_auth, existing.ide_remote, image_tag,
+                        existing.docker_socket,
                     )
                     yield f"  已写入 IMAGE={image_tag} 到 projects.conf\n"
+        except asyncio.CancelledError:
+            if image_builds.get(build_id) is not None:
+                await image_builds.cancel(build_id)
+            elif proc is not None and proc.returncode is None:
+                proc.terminate()
+                await proc.wait()
+            raise
         except Exception as e:
             yield f"\n✗ 构建出错：{e}\n"
+        finally:
+            image_builds.forget(build_id)
 
     return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
+
+
+@app.delete("/api/projects/{name}/image/build/{build_id}", status_code=200)
+async def cancel_project_image_build(name: str, build_id: str):
+    """停止正在执行的项目镜像构建。"""
+    record = image_builds.get(build_id)
+    if record is not None and record.project_name != name:
+        raise HTTPException(status_code=404, detail="没有正在构建的镜像")
+    result = await image_builds.cancel(build_id)
+    return {"ok": result.cancelled, "message": result.message}
 
 
 @app.delete("/api/projects/{name}/image", status_code=200)
@@ -1011,6 +1038,7 @@ async def clear_project_image(name: str):
         name, existing.account, existing.path,
         existing.active, existing.ide_enabled, existing.ide_port,
         existing.ide_auth, existing.ide_remote, "",
+        existing.docker_socket,
     )
     return {"ok": True}
 

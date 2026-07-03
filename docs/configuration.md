@@ -38,13 +38,15 @@ coderfleet config set DOCKER_SOCKET auto
 coderfleet apply
 ```
 
-`auto` 会识别当前 Docker context / `DOCKER_HOST`，覆盖 Colima、Docker Desktop、Linux Docker、rootless Docker 的常见 Unix socket。也可以手动指定：
+`auto` 会识别当前 Docker context / `DOCKER_HOST`，覆盖 Colima、Docker Desktop、Linux Docker、rootless Docker 的常见 Unix socket。Colima / Docker Desktop 下建议使用 `auto`。如果需要手动指定，应填写 Docker daemon 所在环境可见的 socket 路径，通常是：
 
 ```bash
-coderfleet config set DOCKER_SOCKET /Users/<you>/.colima/default/docker.sock
+coderfleet config set DOCKER_SOCKET /var/run/docker.sock
 coderfleet config set DOCKER_SOCKET_TARGET /var/run/docker.sock
 coderfleet apply
 ```
+
+不要把 `/Users/<you>/.colima/default/docker.sock` 当作容器挂载源；那是 macOS 侧 Docker CLI 连接 Colima 的客户端 socket，不是 Colima VM 内 Docker daemon 的 bind mount 源路径。
 
 开启后项目容器内会得到 `DOCKER_HOST=unix:///var/run/docker.sock`，并注入 `CODERFLEET_HOST_WORKSPACE` 指向宿主机可见的项目路径。二级容器挂载项目目录时优先使用这个变量，例如：
 

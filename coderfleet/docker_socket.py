@@ -39,6 +39,16 @@ def _path_from_unix_endpoint(value: str) -> str:
     return str(Path(value).expanduser())
 
 
+def _daemon_mount_path_for_client_socket(path: str) -> str:
+    """Map macOS client proxy sockets to the daemon-side path used for bind mounts."""
+    normalized = path.replace("\\", "/")
+    if "/.colima/" in normalized and normalized.endswith("/docker.sock"):
+        return DEFAULT_CONTAINER_SOCKET
+    if normalized.endswith("/.docker/run/docker.sock"):
+        return DEFAULT_CONTAINER_SOCKET
+    return path
+
+
 def _docker_context_host() -> str:
     try:
         result = subprocess.run(
@@ -93,14 +103,24 @@ def resolve_docker_socket(
     if configured.lower() == "auto":
         env_host = os.environ.get("DOCKER_HOST", "") if docker_host is None else docker_host
         ctx_host = _docker_context_host() if context_host is None else context_host
+        for endpoint in (env_host, ctx_host):
+            endpoint_path = _path_from_unix_endpoint(endpoint)
+            if endpoint_path:
+                daemon_path = _daemon_mount_path_for_client_socket(endpoint_path)
+                if daemon_path != endpoint_path:
+                    return DockerSocketMount(host_path=daemon_path, container_path=container_path)
         for path in _candidate_socket_paths(env_host, ctx_host):
             if Path(path).exists():
-                return DockerSocketMount(host_path=path, container_path=container_path)
+                return DockerSocketMount(
+                    host_path=_daemon_mount_path_for_client_socket(path),
+                    container_path=container_path,
+                )
         return None
 
     host_path = _path_from_unix_endpoint(configured)
     if not host_path:
         return None
+    host_path = _daemon_mount_path_for_client_socket(host_path)
     return DockerSocketMount(host_path=host_path, container_path=container_path)
 
 

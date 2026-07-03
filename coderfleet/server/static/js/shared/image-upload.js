@@ -30,6 +30,10 @@ function normalizeFileForUpload(file, fromPaste = false) {
   return new File([file], `${prefix}-${Date.now()}.${ext}`, { type: file.type || '' });
 }
 
+function normalizeImageFileForUpload(file, fromPaste = false) {
+  return normalizeFileForUpload(file, fromPaste);
+}
+
 /**
  * 通用图片上传器（供桌面和移动各自的薄 wrapper 调用）
  *
@@ -85,6 +89,10 @@ async function uploadFilesGeneric(projectName, files, fromPaste, callbacks = {})
   }
 }
 
+async function uploadImagesGeneric(projectName, files, fromPaste, callbacks = {}) {
+  return uploadFilesGeneric(projectName, files, fromPaste, callbacks);
+}
+
 function _fileExtBadge(filename) {
   const ext = (filename.split('.').pop() || 'file').toUpperCase().slice(0, 6);
   const escFn = (s) => (typeof esc === 'function' ? esc(s) : String(s || ''));
@@ -115,6 +123,10 @@ function renderTaskFileAttachments(task, fallbackProjectName = '') {
   }).join('');
 
   return `<div class="user-image-attachments">${thumbs}</div>`;
+}
+
+function renderTaskImageAttachments(task, fallbackProjectName = '') {
+  return renderTaskFileAttachments(task, fallbackProjectName);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -232,13 +244,21 @@ async function uploadFilesForCompose(files, fromPaste = false, adapters = {}) {
   });
 }
 
+async function uploadImagesForCompose(files, fromPaste = false, adapters = {}) {
+  return uploadFilesForCompose(files, fromPaste, adapters);
+}
+
 // 全局暴露（含 Phase 2 新增）
 if (typeof window !== 'undefined') {
   window.normalizeFileForUpload = normalizeFileForUpload;
+  window.normalizeImageFileForUpload = normalizeImageFileForUpload;
   window.uploadFilesGeneric = uploadFilesGeneric;
+  window.uploadImagesGeneric = uploadImagesGeneric;
   window.renderTaskFileAttachments = renderTaskFileAttachments;
+  window.renderTaskImageAttachments = renderTaskImageAttachments;
   window.renderPendingPreviews = renderPendingPreviews;
   window.removePendingImage = removePendingImage;
   window.clearPendingImages = clearPendingImages;
   window.uploadFilesForCompose = uploadFilesForCompose;
+  window.uploadImagesForCompose = uploadImagesForCompose;
 }

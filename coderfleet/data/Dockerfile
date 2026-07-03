@@ -19,14 +19,24 @@ ENV LC_ALL=C.UTF-8
 # ── 基础系统工具 ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # 网络工具
-    curl wget ca-certificates netcat-openbsd \
+    curl wget ca-certificates netcat-openbsd iputils-ping dnsutils \
     # 开发基础
-    git build-essential pkg-config \
+    git git-lfs build-essential pkg-config \
     # Python 依赖
     libssl-dev libffi-dev zlib1g-dev libbz2-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
-    # 系统工具
-    bash-completion less vim nano tmux \
+    # 系统工具与常用开发工具
+    bash-completion less vim nano tmux jq fzf htop tree zip unzip fd-find \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── GitHub CLI (gh) ───────────────────────────────────────
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Node.js 20 (via NodeSource) ───────────────────────────

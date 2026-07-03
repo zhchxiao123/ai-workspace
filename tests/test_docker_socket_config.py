@@ -29,9 +29,20 @@ def test_resolve_docker_socket_accepts_colima_unix_endpoint(tmp_path: Path) -> N
     )
 
     assert resolved is not None
-    assert resolved.host_path == str(socket_path)
+    assert resolved.host_path == "/var/run/docker.sock"
     assert resolved.container_path == "/var/run/docker.sock"
     assert resolved.env == "unix:///var/run/docker.sock"
+
+
+def test_resolve_docker_socket_maps_explicit_colima_client_socket_to_daemon_socket(tmp_path: Path) -> None:
+    socket_path = tmp_path / ".colima" / "default" / "docker.sock"
+    socket_path.parent.mkdir(parents=True)
+    socket_path.touch()
+
+    resolved = resolve_docker_socket({"DOCKER_SOCKET": str(socket_path)})
+
+    assert resolved is not None
+    assert resolved.host_path == "/var/run/docker.sock"
 
 
 def test_generate_compose_mounts_configured_docker_socket(tmp_path: Path) -> None:

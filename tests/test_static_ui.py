@@ -129,6 +129,16 @@ def test_project_form_exposes_docker_socket_override() -> None:
     assert "docker_socket: dockerSocket" in source
 
 
+def test_project_image_build_modal_exposes_manual_stop() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    assert 'id="image-build-stop-btn"' in html
+    assert "function stopProjectImageBuild" in source
+    assert "AbortController" in source
+    assert "/image/build/${encodeURIComponent(activeImageBuildId)}" in source
+
+
 def test_development_board_page_is_exposed() -> None:
     html = read_index()
     source = read_ui_source()
@@ -244,6 +254,63 @@ def test_sidebar_can_collapse_with_persisted_state() -> None:
     assert ".brand-mark img" in source
     assert ".layout.sidebar-collapsed .sidebar {\n      width: 56px;" in source
     assert ".layout.sidebar-collapsed .sidebar-toggle" in source
+
+
+def test_sidebar_system_controls_are_reorganized() -> None:
+    html = read_index()
+    source = read_ui_source()
+
+    assert "brand-health" in html
+    assert html.index("brand-health") < html.index("<nav>")
+    assert html.index('id="health-dot"') < html.index("<nav>")
+
+    footer_start = html.index('<div class="sidebar-footer">')
+    footer_end = html.index("</aside>", footer_start)
+    footer = html[footer_start:footer_end]
+
+    assert 'data-page="settings"' in footer
+    assert 'id="sidebar-toggle"' in footer
+    assert 'id="health-dot"' not in footer
+    assert 'id="pwa-notif-btn"' not in footer
+    assert 'id="theme-toggle-btn"' not in footer
+
+    settings_start = html.index('<div class="page" id="page-settings">')
+    settings_end = html.index("</div>\n\n      </div>", settings_start)
+    settings_page = html[settings_start:settings_end]
+
+    assert 'id="settings-system-preferences"' in settings_page
+    assert 'id="pwa-notif-btn"' in settings_page
+    assert 'id="theme-toggle-btn"' in settings_page
+    assert ".brand-health" in source
+    assert ".sidebar-footer-actions" in source
+
+
+def test_settings_page_uses_three_tab_sections() -> None:
+    html = read_index()
+    source = read_ui_source()
+
+    settings_start = html.index('<div class="page" id="page-settings">')
+    settings_end = html.index("</div>\n\n      </div>", settings_start)
+    settings_page = html[settings_start:settings_end]
+
+    assert 'class="settings-tabs"' in settings_page
+    for tab in ["preferences", "runtime", "account"]:
+        assert f'data-settings-tab="{tab}"' in settings_page
+        assert f'id="settings-panel-{tab}"' in settings_page
+        assert f'aria-controls="settings-panel-{tab}"' in settings_page
+
+    assert 'id="settings-runtime-wrap"' in settings_page
+    assert 'id="settings-account-wrap"' in settings_page
+    assert 'id="settings-system-preferences"' in settings_page
+
+    assert "function switchSettingsTab" in source
+    assert "function initSettingsPage" in source
+    assert "function loadRuntimeSettings" in source
+    assert "function refreshCurrentSettingsTab" in source
+    assert "localStorage.getItem('coderfleet.settings.activeTab')" in source
+    assert "localStorage.setItem('coderfleet.settings.activeTab'" in source
+    assert "settings-tab.active" in source
+    assert "settings-panel.active" in source
 
 
 def test_account_cards_use_structured_resource_layout() -> None:

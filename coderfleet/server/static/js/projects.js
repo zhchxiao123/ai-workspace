@@ -2,6 +2,10 @@
 // 项目归属判断函数已统一迁移至 js/shared/project-utils.js
 // （脚本在 utils 之后、projects 之前加载，保证全局可用）
 
+let activeImageBuildId = '';
+let activeImageBuildProject = '';
+let activeImageBuildController = null;
+
 async function loadProjectsDashboard() {
   try {
     const [projects, tasks, accounts] = await Promise.all([
@@ -468,6 +472,7 @@ async function buildProjectImage() {
   const output = document.getElementById('image-build-output');
   const running = document.getElementById('image-build-running');
   const doneBtn = document.getElementById('image-build-done-btn');
+  const stopBtn = document.getElementById('image-build-stop-btn');
   const title = document.getElementById('image-build-modal-title');
   if (!modal || !output) return;
 
@@ -475,21 +480,33 @@ async function buildProjectImage() {
   running.style.display = '';
   running.textContent = '执行中…';
   doneBtn.style.display = 'none';
+  if (stopBtn) {
+    stopBtn.style.display = '';
+    stopBtn.disabled = false;
+    stopBtn.textContent = '停止构建';
+  }
   title.textContent = `构建镜像 · ${projectContext.name}`;
   modal.style.display = '';
 
   const imageTag = document.getElementById('project-image-name')?.value.trim() || '';
+  const buildId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const controller = new AbortController();
+  activeImageBuildId = buildId;
+  activeImageBuildProject = projectContext.name;
+  activeImageBuildController = controller;
   try {
     const resp = await fetch(`${API}/api/projects/${encodeURIComponent(projectContext.name)}/image/build`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_tag: imageTag }),
+      body: JSON.stringify({ image_tag: imageTag, build_id: buildId }),
+      signal: controller.signal,
     });
     if (!resp.ok) {
       const d = await resp.json().catch(() => ({}));
       output.textContent = d.detail || '请求失败';
       running.textContent = '✗ 失败';
       doneBtn.style.display = '';
+      if (stopBtn) stopBtn.style.display = 'none';
       return;
     }
     const reader = resp.body.getReader();
@@ -502,14 +519,60 @@ async function buildProjectImage() {
     }
     running.textContent = '已完成';
     doneBtn.style.display = '';
+    if (stopBtn) stopBtn.style.display = 'none';
     // 刷新项目列表，更新 image badge
     await loadProjectsDashboard();
     await loadProjectImage(projectContext.name);
   } catch (e) {
-    output.textContent += `\n✗ 错误：${e.message}`;
-    running.textContent = '✗ 失败';
+    if (e.name === 'AbortError') {
+      running.textContent = '已停止';
+    } else {
+      output.textContent += `\n✗ 错误：${e.message}`;
+      running.textContent = '✗ 失败';
+    }
     doneBtn.style.display = '';
+    if (stopBtn) stopBtn.style.display = 'none';
+  } finally {
+    if (activeImageBuildId === buildId) {
+      activeImageBuildId = '';
+      activeImageBuildProject = '';
+      activeImageBuildController = null;
+    }
   }
+}
+
+async function stopProjectImageBuild() {
+  if (!activeImageBuildId || !activeImageBuildProject) return;
+  const stopBtn = document.getElementById('image-build-stop-btn');
+  const running = document.getElementById('image-build-running');
+  const output = document.getElementById('image-build-output');
+  const doneBtn = document.getElementById('image-build-done-btn');
+  if (stopBtn) {
+    stopBtn.disabled = true;
+    stopBtn.textContent = '停止中…';
+  }
+  if (running) running.textContent = '停止中…';
+  const projectName = activeImageBuildProject;
+  try {
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(projectName)}/image/build/${encodeURIComponent(activeImageBuildId)}`, {
+      method: 'DELETE',
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || '停止失败');
+    if (output && d.message) output.textContent += `\n${d.message}\n`;
+    if (activeImageBuildController) activeImageBuildController.abort();
+    if (running) running.textContent = d.ok ? '已停止' : (d.message || '已结束');
+  } catch (e) {
+    if (output) output.textContent += `\n✗ 停止失败：${e.message}\n`;
+    if (running) running.textContent = '停止失败';
+    if (stopBtn) {
+      stopBtn.disabled = false;
+      stopBtn.textContent = '停止构建';
+    }
+    return;
+  }
+  if (stopBtn) stopBtn.style.display = 'none';
+  if (doneBtn) doneBtn.style.display = '';
 }
 
 async function clearProjectImage() {

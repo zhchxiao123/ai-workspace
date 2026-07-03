@@ -4,24 +4,122 @@
 // ══════════════════════════════════════════════════════════════
 
 let settingsGroups = [];
+const SETTINGS_TAB_KEY = 'coderfleet.settings.activeTab';
+const SETTINGS_TABS = ['preferences', 'runtime', 'account'];
 
 function loadSettings() {
-  const wrap = document.getElementById('settings-wrap');
+  initSettingsPage();
+  refreshCurrentSettingsTab();
+}
+
+function initSettingsPage() {
+  const page = document.getElementById('page-settings');
+  if (!page) return;
+
+  const savedTab = localStorage.getItem('coderfleet.settings.activeTab') || 'preferences';
+  switchSettingsTab(savedTab, { persist: false, refresh: false });
+}
+
+function switchSettingsTab(tab, options = {}) {
+  const nextTab = SETTINGS_TABS.includes(tab) ? tab : 'preferences';
+  const persist = options.persist !== false;
+  const refresh = options.refresh !== false;
+
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    const isActive = btn.dataset.settingsTab === nextTab;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  document.querySelectorAll('.settings-panel').forEach(panel => {
+    const isActive = panel.id === `settings-panel-${nextTab}`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+
+  if (persist) localStorage.setItem('coderfleet.settings.activeTab', nextTab);
+  if (refresh) refreshCurrentSettingsTab();
+}
+
+function getCurrentSettingsTab() {
+  return document.querySelector('.settings-tab.active')?.dataset.settingsTab || 'preferences';
+}
+
+function refreshCurrentSettingsTab() {
+  const tab = getCurrentSettingsTab();
+  if (tab === 'runtime') {
+    loadRuntimeSettings();
+  } else if (tab === 'account') {
+    renderAccountSettings();
+  } else {
+    renderPreferencesSettings();
+  }
+}
+
+function renderPreferencesSettings() {
+  const panel = document.getElementById('settings-panel-preferences');
+  if (!panel) return;
+  panel.innerHTML = renderSystemPreferencesSection();
+  updateThemeIcon();
+  if (typeof updateNotifBtn === 'function') updateNotifBtn();
+}
+
+function loadRuntimeSettings() {
+  const wrap = document.getElementById('settings-runtime-wrap');
   if (!wrap) return;
   wrap.innerHTML = '<div class="empty">加载中...</div>';
   fetch('/api/config')
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(data => {
       settingsGroups = data.groups || [];
-      wrap.innerHTML = settingsGroups.map(renderSettingsGroup).join('') + renderAccountSection();
+      wrap.innerHTML = settingsGroups.map(renderSettingsGroup).join('');
     })
     .catch(e => { wrap.innerHTML = `<div class="empty">加载失败：${esc(String(e.message || e))}</div>`; });
 }
 
+function renderAccountSettings() {
+  const wrap = document.getElementById('settings-account-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = renderAccountSection();
+}
+
+function renderSystemPreferencesSection() {
+  return `
+  <div class="settings-card" id="settings-system-preferences">
+    <div class="settings-card-head">
+      <div class="settings-card-title">系统偏好</div>
+      <div class="settings-card-help">通知提醒与显示主题。</div>
+    </div>
+    <div class="settings-preference-list">
+      <button class="settings-preference-row" type="button" onclick="togglePushNotification()">
+        <span class="settings-preference-main">
+          <span class="settings-preference-title">系统提醒</span>
+          <span class="settings-preference-desc">任务完成后发送推送通知</span>
+        </span>
+        <span class="settings-preference-action">
+          <span class="pwa-notif-btn" id="pwa-notif-btn" aria-label="开启推送通知" title="开启任务完成推送通知">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </span>
+        </span>
+      </button>
+      <button class="settings-preference-row" type="button" onclick="toggleTheme()">
+        <span class="settings-preference-main">
+          <span class="settings-preference-title">主题切换</span>
+          <span class="settings-preference-desc">在深色与浅色模式之间切换</span>
+        </span>
+        <span class="settings-preference-action">
+          <span class="theme-toggle-btn" id="theme-toggle-btn" aria-label="切换主题"></span>
+        </span>
+      </button>
+    </div>
+  </div>`;
+}
+
 function renderSettingsGroup(g) {
   const needApply = g.fields.some(f => f.requires_apply);
+  const layoutClass = g.fields.length >= 5 ? ' settings-card-wide' : '';
   return `
-  <div class="settings-card">
+  <div class="settings-card${layoutClass}" data-settings-group="${esc(g.id)}">
     <div class="settings-card-head">
       <div class="settings-card-title">${esc(g.title)}${needApply ? ' <span class="apply-badge">需 apply</span>' : ''}</div>
       ${g.help ? `<div class="settings-card-help">${esc(g.help)}</div>` : ''}
@@ -60,9 +158,9 @@ function renderSettingsField(f) {
 
 function renderAccountSection() {
   return `
-  <div class="settings-card">
+  <div class="settings-card" id="settings-account-card">
     <div class="settings-card-head">
-      <div class="settings-card-title">账号</div>
+      <div class="settings-card-title">账号与登录</div>
       <div class="settings-card-help">退出后需重新输入访问密钥登录。</div>
     </div>
     <div class="settings-card-foot">
