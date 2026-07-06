@@ -423,6 +423,46 @@ def test_chat_input_supports_pasted_image_uploads() -> None:
     assert "shared/image-upload.js" in source  # 脚本已引入
 
 
+def test_chat_scheduled_send_requires_future_time_and_refreshes_on_start() -> None:
+    source = read_ui_source()
+
+    assert "function getChatScheduleExecuteAt" in source
+    assert "throw new Error('请选择定时发送时间')" in source
+    assert "throw new Error('定时发送时间必须晚于当前时间')" in source
+    assert "function ensureChatScheduleDefault" in source
+    assert "Date.now() + 5 * 60 * 1000" in source
+    assert "shouldRefreshActiveChatForTaskStatusChange(tasks)" in source
+    assert "selectConversation(activeConversationId)" in source
+
+
+def test_chat_can_select_cli_model_from_header_pill() -> None:
+    source = read_ui_source()
+
+    assert 'id="chat-model-select"' in source
+    assert "class=\"chat-model-pill\"" in source
+    assert "function getChatAccountType" in source
+    assert "function buildChatModelPillHtml" in source
+    assert "function onChatModelChange" in source
+    assert "function getChatModel" in source
+    assert "const model = getChatModel()" in source
+    assert "model," in source
+    assert ".chat-model-pill" in source
+    assert "chatModelByConversation" in source
+    # 仅 Claude 类型账号支持 --model，其余账号类型不显示模型选择徽章
+    assert "chatAccountType === 'claude'" in source
+
+
+def test_chat_queue_marks_pending_and_scheduled_items() -> None:
+    source = read_ui_source()
+
+    assert "chat-queue-status" in source
+    assert "statusLabel = isScheduled ? '定时' : '排队'" in source
+    assert "等待上一条任务完成" in source
+    assert "定时发送：" in source
+    assert ".chat-queue-status.scheduled" in source
+    assert ".chat-queue-status.pending" in source
+
+
 def test_chat_project_history_collapses_after_five_items() -> None:
     source = read_ui_source()
 

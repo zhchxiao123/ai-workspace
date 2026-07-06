@@ -756,10 +756,9 @@ class ChatLogRenderer {
     const displayText = this._injectDownloadCards(text);
     const showTranslate = isMostlyNonChinese(text);
     const el = document.createElement('div');
-    el.className = 'chat-bubble-wrap';
+    el.className = 'chat-bubble-wrap ai-reply';
     el.classList.add('timeline-node');
     el.innerHTML = `
-  <div class="chat-avatar ai" aria-hidden="true">AI</div>
   <div class="bubble-body">
     <div class="bubble">
       <div class="bubble-label-row">
@@ -801,10 +800,9 @@ class ChatLogRenderer {
   _thinking(text) {
     if (!text?.trim()) return;
     const el = document.createElement('div');
-    el.className = 'chat-bubble-wrap';
+    el.className = 'chat-bubble-wrap thought-reply';
     el.classList.add('timeline-node', 'is-muted');
     el.innerHTML = `
-  <div class="chat-avatar think" aria-hidden="true">TH</div>
   <div class="bubble-body">
     <div class="bubble-label think-label">思考过程</div>
     <div class="bubble think-bubble">${renderMd(text)}</div>
@@ -973,9 +971,8 @@ class ChatLogRenderer {
       const segId = `gk${this.idPrefix}${this._grokSegCount}`;
       if (type === 'thought') {
         const el = document.createElement('div');
-        el.className = 'chat-bubble-wrap timeline-node is-muted';
+        el.className = 'chat-bubble-wrap thought-reply timeline-node is-muted';
         el.innerHTML = `
-  <div class="chat-avatar think" aria-hidden="true">TH</div>
   <div class="bubble-body">
     <div class="bubble-label think-label">思考过程</div>
     <div class="bubble think-bubble" id="${segId}"></div>
@@ -987,9 +984,8 @@ class ChatLogRenderer {
         const textRef = { value: '' };
         this._grokCurrentTextRef = textRef;
         const el = document.createElement('div');
-        el.className = 'chat-bubble-wrap timeline-node';
+        el.className = 'chat-bubble-wrap ai-reply timeline-node';
         el.innerHTML = `
-  <div class="chat-avatar ai" aria-hidden="true">AI</div>
   <div class="bubble-body">
     <div class="bubble">
       <div class="bubble-label-row">

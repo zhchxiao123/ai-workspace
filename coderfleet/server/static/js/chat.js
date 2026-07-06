@@ -15,6 +15,7 @@ async function loadConversations(renderWorkspace = true) {
       fetch(`${API}/api/projects`).then(r => r.json()).catch(() => []),
       fetch(`${API}/api/tasks?limit=1000`).then(r => r.json()).catch(() => []),
     ]);
+    const shouldRefreshActiveWorkspace = shouldRefreshActiveChatForTaskStatusChange(tasks);
     projectsCache = projects;
     tasksCache = tasks;
     chatConversationsList = convs;
@@ -25,6 +26,11 @@ async function loadConversations(renderWorkspace = true) {
     renderTopbarTabs();
 
     renderConversations(convs, projects, tasks);
+
+    if (!renderWorkspace && shouldRefreshActiveWorkspace && activeConversationId && currentPage === 'chat') {
+      selectConversation(activeConversationId);
+      return;
+    }
 
     if (renderWorkspace) {
       if (!activeConversationId) {
@@ -61,6 +67,24 @@ async function loadConversations(renderWorkspace = true) {
   } catch (e) {
     document.getElementById('chat-history-list').innerHTML = `<div class="empty" style="padding: 20px 0;">加载失败: ${esc(e.message)}</div>`;
   }
+}
+
+function shouldRefreshActiveChatForTaskStatusChange(nextTasks) {
+  if (!activeConversationId || !Array.isArray(nextTasks) || !Array.isArray(tasksCache)) return false;
+  const previousById = new Map(tasksCache.map(t => [t.id, t]));
+  return nextTasks.some(task => {
+    const previous = previousById.get(task.id);
+    if (!previous) return false;
+
+    const belongsToActiveChat = activeConversationId.startsWith('task-')
+      ? task.id === activeConversationId.replace('task-', '')
+      : task.conversation_id === activeConversationId;
+    if (!belongsToActiveChat) return false;
+
+    const wasWaiting = previous.status === 'pending' || previous.status === 'scheduled';
+    const isNowRenderable = task.status === 'running' || task.status === 'done' || task.status === 'failed' || task.status === 'killed';
+    return wasWaiting && isNowRenderable;
+  });
 }
 
 // 以项目大标题分组渲染会话列表
@@ -695,7 +719,7 @@ function startNewChat(options = {}) {
 }
 
 // 渲染新会话空状态（无历史记录的初始界面）
-function renderEmptyChatState() {
+async function renderEmptyChatState() {
   const workspace = document.getElementById('chat-workspace');
   if (!workspace) return;
 
@@ -710,11 +734,15 @@ function renderEmptyChatState() {
   currentChatProjectName = chatNewSessionProject;
   pendingImages = [];
 
+  const newChatAccountName = projectsCache.find(p => p.name === chatNewSessionProject)?.account || '';
+  const newChatAccountType = await getChatAccountType(newChatAccountName);
+  const newChatModelPillHtml = newChatAccountType === 'claude' ? buildChatModelPillHtml() : '';
+
   workspace.innerHTML = `
 <div class="chat-main-header">
   <div class="chat-main-title-area">
     <div class="chat-main-title">新对话</div>
-    <div class="chat-main-subtitle">项目: <strong style="color: var(--accent);">${esc(projectLabel)}</strong></div>
+    <div class="chat-main-subtitle">项目: <strong style="color: var(--accent);">${esc(projectLabel)}</strong>${newChatModelPillHtml}</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <button id="files-panel-toggle-btn" class="btn files-panel-toggle-btn" onclick="toggleFilePanel()" title="浏览工作区文件">
@@ -949,6 +977,9 @@ async function renderChatWorkspace(conv) {
   currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
   pendingImages = [];
 
+  const chatAccountType = await getChatAccountType(conv.account);
+  const modelPillHtml = chatAccountType === 'claude' ? buildChatModelPillHtml() : '';
+
   workspace.innerHTML = `
 <!-- 会话头部 -->
 <div class="chat-main-header">
@@ -957,7 +988,7 @@ async function renderChatWorkspace(conv) {
     <div class="chat-main-subtitle">
       项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
       账号: <span>${esc(conv.account || '未指定')}</span> ·
-      活跃: <span>${fmtTime(conv.updated)}</span>
+      活跃: <span>${fmtTime(conv.updated)}</span>${modelPillHtml}
     </div>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
@@ -1032,22 +1063,25 @@ async function renderChatWorkspace(conv) {
         .filter(t => t.conversation_id === conv.id)
         .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
 
+    // 恢复本会话上次选中的模型（会话期内记忆），否则回退到最近一条任务实际使用的模型
+    const modelSelect = document.getElementById('chat-model-select');
+    if (modelSelect) {
+      const lastModel = convTasks.length ? (convTasks[convTasks.length - 1].model || '') : '';
+      const remembered = Object.prototype.hasOwnProperty.call(chatModelByConversation, conv.id)
+        ? chatModelByConversation[conv.id]
+        : lastModel;
+      modelSelect.value = remembered;
+      if (modelSelect.value !== remembered) modelSelect.value = ''; // 未知模型值时回退到默认选项
+    }
+
     // 渲染头部动作按钮与状态文本
     const headerActions = document.getElementById('chat-header-actions');
     const runningTask = convTasks.find(t => t.status === 'running');
-    const pendingTask = convTasks.find(t => t.status === 'pending');
-    const scheduledTask = convTasks.find(t => t.status === 'scheduled');
 
     let actionBtnHtml = '';
     if (runningTask) {
       currentChatTaskId = runningTask.id;
       actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${runningTask.id}')">终止执行</button>`;
-    } else if (pendingTask) {
-      currentChatTaskId = pendingTask.id;
-      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${pendingTask.id}')">取消排队</button>`;
-    } else if (scheduledTask) {
-      currentChatTaskId = scheduledTask.id;
-      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${scheduledTask.id}')">取消定时</button>`;
     } else {
       currentChatTaskId = null;
     }
@@ -1194,13 +1228,6 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
 
   if (isPending) {
     // 排队中：不在聊天气泡区显示占位，改由输入框上方的队列面板管理
-    const headerActions = document.getElementById('chat-header-actions');
-    if (headerActions) {
-      // 保留原有运行中任务的 "终止执行" 按钮不覆盖，只在没有按钮时补上 "取消排队"
-      if (!headerActions.querySelector('.btn.danger')) {
-        headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">取消排队</button>`;
-      }
-    }
     const statusText = document.getElementById('chat-status-text');
     if (statusText) {
       const pendingCount = (tasksCache || []).filter(
@@ -1275,16 +1302,17 @@ async function sendChatMessage() {
 
   const sendBtn = document.getElementById('chat-send-btn');
   const autoMode = document.getElementById('chat-auto-mode')?.checked || false;
+  const model = getChatModel();
 
+  let executeAt = null;
+  try {
+    executeAt = getChatScheduleExecuteAt();
+  } catch (e) {
+    alert(e.message);
+    return;
+  }
   const schedCheckbox = document.getElementById('chat-schedule-checkbox');
   const schedTimeInput = document.getElementById('chat-sched-time');
-  let executeAt = null;
-  if (schedCheckbox && schedCheckbox.checked && schedTimeInput && schedTimeInput.value) {
-    executeAt = schedTimeInput.value;
-    if (executeAt.includes(':') && executeAt.split(':').length === 2) {
-      executeAt += ':00';
-    }
-  }
 
   let convId = activeConversationId;
   let projectName = null;
@@ -1313,6 +1341,7 @@ async function sendChatMessage() {
           auto: autoMode,
           conversation_name: conversationName,
           images: pendingImages.map(i => i.container_path),
+          model,
           execute_at: executeAt,
         })
       });
@@ -1409,6 +1438,7 @@ async function sendChatMessage() {
         auto: autoMode,
         conversation_id: convId,
         images: pendingImages.map(i => i.container_path),
+        model,
         execute_at: executeAt,
       })
     });
@@ -1568,6 +1598,23 @@ async function deleteOneOff(itemId) {
 
 const CHAT_MAX_QUEUE = 3;
 
+function formatQueueScheduleTime(iso) {
+  if (!iso) return '时间待定';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '时间待定';
+
+  const pad = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfTarget = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDiff = Math.round((startOfTarget - startOfToday) / 86400000);
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+
+  if (dayDiff === 0) return `今天 ${time}`;
+  if (dayDiff === 1) return `明天 ${time}`;
+  return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+}
+
 function renderQueuePanel(pendingTasks) {
   const container = document.getElementById('chat-queue-panel');
   if (!container) return;
@@ -1590,9 +1637,17 @@ function renderQueuePanel(pendingTasks) {
   pendingTasks.forEach((task, idx) => {
     const escapedPrompt = esc(task.prompt || '');
     const escapedId = esc(task.id);
+    const isScheduled = task.status === 'scheduled';
+    const statusLabel = isScheduled ? '定时' : '排队';
+    const scheduleLabel = isScheduled ? `${formatQueueScheduleTime(task.execute_at)} 发送` : '';
+    const statusTitle = isScheduled && task.execute_at
+      ? `定时发送：${formatQueueScheduleTime(task.execute_at)}`
+      : (isScheduled ? '定时待发送' : '等待上一条任务完成');
     html += `
     <div class="chat-queue-item" data-queue-task-id="${escapedId}">
       <span class="chat-queue-pos">${idx + 1}</span>
+      <span class="chat-queue-status ${isScheduled ? 'scheduled' : 'pending'}" title="${esc(statusTitle)}">${statusLabel}</span>
+      ${isScheduled ? `<span class="chat-queue-time" title="${esc(statusTitle)}">${esc(scheduleLabel)}</span>` : ''}
       <span class="chat-queue-text" title="${escapedPrompt}">${escapedPrompt}</span>
       <div class="chat-queue-actions">
         <button class="chat-queue-action-btn" title="编辑" onclick="startQueueItemEdit('${escapedId}', this)">${editIcon}</button>
@@ -1725,18 +1780,16 @@ function buildChatInputHTML(placeholder, hint) {
       <div class="chat-input-options">
         <input type="file" id="chat-file-input" multiple style="display:none" onchange="handleFileSelect(this)">
         <button class="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="附加文件，或直接粘贴截图">${attachIcon}</button>
-        <label class="toggle-row" style="cursor: pointer;">
-          <input type="checkbox" id="chat-auto-mode" checked> 全自动模式 (--dangerously-skip-permissions)
+        <label class="toggle-row" style="cursor: pointer;" title="全自动模式 (--dangerously-skip-permissions)">
+          <input type="checkbox" id="chat-auto-mode" checked> 全自动
         </label>
-        <span style="color: var(--border-md);">|</span>
-        <label class="toggle-row" style="cursor: pointer;">
-          <input type="checkbox" id="chat-schedule-checkbox" onchange="toggleSchedTimeInput(this.checked)"> 定时发送 ⏰
+        <label class="toggle-row" style="cursor: pointer;" title="选择未来时间，定时发送这条指令">
+          <input type="checkbox" id="chat-schedule-checkbox" onchange="toggleSchedTimeInput(this.checked)"> 定时 ⏰
         </label>
         <span id="chat-sched-time-wrap" style="display: none; align-items: center; gap: 4px;">
           <input type="datetime-local" id="chat-sched-time" style="background: var(--surface-2); border: 1px solid var(--border-md); color: var(--text); border-radius: var(--radius); font-size: 11px; padding: 2px 4px; outline: none; min-height: 24px; width: auto;">
         </span>
-        <span style="color: var(--border-md);">|</span>
-        <span id="chat-status-text" style="color: var(--text-2);">就绪</span>
+        <span id="chat-status-text" class="chat-status-text">就绪</span>
       </div>
       <div class="chat-input-side">
         <div class="chat-input-hint">${hint}</div>
@@ -1747,11 +1800,84 @@ function buildChatInputHTML(placeholder, hint) {
 </div>`;
 }
 
+// ── 模型选择（仅 Claude 类型账号支持 --model）────────────────
+
+const CHAT_MODEL_OPTIONS = [
+  { value: '',       label: '默认模型',        title: '跟随账号 / CLI 的默认模型设置' },
+  { value: 'opus',   label: 'Opus 4.8 · 最强推理', title: 'Claude Opus 4.8 —— 推理能力最强，速度较慢，适合复杂任务' },
+  { value: 'sonnet', label: 'Sonnet 5 · 均衡推荐', title: 'Claude Sonnet 5 —— 速度与能力均衡，日常任务首选' },
+  { value: 'haiku',  label: 'Haiku 4.5 · 最快响应', title: 'Claude Haiku 4.5 —— 响应最快，适合简单或大批量任务' },
+];
+
+async function getChatAccountType(accountName) {
+  if (!accountName) return '';
+  if (!globalAccountsCache.length) {
+    try { globalAccountsCache = await fetch(`${API}/api/accounts`).then(r => r.json()); } catch { return ''; }
+  }
+  return globalAccountsCache.find(a => a.name === accountName)?.type || '';
+}
+
+function buildChatModelPillHtml() {
+  const opts = CHAT_MODEL_OPTIONS.map(o =>
+    `<option value="${esc(o.value)}" title="${esc(o.title)}">${esc(o.label)}</option>`
+  ).join('');
+  return `
+      <span class="chat-model-pill" title="选择本次对话使用的模型">
+        <span class="chat-model-pill-label">模型</span>
+        <select id="chat-model-select" class="chat-model-select" onchange="onChatModelChange(this.value)">${opts}</select>
+      </span>`;
+}
+
+function onChatModelChange(value) {
+  if (activeConversationId) chatModelByConversation[activeConversationId] = value;
+}
+
+function getChatModel() {
+  return document.getElementById('chat-model-select')?.value || '';
+}
+
 function toggleSchedTimeInput(checked) {
   const el = document.getElementById('chat-sched-time-wrap');
   if (el) {
     el.style.display = checked ? 'inline-flex' : 'none';
   }
+  if (checked) ensureChatScheduleDefault();
+}
+
+function formatChatDatetimeLocal(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function ensureChatScheduleDefault() {
+  const input = document.getElementById('chat-sched-time');
+  if (!input) return;
+  const minDate = new Date(Date.now() + 60 * 1000);
+  const minValue = formatChatDatetimeLocal(minDate);
+  input.min = minValue;
+  if (!input.value || new Date(input.value) <= new Date()) {
+    const defaultDate = new Date(Date.now() + 5 * 60 * 1000);
+    input.value = formatChatDatetimeLocal(defaultDate);
+  }
+}
+
+function getChatScheduleExecuteAt() {
+  const schedCheckbox = document.getElementById('chat-schedule-checkbox');
+  if (!schedCheckbox || !schedCheckbox.checked) return null;
+
+  const input = document.getElementById('chat-sched-time');
+  if (!input || !input.value) {
+    throw new Error('请选择定时发送时间');
+  }
+
+  const selected = new Date(input.value);
+  if (Number.isNaN(selected.getTime()) || selected <= new Date()) {
+    throw new Error('定时发送时间必须晚于当前时间');
+  }
+
+  return input.value.includes(':') && input.value.split(':').length === 2
+    ? `${input.value}:00`
+    : input.value;
 }
 
 async function handleFileSelect(input) {

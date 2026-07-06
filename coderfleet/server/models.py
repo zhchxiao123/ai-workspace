@@ -251,6 +251,7 @@ class Task(BaseModel):
     archived: bool = False
     auto:     bool = False
     images:   list[str] = Field(default_factory=list)
+    model:    str = ""
     execute_at: Optional[str] = None
     # DAG / workflow fields
     parent_task_id: str = ""
@@ -306,6 +307,7 @@ class TaskCreateRequest(BaseModel):
     conversation_id:   Optional[str] = None
     conversation_name: Optional[str] = None
     images:  list[str] = []              # 容器内图片路径列表（--image 参数）
+    model:   str = ""                    # CLI 模型名（Claude Code 支持 --model）
     execute_at: Optional[str] = None     # 定时执行时间
     # DAG / workflow fields
     parent_task_id: Optional[str] = None
@@ -337,6 +339,7 @@ class TaskResponse(BaseModel):
     archived: bool = False
     auto:     bool = False
     images:   list[str] = []
+    model:    str = ""
     execute_at: Optional[str] = None
     parent_task_id: str = ""
     depends_on:     list[str] = []
@@ -370,6 +373,7 @@ class TaskResponse(BaseModel):
             archived     = t.archived,
             auto         = getattr(t, "auto", False),
             images       = getattr(t, "images", []),
+            model        = getattr(t, "model", ""),
             execute_at   = getattr(t, "execute_at", None),
             parent_task_id = getattr(t, "parent_task_id", ""),
             depends_on     = getattr(t, "depends_on", []),

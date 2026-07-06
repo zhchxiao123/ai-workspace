@@ -124,6 +124,19 @@ def test_build_cli_command_uses_headless_claude_permission_modes() -> None:
     assert "claude -p --dangerously-skip-permissions" in auto_command
 
 
+def test_build_cli_command_passes_claude_model() -> None:
+    command = Scheduler.build_cli_command(
+        AccountType.claude,
+        "edit files",
+        auto=False,
+        task_id="task-model",
+        model="sonnet-custom",
+    )
+
+    assert "claude -p --permission-mode acceptEdits" in command
+    assert "--model sonnet-custom" in command
+
+
 def test_build_cli_command_uses_headless_opencode_run() -> None:
     command = Scheduler.build_cli_command(
         AccountType.opencode,
@@ -1024,6 +1037,34 @@ def test_submit_uses_project_account_and_project_path(
     assert task.project == str(project_path.resolve())
 
 
+def test_submit_records_requested_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_projects",
+        lambda: [Project(name="repo", account="alice", path=str(project_path))],
+    )
+    monkeypatch.setattr(scheduler_mod.docker_mgr, "is_container_running", lambda _name: True)
+    monkeypatch.setattr(sched, "_run", lambda *args, **kwargs: asyncio.sleep(0))
+
+    task = asyncio.run(
+        sched.submit("hello", project_name="repo", model="claude-sonnet-4-5-20250929")
+    )
+
+    assert task.model == "claude-sonnet-4-5-20250929"
+    assert sched.get_task(task.id).model == "claude-sonnet-4-5-20250929"
+
+
 def test_submit_schedules_ephemeral_task_without_running_immediately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1061,6 +1102,43 @@ def test_submit_schedules_ephemeral_task_without_running_immediately(
     assert task.execution_mode == "ephemeral"
     assert task.id not in sched._running
     assert sched.get_log_path(task.id).read_text(encoding="utf-8") == ""
+
+
+def test_submit_rejects_past_scheduled_time_without_running_immediately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.codex)],
+    )
+    monkeypatch.setattr(
+        sched,
+        "get_projects",
+        lambda: [Project(name="repo", account="alice", path=str(project_path))],
+    )
+    monkeypatch.setattr(scheduler_mod.docker_mgr, "is_container_running", lambda _name: True)
+
+    async def fail_if_started(*_args, **_kwargs):
+        raise AssertionError("past scheduled task should not run immediately")
+
+    monkeypatch.setattr(sched, "_run", fail_if_started)
+
+    with pytest.raises(RuntimeError, match="定时时间必须晚于当前时间"):
+        asyncio.run(
+            sched.submit(
+                "hello",
+                project_name="repo",
+                execute_at="2000-01-01T00:00:00",
+            )
+        )
+
+    assert sched.list_tasks() == []
+    assert sched._running == {}
 
 
 def test_start_pending_ephemeral_task_uses_ephemeral_runner(

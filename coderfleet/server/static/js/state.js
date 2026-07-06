@@ -25,6 +25,7 @@ let currentChatProjectName = '';
 let pendingImages = [];
 let chatUploadingImages = 0;
 let chatUserScrolledUp = false;
+let chatModelByConversation = {};   // 会话 id -> 本次会话选中的 --model 值（仅当前会话期内记忆）
 // 注：气泡翻译相关状态（systemLlmConfigured / bubbleTranslations）声明在 utils.js，
 // 因为移动端只加载 utils.js + renderer.js，不加载本文件。
 const CHAT_PROJECT_VISIBLE_LIMIT = 5;

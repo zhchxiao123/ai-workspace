@@ -113,6 +113,7 @@ class Scheduler:
         native_session_id: str = "",
         container_workdir: str = "",
         images: list[str] | None = None,
+        model: str = "",
     ) -> str:
         """
         构建在容器内执行的 CLI 命令。
@@ -125,7 +126,7 @@ class Scheduler:
 
         inner_cmd = spec.build_inner_cmd(
             prompt, auto, task_id, marker, task_env,
-            native_session_id, list(images or []),
+            native_session_id, list(images or []), model.strip(),
         )
 
         if container_workdir:
@@ -980,6 +981,18 @@ class Scheduler:
         conversation.save(self.conversations_dir)
         return conversation
 
+    @staticmethod
+    def _validate_future_execute_at(execute_at: Optional[str]) -> Optional[str]:
+        if not execute_at:
+            return None
+        try:
+            dt = datetime.fromisoformat(execute_at)
+        except ValueError as err:
+            raise RuntimeError("定时时间格式无效，请选择有效的未来时间") from err
+        if dt <= datetime.now():
+            raise RuntimeError("定时时间必须晚于当前时间")
+        return execute_at
+
     # ── 提交任务 ──────────────────────────────────────────
 
     # ── 定时与排队调度 ────────────────────────────────────────
@@ -1216,6 +1229,7 @@ class Scheduler:
         conversation_name: Optional[str]       = None,
         project_name:   Optional[str]         = None,
         images:         list[str]             = [],
+        model:          str                   = "",
         execute_at:     Optional[str]         = None,
         parent_task_id: Optional[str]         = None,
         depends_on:     list[str]             = [],
@@ -1232,6 +1246,8 @@ class Scheduler:
         提交任务，异步在后台执行，立即返回 Task 对象。
         调用方可以通过 task.id 跟踪进度。
         """
+        scheduled_execute_at = self._validate_future_execute_at(execute_at)
+        selected_model = model.strip()
         is_pending = False
         conversation: Optional[Conversation] = None
         card_id = board_card_id or ""
@@ -1386,13 +1402,7 @@ class Scheduler:
             log_path     = self.get_log_path(task_id)
 
             status = TaskStatus.running
-            valid_execute_at = False
-            if execute_at:
-                try:
-                    valid_execute_at = datetime.fromisoformat(execute_at) > datetime.now()
-                except ValueError:
-                    valid_execute_at = False
-            if valid_execute_at:
+            if scheduled_execute_at:
                 status = TaskStatus.scheduled
             elif is_pending:
                 status = TaskStatus.pending
@@ -1409,11 +1419,12 @@ class Scheduler:
                 native_session_id  = conversation.native_session_id if conversation else "",
                 auto         = auto,
                 images       = images,
+                model        = selected_model,
                 parent_task_id = dag_parent,
                 depends_on     = dag_depends,
                 pipeline_id    = dag_pipeline,
                 board_card_id  = card_id,
-                execute_at     = execute_at if valid_execute_at else None,
+                execute_at     = scheduled_execute_at,
                 ephemeral      = True,
                 execution_mode = "ephemeral",
                 output_dir     = output_dir,
@@ -1470,43 +1481,39 @@ class Scheduler:
         dag_pipeline = pipeline_id or ""
 
         # ── 处理定时任务 ──
-        if execute_at:
-            try:
-                dt = datetime.fromisoformat(execute_at)
-                if dt > datetime.now():
-                    task = Task(
-                        id           = task_id,
-                        status       = TaskStatus.scheduled,
-                        account      = acc.name,
-                        type         = acc.type,
-                        prompt       = prompt,
-                        project      = task_project,
-                        project_name = selected_project.name,
-                        conversation_id = conversation.id if conversation else "",
-                        native_session_id = conversation.native_session_id if conversation else "",
-                        auto         = auto,
-                        images       = images,
-                        execute_at   = execute_at,
-                        parent_task_id = dag_parent,
-                        depends_on     = dag_depends,
-                        pipeline_id    = dag_pipeline,
-                        board_card_id  = card_id,
-                        execution_mode = "persistent",
-                    )
-                    task.save(self.tasks_dir)
-                    if dag_pipeline:
-                        self._register_task_in_pipeline(task_id, dag_pipeline)
-                    if card_id:
-                        self.add_task_to_board_card(card_id, task_id)
+        if scheduled_execute_at:
+            task = Task(
+                id           = task_id,
+                status       = TaskStatus.scheduled,
+                account      = acc.name,
+                type         = acc.type,
+                prompt       = prompt,
+                project      = task_project,
+                project_name = selected_project.name,
+                conversation_id = conversation.id if conversation else "",
+                native_session_id = conversation.native_session_id if conversation else "",
+                auto         = auto,
+                images       = images,
+                model        = selected_model,
+                execute_at   = scheduled_execute_at,
+                parent_task_id = dag_parent,
+                depends_on     = dag_depends,
+                pipeline_id    = dag_pipeline,
+                board_card_id  = card_id,
+                execution_mode = "persistent",
+            )
+            task.save(self.tasks_dir)
+            if dag_pipeline:
+                self._register_task_in_pipeline(task_id, dag_pipeline)
+            if card_id:
+                self.add_task_to_board_card(card_id, task_id)
 
-                    # 写入空日志文件防 SSE 404
-                    log_path = self.get_log_path(task_id)
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    log_path.write_text("", encoding="utf-8")
+            # 写入空日志文件防 SSE 404
+            log_path = self.get_log_path(task_id)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("", encoding="utf-8")
 
-                    return task
-            except ValueError:
-                pass
+            return task
 
         # ── 处理排队任务 ──
         if is_pending:
@@ -1522,6 +1529,7 @@ class Scheduler:
                 native_session_id = conversation.native_session_id if conversation else "",
                 auto         = auto,
                 images       = images,
+                model        = selected_model,
                 parent_task_id = dag_parent,
                 depends_on     = dag_depends,
                 pipeline_id    = dag_pipeline,
@@ -1557,6 +1565,7 @@ class Scheduler:
             native_session_id = conversation.native_session_id if conversation else "",
             auto         = auto,
             images       = images,
+            model        = selected_model,
             parent_task_id = dag_parent,
             depends_on     = dag_depends,
             pipeline_id    = dag_pipeline,
@@ -1923,6 +1932,7 @@ class Scheduler:
                 shlex.quote(task.id),
                 conversation.native_session_id if conversation else "",
                 list(images),
+                getattr(task, "model", ""),
             )
 
             auth_src = self.workspace_dir / "accounts" / acc.name
@@ -2171,6 +2181,7 @@ class Scheduler:
                 native_session_id=conversation.native_session_id if conversation else "",
                 container_workdir=container_workdir,
                 images=images,
+                model=getattr(task, "model", ""),
             )
 
             project_env = {}
