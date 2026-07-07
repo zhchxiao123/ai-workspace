@@ -58,6 +58,7 @@ let chatMentionActiveIndex = 0;
 let chatMentionTimer = null;
 let chatMentionRequestSeq = 0;
 let tasksCache = [];
+const _finishedLogCache = new Map(); // task.id -> 已完成任务的日志文本，内容不会再变，避免整体重渲染时重新拉取
 let submitContext = { surface: 'task', projectName: '', boardCardId: '' };
 let taskRowsCache = [];
 let taskPage = 1;

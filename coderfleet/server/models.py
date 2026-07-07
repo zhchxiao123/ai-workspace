@@ -391,6 +391,23 @@ class TaskResponse(BaseModel):
         )
 
 
+class TaskHeartbeat(BaseModel):
+    """5 秒轮询用的瘦身 payload：只够探测状态变化，不带 prompt/images 等大字段。"""
+    id:              str
+    status:          TaskStatus
+    conversation_id: str = ""
+    finished:        Optional[str] = None
+
+    @classmethod
+    def from_task(cls, t: Task) -> "TaskHeartbeat":
+        return cls(
+            id              = t.id,
+            status          = t.status,
+            conversation_id = t.conversation_id,
+            finished        = t.finished,
+        )
+
+
 class BoardResponse(BaseModel):
     id:      str
     name:    str

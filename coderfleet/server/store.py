@@ -39,6 +39,9 @@ class JsonStore(Generic[T]):
     ``key`` 指定用作文件名的模型字段（默认 ``id``；DailyDigest 用 ``date``）。
     """
 
+    # path → (mtime, size, 已解析记录)；跨实例共享，因为调用方每次都 new 一个 JsonStore。
+    _cache: dict[Path, tuple[float, int, object]] = {}
+
     def __init__(self, model: type[T], directory: Path, *, key: str = "id") -> None:
         self._model = model
         self._dir = directory
@@ -50,10 +53,17 @@ class JsonStore(Generic[T]):
     # ── 写 ────────────────────────────────────────────────────────────
     def save(self, record: T) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(self._path(getattr(record, self._key)), record.model_dump())
+        path = self._path(getattr(record, self._key))
+        _atomic_write_json(path, record.model_dump())
+        # 直接写入缓存，而不是指望下次 all() 靠 stat 差异发现变化——
+        # 粗粒度文件系统 mtime 精度下，同一 tick 内的两次 save 可能 stat 完全相同。
+        st = path.stat()
+        self._cache[path] = (st.st_mtime, st.st_size, record)
 
     def delete(self, name: str) -> None:
-        self._path(name).unlink(missing_ok=True)
+        path = self._path(name)
+        path.unlink(missing_ok=True)
+        self._cache.pop(path, None)
 
     # ── 读 ────────────────────────────────────────────────────────────
     def load(self, path: Path) -> T:
@@ -72,13 +82,23 @@ class JsonStore(Generic[T]):
         return self._path(name).exists()
 
     def all(self) -> list[T]:
-        """目录下所有记录，按 mtime 倒序；损坏文件静默跳过。"""
+        """目录下所有记录，按 mtime 倒序；损坏文件静默跳过。
+
+        mtime+size 未变的文件直接用缓存的已解析记录，跳过读盘与 json.loads。
+        """
         if not self._dir.exists():
             return []
         out: list[T] = []
         for p in sorted(self._dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            st = p.stat()
+            cached = self._cache.get(p)
+            if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+                out.append(cached[2])
+                continue
             try:
-                out.append(self.load(p))
+                record = self.load(p)
             except Exception:
-                pass
+                continue
+            self._cache[p] = (st.st_mtime, st.st_size, record)
+            out.append(record)
         return out

@@ -19,7 +19,7 @@ window.addEventListener('beforeunload', disconnectAllBottomTerminals);
 // 高频刷新：任务状态（5s，仅当前页）
 setInterval(() => {
   checkHealth();
-  if (currentPage === 'chat' && !chatFollowMode) loadConversations(false);
+  if (currentPage === 'chat' && !chatFollowMode) pollChatHeartbeat();
   if (currentPage === 'tasks') loadTasks();
   if (currentPage === 'accounts') loadAccounts();
   if (currentPage === 'workflows' && wfActiveTab === 'runs') loadWorkflows();

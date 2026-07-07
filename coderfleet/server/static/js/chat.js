@@ -87,6 +87,33 @@ function shouldRefreshActiveChatForTaskStatusChange(nextTasks) {
   });
 }
 
+// 5 秒轮询入口：先问一次轻量心跳（只有 id/status/conversation_id/finished），
+// 只有心跳显示当前会话真的发生了状态变化，才去做一次全量刷新；
+// 侧边栏的运行中角标则直接用心跳数据就地更新缓存，不用整份重新拉取。
+async function pollChatHeartbeat() {
+  let heartbeat;
+  try {
+    heartbeat = await fetch(`${API}/api/tasks/heartbeat`).then(r => r.json());
+  } catch (_) {
+    return;
+  }
+  if (!Array.isArray(heartbeat)) return;
+
+  const needsFullRefresh = shouldRefreshActiveChatForTaskStatusChange(heartbeat);
+
+  const byId = new Map(tasksCache.map(t => [t.id, t]));
+  heartbeat.forEach(h => {
+    const existing = byId.get(h.id);
+    if (existing) {
+      existing.status = h.status;
+      existing.finished = h.finished;
+    }
+  });
+  if (currentPage === 'chat') renderConversations(chatConversationsList, projectsCache, tasksCache);
+
+  if (needsFullRefresh) loadConversations(false);
+}
+
 // 以项目大标题分组渲染会话列表
 function renderConversations(convs, projects, tasks) {
   // Skip sidebar rerender while user is typing in a rename input to prevent accidental auto-save.
@@ -703,7 +730,23 @@ async function selectConversation(convId) {
   try { sessionStorage.setItem('coderfleet.activeConvId', convId || ''); } catch (_) {}
   activeTabId = upsertConversationTab(convId);
   renderTopbarTabs();
-  await loadConversations();
+
+  // 一次性任务 / 缓存里还没有这个会话（比如刚创建）：退回全量刷新一次。
+  const conv = !convId.startsWith('task-') && chatConversationsList.find(c => c.id === convId);
+  if (!conv) {
+    await loadConversations();
+    return;
+  }
+
+  try {
+    const scopedTasks = await fetch(`${API}/api/tasks?conversation_id=${encodeURIComponent(convId)}&limit=200`).then(r => r.json());
+    const byId = new Map(tasksCache.map(t => [t.id, t]));
+    scopedTasks.forEach(t => byId.set(t.id, t));
+    tasksCache = Array.from(byId.values());
+  } catch (_) {}
+
+  await renderChatWorkspace(conv);
+  syncBottomTerminalProjectFromContext();
 }
 
 // 开启新会话
@@ -1287,14 +1330,17 @@ async function renderChatWorkspace(conv) {
       return;
     }
 
-    // 并行获取所有的日志
-    const logPromises = convTasks.map(t =>
-      fetch(`${API}/api/tasks/${t.id}/logs`)
-        .then(r => r.text())
-        .catch(() => '')
-    );
-
-    const logs = await Promise.all(logPromises);
+    // 并行获取所有的日志；done/failed/killed 任务的日志内容不会再变，
+    // 命中缓存就直接复用，避免会话因为其它任务状态变化整体重渲染时全部重新拉取。
+    const logs = await Promise.all(convTasks.map(t => {
+      if (t.status !== 'running' && _finishedLogCache.has(t.id)) {
+        return Promise.resolve(_finishedLogCache.get(t.id));
+      }
+      return fetch(`${API}/api/tasks/${t.id}/logs`).then(r => r.text()).catch(() => '');
+    }));
+    convTasks.forEach((t, idx) => {
+      if (t.status !== 'running') _finishedLogCache.set(t.id, logs[idx]);
+    });
     chatContent.innerHTML = '';
 
     // 循环独立渲染每一个任务的提问和日志（排队/定时中的任务跳过，由队列面板管理）

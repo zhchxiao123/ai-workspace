@@ -61,6 +61,7 @@ from coderfleet.server.models import (
     SkillUpsertRequest,
     Task,
     TaskCreateRequest,
+    TaskHeartbeat,
     TaskResponse,
     TaskStatus,
     TemplateCreateRequest,
@@ -1771,6 +1772,7 @@ async def delete_session(conversation_id: str):
 async def list_tasks(
     status:  Optional[str] = Query(None, description="按状态过滤：running/done/failed/killed"),
     account: Optional[str] = Query(None, description="按账号名过滤"),
+    conversation_id: Optional[str] = Query(None, description="按所属会话过滤"),
     limit:   int           = Query(50,   description="返回条数上限"),
     include_archived: bool = Query(False, description="是否包含已归档的任务"),
 ):
@@ -1789,7 +1791,17 @@ async def list_tasks(
     if account:
         tasks = [t for t in tasks if t.account == account]
 
+    if conversation_id:
+        tasks = [t for t in tasks if t.conversation_id == conversation_id]
+
     return [TaskResponse.from_task(t) for t in tasks[:limit]]
+
+
+@app.get("/api/tasks/heartbeat", response_model=list[TaskHeartbeat])
+async def tasks_heartbeat():
+    """给前端高频轮询用的瘦身端点：只探测状态变化，避免每 5 秒都拉全量任务详情。"""
+    tasks = scheduler.list_tasks()
+    return [TaskHeartbeat.from_task(t) for t in tasks if not getattr(t, "archived", False)]
 
 
 # ── 任务详情 ──────────────────────────────────────────────

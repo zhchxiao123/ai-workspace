@@ -825,3 +825,43 @@ def test_workflow_template_editor_is_not_polled_while_editing() -> None:
     interval = re.search(r"setInterval\(\(\) => \{(?P<body>.*?)\}, 5000\);", source, re.S)
     assert interval is not None
     assert "if (currentPage === 'workflows') loadWorkflows();" not in interval.group("body")
+
+
+def test_select_conversation_fetches_scoped_tasks_instead_of_full_reload() -> None:
+    """切换会话不该把全部会话+全部项目+最多1000条任务重新拉一遍；
+    应该用已有缓存直接渲染，只按 conversation_id 拉这一个会话的任务。"""
+    source = read_ui_source()
+
+    match = re.search(
+        r"async function selectConversation\(convId\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+
+    assert "api/tasks?conversation_id=" in body
+    assert "renderChatWorkspace(conv)" in body
+
+
+def test_chat_poll_uses_heartbeat_instead_of_full_reload() -> None:
+    """5 秒轮询不该无脑重新拉全部会话+全部任务；应该先问一次轻量心跳，
+    真的有状态变化才触发一次全量刷新。"""
+    source = read_ui_source()
+
+    interval = re.search(r"setInterval\(\(\) => \{(?P<body>.*?)\}, 5000\);", source, re.S)
+    assert interval is not None
+    body = interval.group("body")
+
+    assert "if (currentPage === 'chat' && !chatFollowMode) loadConversations(false);" not in body
+    assert "pollChatHeartbeat" in body
+    assert "async function pollChatHeartbeat" in source
+    assert "api/tasks/heartbeat" in source
+
+
+def test_chat_reuses_cached_log_for_finished_tasks_instead_of_refetching() -> None:
+    """done/failed/killed 任务的日志内容不会再变；会话因为其它任务状态变化整体
+    重渲染时，不该把这些历史日志重新拉一遍。"""
+    source = read_ui_source()
+
+    assert "_finishedLogCache" in source
+    assert "t.status !== 'running' && _finishedLogCache.has(t.id)" in source
+    assert "_finishedLogCache.set(t.id, logs[idx])" in source

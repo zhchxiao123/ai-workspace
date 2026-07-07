@@ -71,3 +71,17 @@ Containers join an `internal: true` Docker network; they cannot reach the public
 - `conversationBelongsToProject` and `taskBelongsToProject` (in `projects.js`) are used everywhere for sidebar grouping — if `project_name` is present, it takes precedence over path matching.
 - SSE (`EventSource`) is used for real-time log streaming; WebSocket for the terminal.
 - New chat sessions are always started from a per-project "+" button, so `chatNewSessionProject` is pre-set before the empty chat state renders.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as GitHub issues in `zhchxiao123/ai-workspace` (via `gh` CLI); external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical role names used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
