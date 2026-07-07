@@ -59,6 +59,38 @@ def _get_projects(ws: Path) -> list[dict[str, str]]:
     return [p for p in parse_conf(ws / "projects.conf") if "NAME" in p and "ACCOUNT" in p]
 
 
+def _service_names_for(ws: Path, project_names: tuple[str, ...]) -> list[str]:
+    """Resolve project names (from projects.conf) to their compose service names."""
+    accounts = _get_accounts(ws)
+    projects = {p["NAME"]: p for p in _get_projects(ws)}
+    services = []
+    for name in project_names:
+        proj = projects.get(name)
+        if proj is None:
+            raise click.ClickException(f"项目 '{name}' 不在 projects.conf 中")
+        acc_type = accounts.get(proj.get("ACCOUNT", ""), {}).get("TYPE", "")
+        services.append(_service_name(name, acc_type))
+    return services
+
+
+def start_services(ws: Path, services: list[str]) -> subprocess.CompletedProcess:
+    """Create (if needed) and start the given services, or all of them if empty.
+
+    Shared by the `up` CLI command and the server's per-project start endpoint.
+    Handles both a brand-new project (container never created) and a
+    previously-stopped one through the same code path.
+    """
+    return subprocess.run(_dc(ws) + ["up", "-d", *services])
+
+
+def stop_services(ws: Path, services: list[str]) -> subprocess.CompletedProcess:
+    """Non-destructively stop the given services (container is preserved, not removed).
+
+    Shared by the `down` CLI command and the server's per-project stop endpoint.
+    """
+    return subprocess.run(_dc(ws) + ["stop", *services])
+
+
 # ── commands ──────────────────────────────────────────────────
 
 
@@ -243,19 +275,33 @@ def cmd_apply(ctx: click.Context, full: bool) -> None:
 
 
 @click.command("up")
+@click.argument("projects", nargs=-1, metavar="[PROJECT...]")
 @click.pass_context
-def cmd_up(ctx: click.Context) -> None:
-    """Start all containers."""
+def cmd_up(ctx: click.Context, projects: tuple[str, ...]) -> None:
+    """Start all containers, or just the named project(s).
+
+    \b
+    Examples:
+      coderfleet up               # 启动所有未运行的容器（不影响已运行的）
+      coderfleet up my-project     # 只启动/创建 my-project 的容器
+    """
     ws: Path = ctx.obj["workspace"]
     compose_file = ws / "docker-compose.yml"
 
-    if not compose_file.exists():
-        click.secho("docker-compose.yml 不存在，先生成...", fg="yellow")
+    if projects:
+        # 确保这些项目（可能是刚新增的）的服务定义已经写入 compose 文件
         write_compose(ws)
-        click.echo()
+        services = _service_names_for(ws, projects)
+        click.echo(f"启动项目：{', '.join(projects)}...")
+        result = start_services(ws, services)
+    else:
+        if not compose_file.exists():
+            click.secho("docker-compose.yml 不存在，先生成...", fg="yellow")
+            write_compose(ws)
+            click.echo()
+        click.echo("启动所有容器...")
+        result = start_services(ws, [])
 
-    click.echo("启动所有容器...")
-    result = subprocess.run(_dc(ws) + ["up", "-d", "--force-recreate"])
     if result.returncode == 0:
         click.secho("✓ 启动完成", fg="green")
     else:
@@ -263,24 +309,46 @@ def cmd_up(ctx: click.Context) -> None:
 
 
 @click.command("down")
+@click.argument("projects", nargs=-1, metavar="[PROJECT...]")
 @click.pass_context
-def cmd_down(ctx: click.Context) -> None:
-    """Stop all containers."""
+def cmd_down(ctx: click.Context, projects: tuple[str, ...]) -> None:
+    """Stop all containers, or just the named project(s).
+
+    \b
+    Examples:
+      coderfleet down              # 停止并移除所有容器
+      coderfleet down my-project    # 只停止 my-project 的容器（保留容器，不删除）
+    """
     ws: Path = ctx.obj["workspace"]
-    click.echo("停止所有容器...")
-    subprocess.run(_dc(ws) + ["down"])
+
+    if projects:
+        services = _service_names_for(ws, projects)
+        click.echo(f"停止项目：{', '.join(projects)}...")
+        stop_services(ws, services)
+    else:
+        click.echo("停止所有容器...")
+        subprocess.run(_dc(ws) + ["down"])
     click.secho("✓ 已停止", fg="green")
 
 
 @click.command("restart")
+@click.argument("projects", nargs=-1, metavar="[PROJECT...]")
 @click.pass_context
-def cmd_restart(ctx: click.Context) -> None:
-    """Restart all containers."""
+def cmd_restart(ctx: click.Context, projects: tuple[str, ...]) -> None:
+    """Restart all containers, or just the named project(s)."""
     ws: Path = ctx.obj["workspace"]
-    click.echo("重启...")
     dc = _dc(ws)
-    subprocess.run(dc + ["down"])
-    result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
+
+    if projects:
+        services = _service_names_for(ws, projects)
+        click.echo(f"重启项目：{', '.join(projects)}...")
+        stop_services(ws, services)
+        result = start_services(ws, services)
+    else:
+        click.echo("重启...")
+        subprocess.run(dc + ["down"])
+        result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
+
     if result.returncode == 0:
         click.secho("✓ 重启完成", fg="green")
     else:
@@ -456,6 +524,27 @@ def cmd_check_proxy(ctx: click.Context) -> None:
             click.secho("可直连 ← 隔离未生效！", fg="red")
         else:
             click.secho("已封锁", fg="green")
+
+    click.echo()
+    click.echo("  ── DNS 解析（经 relay 转发，应全部通）" + "─" * 30)
+    for p in projects:
+        pname = p["NAME"]
+        paccount = p.get("ACCOUNT", "")
+        acc_type = accounts.get(paccount, {}).get("TYPE", "")
+        ctr = _container_name(pname, acc_type)
+
+        click.echo(f"  {ctr:<28} → resolve github.com: ", nl=False)
+        if not _is_running(ctr):
+            click.secho("容器未运行", fg="yellow")
+            continue
+        r = subprocess.run(
+            ["docker", "exec", ctr, "sh", "-c", "getent hosts github.com"],
+            capture_output=True,
+        )
+        if r.returncode == 0:
+            click.secho("通", fg="green")
+        else:
+            click.secho("失败", fg="red")
 
     click.echo()
     click.echo("  ── 代理出口 IP " + "─" * 52)

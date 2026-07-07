@@ -61,6 +61,148 @@ def run_coderfleet(workspace: Path, path: str, *args: str) -> subprocess.Complet
     )
 
 
+def make_two_project_workspace(tmp_path: Path) -> Path:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "repo2").mkdir()
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n"
+        f"NAME=repo2 ACCOUNT=api-claude PATH={workspace / 'repo2'}\n",
+        encoding="utf-8",
+    )
+    return workspace
+
+
+def test_up_with_no_args_does_not_force_recreate(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "up")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8")
+    assert "--force-recreate" not in calls
+    assert "up -d" in calls
+
+
+def test_up_scoped_regenerates_compose_for_a_project_added_after_last_apply(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+    docker_path = fake_docker_path(tmp_path)
+    assert run_coderfleet(workspace, docker_path, "apply").returncode == 0
+
+    # simulate `project add` for a brand-new project, without re-running apply
+    (workspace / "repo2").mkdir()
+    with (workspace / "projects.conf").open("a", encoding="utf-8") as f:
+        f.write(f"NAME=repo2 ACCOUNT=api-claude PATH={workspace / 'repo2'}\n")
+
+    result = run_coderfleet(workspace, docker_path, "up", "repo2")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "claude-project-repo2" in compose
+
+
+def test_up_scoped_to_one_project_only_references_that_service(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "up", "repo")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8")
+    up_lines = [line for line in calls.splitlines() if line.startswith("compose") and " up " in f" {line} "]
+    assert up_lines, calls
+    assert "claude-project-repo" in up_lines[-1]
+    assert "claude-project-repo2" not in up_lines[-1]
+
+
+def test_up_scoped_to_unknown_project_fails(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "up", "does-not-exist")
+
+    assert result.returncode != 0
+    assert "does-not-exist" in result.stderr
+
+
+def test_up_scoped_start_is_same_command_whether_new_or_previously_stopped(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+    docker_path = fake_docker_path(tmp_path, call_log)
+
+    first = run_coderfleet(workspace, docker_path, "up", "repo")
+    run_coderfleet(workspace, docker_path, "down", "repo")
+    second = run_coderfleet(workspace, docker_path, "up", "repo")
+
+    assert first.returncode == 0 and second.returncode == 0
+    up_lines = [line for line in call_log.read_text(encoding="utf-8").splitlines() if " up " in f" {line} "]
+    assert len(up_lines) == 2
+    assert up_lines[0] == up_lines[1]
+
+
+def _command_tokens(calls_text: str) -> list[list[str]]:
+    """Split each recorded docker invocation into whitespace tokens, so
+    assertions can check for exact subcommands (e.g. "down") without false
+    positives from tmp_path components that happen to contain the same
+    substring (e.g. a test named test_down_... whose tmp dir path contains
+    "down")."""
+    return [line.split() for line in calls_text.splitlines() if line.strip()]
+
+
+def test_down_with_no_args_keeps_full_teardown(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "down")
+
+    assert result.returncode == 0, result.stderr
+    lines = _command_tokens(call_log.read_text(encoding="utf-8"))
+    assert any(tokens[-1] == "down" for tokens in lines)
+    assert not any("stop" in tokens for tokens in lines)
+
+
+def test_down_scoped_to_one_project_uses_non_destructive_stop(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "down", "repo")
+
+    assert result.returncode == 0, result.stderr
+    lines = _command_tokens(call_log.read_text(encoding="utf-8"))
+    assert not any("down" in tokens for tokens in lines)
+    stop_lines = [tokens for tokens in lines if "stop" in tokens]
+    assert stop_lines
+    assert "claude-project-repo" in stop_lines[-1]
+    assert "claude-project-repo2" not in stop_lines[-1]
+
+
+def test_restart_scoped_to_one_project_stops_then_starts_only_that_service(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "restart", "repo")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    stop_lines = [line for line in calls if " stop " in f" {line} "]
+    up_lines = [line for line in calls if " up " in f" {line} "]
+    assert stop_lines and up_lines
+    assert "claude-project-repo" in stop_lines[-1] and "claude-project-repo2" not in stop_lines[-1]
+    assert "claude-project-repo" in up_lines[-1] and "claude-project-repo2" not in up_lines[-1]
+    assert "--force-recreate" not in "\n".join(calls)
+
+
 def test_apply_default_is_incremental(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
     (workspace / "accounts.conf").write_text(
@@ -303,8 +445,15 @@ def test_apply_configures_xray_proxy_service(tmp_path: Path) -> None:
     relay = compose["services"]["proxy-relay"]
     assert xray["command"] == ["run", "-c", "/etc/xray/config.json"]
     assert "healthcheck" not in xray
-    assert relay["command"] == '-L http://:10808 -F "172.21.0.3:10809"'
+    assert relay["command"] == "-C /etc/gost/config.yaml"
+    assert relay["volumes"] == ["./proxy-relay-config.yaml:/etc/gost/config.yaml:ro"]
     assert relay["depends_on"] == {"xray-proxy": {"condition": "service_started"}}
+
+    gost_cfg = yaml.safe_load((workspace / "proxy-relay-config.yaml").read_text(encoding="utf-8"))
+    http_node = gost_cfg["chains"][0]["hops"][0]["nodes"][0]
+    assert http_node["addr"] == "172.21.0.3:10809"
+    dns_service = next(s for s in gost_cfg["services"] if s["name"] == "service-dns")
+    assert dns_service["handler"] == {"type": "dns", "chain": "chain-0"}
 
 
 def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:
