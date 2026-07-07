@@ -50,18 +50,30 @@ def _make_dumper() -> type[yaml.Dumper]:
 
 def _gost_config_with_bypass(
     relay_port: str,
+    dns_port: str,
+    dns_upstream: str,
     upstream_host: str,
     upstream_port: str,
     bypass_matchers: list[str],
 ) -> dict[str, Any]:
-    """Return a gost v3 config dict that forwards to upstream but bypasses listed targets."""
+    """Return a gost v3 config dict that forwards HTTP + DNS to upstream via the
+    same chain, bypassing listed targets for HTTP."""
     return {
-        "services": [{
-            "name": "service-0",
-            "addr": f":{relay_port}",
-            "handler": {"type": "http", "chain": "chain-0"},
-            "listener": {"type": "tcp"},
-        }],
+        "services": [
+            {
+                "name": "service-0",
+                "addr": f":{relay_port}",
+                "handler": {"type": "http", "chain": "chain-0"},
+                "listener": {"type": "tcp"},
+            },
+            {
+                "name": "service-dns",
+                "addr": f":{dns_port}",
+                "handler": {"type": "dns", "chain": "chain-0"},
+                "listener": {"type": "dns"},
+                "forwarder": {"nodes": [{"name": "dns-upstream", "addr": dns_upstream}]},
+            },
+        ],
         "chains": [{
             "name": "chain-0",
             "hops": [{
@@ -100,6 +112,8 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     proxy_host     = cfg.get("PROXY_HOST", "host.docker.internal")
     http_port      = cfg.get("PROXY_HTTP_PORT", "7890")
     relay_image    = cfg.get("RELAY_IMAGE", "gogost/gost:3")
+    dns_port       = cfg.get("DNS_LISTEN_PORT", "53")
+    dns_upstream   = cfg.get("DNS_UPSTREAM", "https://1.1.1.1/dns-query")
     ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
 
@@ -204,6 +218,8 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             ],
             "working_dir": "/workspace",
         }
+        if acc_proxy != "off":
+            svc["dns"] = [relay_ip]
 
         docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, p))
         if docker_socket is not None:
@@ -323,22 +339,22 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         if proxy_mode == "xray":
             relay_svc["depends_on"] = {"xray-proxy": {"condition": "service_started"}}
 
+        # Always write a gost config file: it carries the DNS-forwarding service
+        # (project containers point their `dns:` at the relay) alongside the HTTP
+        # proxy service, with bypass rules (if any) applied at the HTTP hop level.
+        gost_cfg = _gost_config_with_bypass(
+            relay_port, dns_port, dns_upstream, upstream_host, upstream_port, bypass_list,
+        )
+        gost_cfg_path = ws / "proxy-relay-config.yaml"
+        gost_cfg_path.write_text(
+            "# !! 此文件由 coderfleet apply 自动生成，请勿手动编辑 !!\n"
+            + yaml.dump(gost_cfg, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        relay_svc["command"] = "-C /etc/gost/config.yaml"
+        relay_svc["volumes"] = ["./proxy-relay-config.yaml:/etc/gost/config.yaml:ro"]
         if bypass_list:
-            # Write a gost config file so bypass rules take effect at the hop level.
-            # Bypass targets are reached directly by the relay (which is on extnet);
-            # everything else is forwarded to the upstream (host proxy or xray container).
-            gost_cfg = _gost_config_with_bypass(relay_port, upstream_host, upstream_port, bypass_list)
-            gost_cfg_path = ws / "proxy-relay-config.yaml"
-            gost_cfg_path.write_text(
-                "# !! 此文件由 coderfleet apply 自动生成，请勿手动编辑 !!\n"
-                + yaml.dump(gost_cfg, allow_unicode=True, sort_keys=False, default_flow_style=False),
-                encoding="utf-8",
-            )
-            relay_svc["command"] = "-C /etc/gost/config.yaml"
-            relay_svc["volumes"] = ["./proxy-relay-config.yaml:/etc/gost/config.yaml:ro"]
             click.secho(f"  [relay] bypass 直连规则：{', '.join(bypass_list)}", fg="yellow")
-        else:
-            relay_svc["command"] = f"-L http://:{relay_port} -F \"{upstream_host}:{upstream_port}\""
 
         services["proxy-relay"] = relay_svc
 

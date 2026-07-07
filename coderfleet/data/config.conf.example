@@ -61,6 +61,12 @@ RELAY_LISTEN_PORT=10808
 # 代理中继镜像
 RELAY_IMAGE=gogost/gost:3
 
+# ── DNS 转发（relay 内置 gost DNS 服务，解决 intnet 容器无法解析域名的问题）──
+# relay 监听的 DNS 端口，项目容器的 dns: 字段会指向 RELAY_IP:DNS_LISTEN_PORT
+#DNS_LISTEN_PORT=53
+# 上游解析器，走与 HTTP 代理相同的 chain 隧道过去（DoH，走 TCP/HTTPS，无需 UDP 中转）
+#DNS_UPSTREAM=https://1.1.1.1/dns-query
+
 # ── 系统级 LLM ────────────────────────────────────────────
 # CoderFleet 自身的系统功能（对话气泡翻译等）调用的模型。
 # 独立于池化任务账号——系统调用不消耗你的编码配额。
