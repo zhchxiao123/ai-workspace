@@ -129,6 +129,28 @@ def test_project_form_exposes_docker_socket_override() -> None:
     assert "docker_socket: dockerSocket" in source
 
 
+def test_project_card_exposes_container_status_and_start_stop_controls() -> None:
+    source = read_projects_js()
+
+    assert "container_running" in source
+    assert "function startProjectContainer" in source
+    assert "function stopProjectContainer" in source
+    assert "/container/start" in source
+    assert "/container/stop" in source
+    assert "onclick=\"event.stopPropagation();startProjectContainer(" in source
+    assert "onclick=\"event.stopPropagation();stopProjectContainer(" in source
+
+
+def test_saving_project_form_does_not_auto_start_container() -> None:
+    source = read_projects_js()
+
+    match = re.search(r"async function saveProjectForm\(\)\s*\{.*?\n\}\n", source, re.S)
+    assert match, "saveProjectForm() not found"
+    save_fn_body = match.group(0)
+    assert "/container/start" not in save_fn_body
+    assert "startProjectContainer" not in save_fn_body
+
+
 def test_project_image_build_modal_exposes_manual_stop() -> None:
     html = read_index()
     source = read_projects_js()

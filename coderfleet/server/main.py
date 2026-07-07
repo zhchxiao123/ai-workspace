@@ -841,10 +841,17 @@ async def delete_board_card(card_id: str):
 
 @app.get("/api/projects", response_model=list[ProjectResponse])
 async def list_projects():
-    return [
-        ProjectResponse.from_project(p)
-        for p in scheduler.list_projects()
-    ]
+    from coderfleet.server import docker_mgr as _dm
+
+    accounts_by_name = {a.name: a for a in scheduler.get_accounts()}
+    responses = []
+    for p in scheduler.list_projects():
+        resp = ProjectResponse.from_project(p)
+        acc = accounts_by_name.get(p.account)
+        if acc is not None:
+            resp.container_running = _dm.is_container_running(p.container_name(acc.type))
+        responses.append(resp)
+    return responses
 
 
 @app.post("/api/projects", status_code=201)
@@ -911,6 +918,54 @@ async def set_project_env(name: str, req: EnvVarsRequest):
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+def _resolve_project_and_account(name: str):
+    project = scheduler.find_project_by_name(name)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"项目 '{name}' 不存在")
+    acc = next((a for a in scheduler.get_accounts() if a.name == project.account), None)
+    if acc is None:
+        raise HTTPException(status_code=404, detail=f"账号 '{project.account}' 不存在")
+    return project, acc
+
+
+@app.get("/api/projects/{name}/container/status")
+async def get_project_container_status(name: str):
+    project, acc = _resolve_project_and_account(name)
+    from coderfleet.server import docker_mgr as _dm
+    running = _dm.is_container_running(project.container_name(acc.type))
+    return {"running": running}
+
+
+@app.post("/api/projects/{name}/container/start")
+async def start_project_container(name: str):
+    project, acc = _resolve_project_and_account(name)
+    from coderfleet.compose import write_compose
+    from coderfleet.docker_ops import start_services
+
+    service = project.service_name(acc.type)
+    await asyncio.get_event_loop().run_in_executor(None, write_compose, WORKSPACE_DIR)
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, start_services, WORKSPACE_DIR, [service]
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"启动项目 '{name}' 失败")
+    return {"ok": True}
+
+
+@app.post("/api/projects/{name}/container/stop")
+async def stop_project_container(name: str):
+    project, acc = _resolve_project_and_account(name)
+    from coderfleet.docker_ops import stop_services
+
+    service = project.service_name(acc.type)
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, stop_services, WORKSPACE_DIR, [service]
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"停止项目 '{name}' 失败")
+    return {"ok": True}
 
 
 # ── 项目镜像管理 ──────────────────────────────────────────

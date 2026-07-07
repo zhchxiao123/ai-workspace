@@ -489,6 +489,7 @@ class ProjectResponse(BaseModel):
     docker_socket: str = ""
     ephemeral:   bool = False
     git_url:     str = ""
+    container_running: Optional[bool] = None
 
     @classmethod
     def from_project(cls, p: Project) -> "ProjectResponse":

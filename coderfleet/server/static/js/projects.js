@@ -50,6 +50,15 @@ function renderProjectCards(projects, tasks, accounts) {
     const activeBadge = project.active === false
       ? `<span class="badge offline">容器停用</span>`
       : '';
+    const containerRunning = project.container_running === true;
+    const statusBadge = project.container_running == null
+      ? ''
+      : containerRunning
+        ? `<span class="badge running">● 运行中</span>`
+        : `<span class="badge offline">○ 已停止</span>`;
+    const containerToggleBtn = containerRunning
+      ? `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();stopProjectContainer('${esc(project.name)}')">停止</button>`
+      : `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();startProjectContainer('${esc(project.name)}')">启动</button>`;
     let latestText = '还没有任务记录';
     if (latest && latest.prompt) {
       const cleanPrompt = String(latest.prompt || '').replace(/\s+/g, ' ');
@@ -64,7 +73,7 @@ function renderProjectCards(projects, tasks, accounts) {
       <div class="project-path" title="${esc(project.path)}">${esc(project.path)}</div>
     </div>
   </div>
-  <div class="account-badges" style="margin-top:10px">${accountBadge}${ideBadge}${imageBadge}${activeBadge}<span class="chip">${esc(project.account)}</span></div>
+  <div class="account-badges" style="margin-top:10px">${statusBadge}${accountBadge}${ideBadge}${imageBadge}${activeBadge}<span class="chip">${esc(project.account)}</span></div>
   <div class="project-stats">
     <div class="project-stat"><div class="account-stat-label">总任务</div><div class="account-stat-value">${projectTasks.length}</div></div>
     <div class="project-stat"><div class="account-stat-label">运行中</div><div class="account-stat-value">${running}</div></div>
@@ -73,6 +82,7 @@ function renderProjectCards(projects, tasks, accounts) {
   </div>
   <div class="account-meta" style="margin-top:10px" ${latest ? `title="${esc(latest.prompt)}"` : ''}>${latestText}</div>
   <div class="account-footer" style="margin-top:10px">
+    ${containerToggleBtn}
     <button class="btn" style="font-size:12px" onclick="event.stopPropagation();openProjectFormModal('${esc(project.name)}')">编辑</button>
     <button class="btn danger" style="font-size:12px" onclick="event.stopPropagation();deleteProjectConfirm('${esc(project.name)}')">删除</button>
   </div>
@@ -292,6 +302,34 @@ async function deleteProjectConfirm(name) {
     }
     if (projectContext?.name === name) backToProjects();
     else await loadProjectsDashboard();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function startProjectContainer(name) {
+  try {
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}/container/start`, { method: 'POST' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || '启动失败');
+      return;
+    }
+    await loadProjectsDashboard();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function stopProjectContainer(name) {
+  try {
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}/container/stop`, { method: 'POST' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || '停止失败');
+      return;
+    }
+    await loadProjectsDashboard();
   } catch (e) {
     alert(e.message);
   }
