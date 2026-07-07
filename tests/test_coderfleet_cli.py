@@ -23,12 +23,17 @@ def make_workspace(tmp_path: Path) -> Path:
     return workspace
 
 
-def fake_docker_path(tmp_path: Path) -> str:
+def fake_docker_path(tmp_path: Path, call_log: Path | None = None) -> str:
+    """Create a stub `docker` binary. If call_log is given, every invocation's
+    arguments are appended to it (one line each) so tests can assert on
+    exactly which compose/docker commands were run."""
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     docker = bin_dir / "docker"
+    log_line = f'echo "$@" >> "{call_log}"\n' if call_log is not None else ""
     docker.write_text(
         "#!/usr/bin/env bash\n"
+        f"{log_line}"
         "if [[ \"$1\" == \"compose\" && \"$2\" == \"version\" ]]; then exit 0; fi\n"
         "if [[ \"$1\" == \"compose\" ]]; then exit 0; fi\n"
         "if [[ \"$1\" == \"image\" && \"$2\" == \"inspect\" ]]; then exit 0; fi\n"
@@ -54,6 +59,64 @@ def run_coderfleet(workspace: Path, path: str, *args: str) -> subprocess.Complet
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def test_apply_default_is_incremental(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "apply")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8")
+    assert "down" not in calls
+    assert "--force-recreate" not in calls
+    assert "up -d --remove-orphans" in calls
+
+
+def test_apply_full_tears_down_and_force_recreates(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "apply", "--full")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8")
+    assert "down --remove-orphans" in calls
+    assert "up -d --force-recreate" in calls
+
+
+def test_apply_full_prints_warning(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply", "--full")
+
+    assert result.returncode == 0, result.stderr
+    assert "中断" in result.stdout
 
 
 def test_apply_injects_env_file_for_claude_env_account(tmp_path: Path) -> None:

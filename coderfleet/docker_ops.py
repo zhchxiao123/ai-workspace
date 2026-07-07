@@ -204,9 +204,17 @@ def cmd_build(
 
 
 @click.command("apply")
+@click.option("--full", is_flag=True,
+              help="销毁并强制重建所有容器（旧行为），而不是增量同步")
 @click.pass_context
-def cmd_apply(ctx: click.Context) -> None:
-    """Regenerate docker-compose.yml and restart all containers."""
+def cmd_apply(ctx: click.Context, full: bool) -> None:
+    """Regenerate docker-compose.yml and reconcile containers.
+
+    By default this only creates/recreates the services that actually
+    changed (new project, edited config, removed project) and leaves every
+    other running container untouched. Pass --full to fall back to the old
+    behavior of tearing down and force-recreating every container.
+    """
     ws: Path = ctx.obj["workspace"]
 
     click.echo("生成 docker-compose.yml...")
@@ -214,10 +222,18 @@ def cmd_apply(ctx: click.Context) -> None:
     click.secho("✓ docker-compose.yml 已生成", fg="green")
     click.echo()
 
-    click.echo("重启容器以应用新配置...")
     dc = _dc(ws)
-    subprocess.run(dc + ["down", "--remove-orphans"])
-    result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
+    if full:
+        click.secho(
+            "⚠ --full：将销毁并重建所有容器，所有正在运行的会话都会被中断",
+            fg="yellow",
+        )
+        click.echo("重启容器以应用新配置...")
+        subprocess.run(dc + ["down", "--remove-orphans"])
+        result = subprocess.run(dc + ["up", "-d", "--force-recreate"])
+    else:
+        click.echo("同步容器状态（仅新增/变更的项目会受影响）...")
+        result = subprocess.run(dc + ["up", "-d", "--remove-orphans"])
 
     if result.returncode != 0:
         raise click.ClickException("容器启动失败")
