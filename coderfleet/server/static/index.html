@@ -1061,10 +1061,19 @@
   <div class="modal-backdrop" id="apply-modal" style="display:none" onclick="closeApplyModal(event)">
     <div class="modal-sm" onclick="event.stopPropagation()" style="max-width:640px;width:90vw">
       <div class="section-head" style="margin-bottom:12px">
-        <div class="modal-title">应用配置 · docker-compose 重建</div>
-        <span id="apply-running" style="font-size:12px;color:var(--text-3)">执行中…</span>
+        <div class="modal-title">应用配置 · docker-compose 同步</div>
+        <span id="apply-running" style="font-size:12px;color:var(--text-3);display:none">执行中…</span>
       </div>
-      <pre id="apply-output" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--mono);max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+      <div id="apply-options">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-2)">
+          <input type="checkbox" id="apply-full-checkbox">
+          全量重建所有容器（会中断所有正在运行的会话）
+        </label>
+        <div style="margin-top:12px;display:flex;justify-content:flex-end">
+          <button id="apply-start-btn" class="btn primary" onclick="startApply()">应用</button>
+        </div>
+      </div>
+      <pre id="apply-output" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;font-family:var(--mono);max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
       <div style="margin-top:12px;display:flex;justify-content:flex-end">
         <button id="apply-done-btn" class="btn primary" style="display:none" onclick="closeApplyModal()">完成</button>
       </div>

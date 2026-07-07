@@ -697,10 +697,12 @@ function showEnvMsg(text, type) {
 // ── 应用配置（system/apply） ──────────────────────────────
 function openApplyModal() {
   document.getElementById('apply-output').textContent = '';
-  document.getElementById('apply-running').style.display = '';
+  document.getElementById('apply-output').style.display = 'none';
+  document.getElementById('apply-options').style.display = '';
+  document.getElementById('apply-full-checkbox').checked = false;
+  document.getElementById('apply-running').style.display = 'none';
   document.getElementById('apply-done-btn').style.display = 'none';
   document.getElementById('apply-modal').style.display = '';
-  _runApply();
 }
 
 function closeApplyModal(event) {
@@ -708,10 +710,21 @@ function closeApplyModal(event) {
   document.getElementById('apply-modal').style.display = 'none';
 }
 
-async function _runApply() {
+function startApply() {
+  const full = document.getElementById('apply-full-checkbox').checked;
+  if (full && !confirm('全量重建会销毁并重建所有容器，所有正在运行的会话都会被中断，确认继续吗？')) {
+    return;
+  }
+  document.getElementById('apply-options').style.display = 'none';
+  document.getElementById('apply-output').style.display = '';
+  document.getElementById('apply-running').style.display = '';
+  _runApply(full);
+}
+
+async function _runApply(full) {
   const out = document.getElementById('apply-output');
   try {
-    const r = await fetch(`${API}/api/system/apply`, { method: 'POST' });
+    const r = await fetch(`${API}/api/system/apply?full=${full ? 'true' : 'false'}`, { method: 'POST' });
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
     while (true) {

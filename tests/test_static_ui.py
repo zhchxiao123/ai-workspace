@@ -129,6 +129,17 @@ def test_project_form_exposes_docker_socket_override() -> None:
     assert "docker_socket: dockerSocket" in source
 
 
+def test_apply_modal_exposes_full_rebuild_opt_in_with_confirmation() -> None:
+    html = read_index()
+    source = read_ui_source()
+
+    assert 'id="apply-full-checkbox"' in html
+    assert "全量重建所有容器" in html
+    assert "function startApply" in source
+    assert "confirm(" in source
+    assert "api/system/apply?full=" in source
+
+
 def test_project_card_exposes_container_status_and_start_stop_controls() -> None:
     source = read_projects_js()
 

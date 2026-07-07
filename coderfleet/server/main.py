@@ -1102,8 +1102,12 @@ async def clear_project_image(name: str):
 # ── 系统运维 ──────────────────────────────────────────────
 
 @app.post("/api/system/apply")
-async def system_apply():
-    """重新生成 docker-compose.yml 并重启所有容器，SSE 流式输出进度。"""
+async def system_apply(full: bool = False):
+    """重新生成 docker-compose.yml 并同步容器，SSE 流式输出进度。
+
+    默认增量同步（只影响新增/变更的项目，不影响其他正在运行的容器）；
+    full=true 时走旧的全量销毁重建（会中断所有正在运行的会话）。
+    """
     from coderfleet.compose import write_compose
     from coderfleet.docker_ops import _dc
 
@@ -1113,23 +1117,34 @@ async def system_apply():
             await asyncio.get_event_loop().run_in_executor(None, write_compose, WORKSPACE_DIR)
             yield "✓ docker-compose.yml 已生成\n\n"
 
-            yield ">>> 停止旧容器 (down --remove-orphans)...\n"
             dc = _dc(WORKSPACE_DIR)
-            proc = await asyncio.create_subprocess_exec(
-                *dc, "down", "--remove-orphans",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            async for line in proc.stdout:
-                yield line.decode("utf-8", errors="replace")
-            await proc.wait()
 
-            yield "\n>>> 启动容器 (up -d --force-recreate)...\n"
-            proc = await asyncio.create_subprocess_exec(
-                *dc, "up", "-d", "--force-recreate",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            if full:
+                yield "⚠ 全量重建：所有正在运行的会话都会被中断\n\n"
+                yield ">>> 停止旧容器 (down --remove-orphans)...\n"
+                proc = await asyncio.create_subprocess_exec(
+                    *dc, "down", "--remove-orphans",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                async for line in proc.stdout:
+                    yield line.decode("utf-8", errors="replace")
+                await proc.wait()
+
+                yield "\n>>> 启动容器 (up -d --force-recreate)...\n"
+                proc = await asyncio.create_subprocess_exec(
+                    *dc, "up", "-d", "--force-recreate",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            else:
+                yield ">>> 同步容器状态 (up -d --remove-orphans，仅新增/变更的项目会受影响)...\n"
+                proc = await asyncio.create_subprocess_exec(
+                    *dc, "up", "-d", "--remove-orphans",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+
             async for line in proc.stdout:
                 yield line.decode("utf-8", errors="replace")
             rc = await proc.wait()
@@ -1137,7 +1152,7 @@ async def system_apply():
             if rc != 0:
                 yield f"\n✗ 容器启动失败（exit={rc}）\n"
             else:
-                yield "\n✓ 完成！所有容器已重启\n"
+                yield "\n✓ 完成！\n"
         except Exception as e:
             yield f"\n✗ 操作失败：{e}\n"
 
