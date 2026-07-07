@@ -108,6 +108,19 @@ def status_boost(status: str) -> int:
     return 12 if status in {"running", "pending", "scheduled"} else 0
 
 
+def rank_paths(paths: list[str], query: str, limit: int = 50) -> list[str]:
+    """在一批已知的相对路径字符串里按 query 排序/截断，供 @ 提及自动补全用。
+
+    纯函数，不接触文件系统：递归遍历、路径安全检查都交给调用方的 HTTP 端点。
+    空 query 时按传入顺序取前 limit 个（调用方需保证传入顺序已是目录优先、按名称字母序）。
+    非空 query 时对完整相对路径做大小写不敏感的子串匹配，保持传入顺序截断。
+    """
+    query = query.strip().lower()
+    if not query:
+        return list(paths[:limit])
+    return [p for p in paths if query in p.lower()][:limit]
+
+
 # ── 主入口 ──────────────────────────────────────────────────────────────
 def search_records(
     query: str,

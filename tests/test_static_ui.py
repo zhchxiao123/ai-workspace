@@ -490,6 +490,26 @@ def test_chat_search_uses_global_search_results_not_tree_filter_only() -> None:
     assert "chatSearchResults" in source
 
 
+def test_chat_composer_supports_at_mention_file_autocomplete() -> None:
+    source = read_ui_source()
+    main_py = read_main_py()
+    search_py = SEARCH_PY.read_text(encoding="utf-8")
+
+    assert 'id="chat-mention-dropdown"' in source
+    assert "function _detectChatMentionToken" in source
+    assert "_handleChatMentionInput(textarea)" in source
+    assert "function _performChatMentionSearch" in source
+    assert "function _renderChatMentionDropdown" in source
+    assert "function _confirmChatMentionSelection" in source
+    assert "function _closeChatMentionDropdown" in source
+    assert "function _validateChatMentionCursor" in source
+    assert "/files/search?${params.toString()}" in source
+    assert "chatMentionOpen" in source
+
+    assert '@app.get("/api/projects/{project_name}/files/search"' in main_py
+    assert "def rank_paths" in search_py
+
+
 def test_mobile_project_history_collapses_after_five_items_and_sorts_newest_first() -> None:
     source = read_mobile()
 

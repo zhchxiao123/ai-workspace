@@ -79,7 +79,7 @@ from coderfleet.server.translate import translate_text
 from coderfleet.server.translation_cache import TranslationCache
 from coderfleet.server.settings_schema import SETTINGS_GROUPS, field_for, mask_secret
 from coderfleet.config import load_config as _load_config, set_config as _set_config
-from coderfleet.server.search import SCOPES, SearchResponse, search_records
+from coderfleet.server.search import SCOPES, SearchResponse, rank_paths, search_records
 from coderfleet.server.terminal import (
     TerminalSession,
     TmuxTerminalSession,
@@ -1194,6 +1194,20 @@ class FileEntry(BaseModel):
 _FILES_SKIP = {'.git', '__pycache__', 'node_modules', '.DS_Store', '.mypy_cache', '.ruff_cache'}
 
 
+def _file_entry_for(base: Path, target: Path, is_dir: bool) -> Optional[FileEntry]:
+    try:
+        stat = target.stat()
+    except OSError:
+        return None
+    return FileEntry(
+        name=target.name,
+        path=str(target.relative_to(base)),
+        is_dir=is_dir,
+        size=stat.st_size if not is_dir else None,
+        modified=stat.st_mtime,
+    )
+
+
 @app.get("/api/projects/{project_name}/files", response_model=list[FileEntry])
 async def list_project_files(
     project_name: str,
@@ -1217,20 +1231,62 @@ async def list_project_files(
         for item in items:
             if item.name in _FILES_SKIP:
                 continue
-            try:
-                stat = item.stat()
-            except OSError:
-                continue
-            rel = str(item.relative_to(base))
-            entries.append(FileEntry(
-                name=item.name,
-                path=rel,
-                is_dir=item.is_dir(),
-                size=stat.st_size if not item.is_dir() else None,
-                modified=stat.st_mtime,
-            ))
+            entry = _file_entry_for(base, item, item.is_dir())
+            if entry is not None:
+                entries.append(entry)
     except PermissionError:
         pass
+    return entries
+
+
+_FILES_SEARCH_MAX_WALK = 20000
+
+
+@app.get("/api/projects/{project_name}/files/search", response_model=list[FileEntry])
+async def search_project_files(
+    project_name: str,
+    q: str = Query("", description="搜索关键字，匹配完整相对路径"),
+    limit: int = Query(30, ge=1, le=200),
+):
+    """递归搜索项目文件/目录，供聊天输入框 @ 提及自动补全使用。"""
+    project = scheduler.find_project_by_name(project_name)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    base = Path(project.path).resolve()
+
+    collected: list[tuple[str, bool]] = []
+    for root, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if d not in _FILES_SKIP)
+        rel_root = Path(root).relative_to(base)
+        for name in dirnames:
+            rel = name if rel_root == Path('.') else str(rel_root / name)
+            collected.append((rel, True))
+        for name in filenames:
+            if name in _FILES_SKIP:
+                continue
+            rel = name if rel_root == Path('.') else str(rel_root / name)
+            collected.append((rel, False))
+        if len(collected) >= _FILES_SEARCH_MAX_WALK:
+            break
+
+    collected.sort(key=lambda item: (not item[1], item[0].lower()))
+    is_dir_by_path = dict(collected)
+    ranked = rank_paths([path for path, _ in collected], q, limit=limit)
+
+    # 多条目端点：与单目标端点（list_project_files/preview_project_file）不同，一次响应
+    # 涉及许多条目，某个条目（如指向外部的符号链接）逃出项目根目录时，跳过它而不是
+    # 用 403 拒绝整个搜索请求。
+    entries: list[FileEntry] = []
+    for rel in ranked:
+        target = (base / rel).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            continue
+        is_dir = is_dir_by_path.get(rel, target.is_dir())
+        entry = _file_entry_for(base, target, is_dir)
+        if entry is not None:
+            entries.append(entry)
     return entries
 
 

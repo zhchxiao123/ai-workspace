@@ -9,7 +9,7 @@ from coderfleet.server.models import (
     Task,
     TaskStatus,
 )
-from coderfleet.server.search import search_records
+from coderfleet.server.search import rank_paths, search_records
 
 
 def _project(name: str, path: str = "/srv/x", account: str = "alice") -> Project:
@@ -96,3 +96,29 @@ def test_limit_is_respected() -> None:
     tasks = [_task(f"t{i}", "match me") for i in range(10)]
     res = search_records("match", "tasks", projects=[], conversations=[], tasks=tasks, limit=3)
     assert len(res) == 3
+
+
+# ── rank_paths（@ 提及自动补全用的纯排序函数）───────────────────────────
+
+def test_rank_paths_empty_query_returns_first_n_in_given_order() -> None:
+    paths = ["src", "src/main.py", "README.md", "tests"]
+    assert rank_paths(paths, "", limit=3) == ["src", "src/main.py", "README.md"]
+
+
+def test_rank_paths_substring_match_case_insensitive() -> None:
+    paths = ["src/main.py", "README.md", "src/utils/HELPERS.py"]
+    assert rank_paths(paths, "helpers", limit=10) == ["src/utils/HELPERS.py"]
+
+
+def test_rank_paths_matches_full_relative_path_not_just_name() -> None:
+    paths = ["src/api/routes.py", "tests/api/test_routes.py", "docs/api.md"]
+    assert rank_paths(paths, "src/api", limit=10) == ["src/api/routes.py"]
+
+
+def test_rank_paths_limit_truncates_matches() -> None:
+    paths = [f"src/mod{i}.py" for i in range(5)]
+    assert rank_paths(paths, "mod", limit=2) == paths[:2]
+
+
+def test_rank_paths_no_match_returns_empty() -> None:
+    assert rank_paths(["a.py", "b.py"], "zzz", limit=10) == []

@@ -800,14 +800,174 @@ async function renderEmptyChatState() {
   }
 }
 
+// ── @ 文件提及自动补全 ────────────────────────────────────
+const CHAT_MENTION_NAV_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'];
+
+function _detectChatMentionToken(textarea) {
+  const value = textarea.value;
+  const cursor = textarea.selectionStart;
+  if (cursor !== textarea.selectionEnd) return null;
+  let i = cursor - 1;
+  while (i >= 0 && !/\s/.test(value[i]) && value[i] !== '@') i--;
+  if (i < 0 || value[i] !== '@') return null;
+  if (i > 0 && !/\s/.test(value[i - 1])) return null;
+  return { start: i, query: value.slice(i + 1, cursor) };
+}
+
+function _handleChatMentionInput(textarea) {
+  if (!currentChatProjectName) {
+    _closeChatMentionDropdown();
+    return;
+  }
+  const token = _detectChatMentionToken(textarea);
+  if (!token) {
+    _closeChatMentionDropdown();
+    return;
+  }
+  chatMentionOpen = true;
+  chatMentionStart = token.start;
+  chatMentionQuery = token.query;
+  chatMentionActiveIndex = 0;
+  clearTimeout(chatMentionTimer);
+  chatMentionTimer = setTimeout(() => _performChatMentionSearch(token.query), 150);
+}
+
+async function _performChatMentionSearch(query) {
+  const project = currentChatProjectName;
+  if (!project || !chatMentionOpen) return;
+  // 用递增序号而非 query 字符串判断新旧：两次请求 query 相同（比如输入又退格回同样的文本）
+  // 时，字符串比较无法分辨谁更新，序号比较可以。
+  const requestSeq = ++chatMentionRequestSeq;
+  try {
+    const params = new URLSearchParams({ q: query, limit: '30' });
+    const r = await fetch(`${API}/api/projects/${encodeURIComponent(project)}/files/search?${params.toString()}`);
+    const data = await r.json().catch(() => []);
+    if (!r.ok) throw new Error((data && data.detail) || '搜索失败');
+    if (requestSeq !== chatMentionRequestSeq || !chatMentionOpen || currentChatProjectName !== project) return;
+    chatMentionResults = Array.isArray(data) ? data : [];
+    chatMentionActiveIndex = 0;
+    _renderChatMentionDropdown();
+  } catch (e) {
+    if (requestSeq !== chatMentionRequestSeq || !chatMentionOpen) return;
+    chatMentionResults = [];
+    _renderChatMentionDropdown();
+  }
+}
+
+function _renderChatMentionDropdown() {
+  const el = document.getElementById('chat-mention-dropdown');
+  if (!el) return;
+  if (!chatMentionOpen) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  if (!chatMentionResults.length) {
+    el.innerHTML = `<div class="chat-mention-empty">没有匹配的文件</div>`;
+    return;
+  }
+  el.innerHTML = chatMentionResults.map((entry, idx) => {
+    const icon = entry.is_dir ? _folderIcon() : _fileIcon(entry.name);
+    const active = idx === chatMentionActiveIndex ? ' active' : '';
+    return `<div class="chat-mention-item${active}" onmousedown="event.preventDefault(); _confirmChatMentionSelection(${idx})">
+      ${icon}<span class="chat-mention-path">${esc(entry.path)}</span>
+    </div>`;
+  }).join('');
+}
+
+function _confirmChatMentionSelection(idx) {
+  const entry = chatMentionResults[idx];
+  const textarea = document.getElementById('chat-input');
+  if (!entry || !textarea) {
+    _closeChatMentionDropdown();
+    return;
+  }
+  const value = textarea.value;
+  const cursor = textarea.selectionStart;
+  const before = value.slice(0, chatMentionStart);
+  const after = value.slice(cursor);
+  const insertion = `@${entry.path} `;
+  textarea.value = before + insertion + after;
+  const newCursor = before.length + insertion.length;
+  textarea.selectionStart = textarea.selectionEnd = newCursor;
+  _closeChatMentionDropdown();
+  textarea.focus();
+  textarea.dispatchEvent(new Event('input'));
+}
+
+function _closeChatMentionDropdown() {
+  chatMentionOpen = false;
+  chatMentionQuery = '';
+  chatMentionStart = -1;
+  chatMentionResults = [];
+  chatMentionActiveIndex = 0;
+  clearTimeout(chatMentionTimer);
+  _renderChatMentionDropdown();
+}
+
+function _validateChatMentionCursor(textarea) {
+  if (!chatMentionOpen) return;
+  const token = _detectChatMentionToken(textarea);
+  if (!token || token.start !== chatMentionStart) {
+    _closeChatMentionDropdown();
+  }
+}
+
+let _chatMentionOutsideClickBound = false;
+function _initChatMentionOutsideClick() {
+  if (_chatMentionOutsideClickBound) return;
+  _chatMentionOutsideClickBound = true;
+  document.addEventListener('mousedown', e => {
+    if (!chatMentionOpen) return;
+    const dropdown = document.getElementById('chat-mention-dropdown');
+    const textarea = document.getElementById('chat-input');
+    if (dropdown && dropdown.contains(e.target)) return;
+    if (textarea && e.target === textarea) return;
+    _closeChatMentionDropdown();
+  });
+}
+
 // 自适应高度及快捷键发送绑定
 function bindChatTextareaEvents(textarea) {
   if (!textarea) return;
+  _initChatMentionOutsideClick();
   textarea.addEventListener('input', () => {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+    _handleChatMentionInput(textarea);
+  });
+  textarea.addEventListener('click', () => _validateChatMentionCursor(textarea));
+  textarea.addEventListener('keyup', e => {
+    if (CHAT_MENTION_NAV_KEYS.includes(e.key)) _validateChatMentionCursor(textarea);
   });
   textarea.addEventListener('keydown', e => {
+    if (chatMentionOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (chatMentionResults.length) {
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          chatMentionActiveIndex = (chatMentionActiveIndex + dir + chatMentionResults.length) % chatMentionResults.length;
+          _renderChatMentionDropdown();
+        }
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        if (chatMentionResults.length) {
+          _confirmChatMentionSelection(chatMentionActiveIndex);
+        } else {
+          _closeChatMentionDropdown();
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        _closeChatMentionDropdown();
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       if (e.isComposing || e.keyCode === 229) {
         return;
@@ -1773,6 +1933,7 @@ function buildChatInputHTML(placeholder, hint) {
 <div class="chat-input-container">
   <div id="chat-queue-panel" class="chat-queue-panel" style="display:none;"></div>
   <div class="chat-input-composer">
+    <div id="chat-mention-dropdown" class="chat-mention-dropdown" style="display:none;"></div>
     <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
     <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>
     <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>
