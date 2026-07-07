@@ -730,6 +730,7 @@ async function selectConversation(convId) {
   try { sessionStorage.setItem('coderfleet.activeConvId', convId || ''); } catch (_) {}
   activeTabId = upsertConversationTab(convId);
   renderTopbarTabs();
+  rerenderChatProjectList();
 
   // 一次性任务 / 缓存里还没有这个会话（比如刚创建）：退回全量刷新一次。
   const conv = !convId.startsWith('task-') && chatConversationsList.find(c => c.id === convId);
