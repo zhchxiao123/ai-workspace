@@ -11,7 +11,7 @@ from typing import Optional
 import click
 
 from coderfleet.config import ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
-from coderfleet.account_type_registry import ACCOUNT_TYPES, env_auth_type_ids
+from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types, env_auth_type_ids
 from coderfleet.ports import allocate_ide_port
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9-]+$")
@@ -31,6 +31,23 @@ def _existing_ide_ports(projects: list[dict[str, str]], current_name: str) -> li
         except ValueError:
             pass
     return list(used)
+
+
+def _validate_account_bindings(
+    accounts_conf_records: list[dict[str, str]], primary: str, secondaries: list[str],
+) -> None:
+    """校验 primary + secondaries 绑定的账号集合：每个账号名必须存在，且
+    彼此的 TYPE 两两不同（每种 TYPE 在容器内只有一个固定挂载路径）。"""
+    types_by_name = {r["NAME"]: r["TYPE"] for r in accounts_conf_records if "NAME" in r and "TYPE" in r}
+    names = [primary, *secondaries]
+    for n in names:
+        if n not in types_by_name:
+            raise click.ClickException(f"账号 '{n}' 不存在")
+    dupes = duplicate_account_types([types_by_name[n] for n in names])
+    if dupes:
+        raise click.ClickException(
+            f"账号类型互斥：{' / '.join(dupes)} 类型的账号在同一项目中只能绑定一个"
+        )
 
 
 def _is_running(container: str) -> bool:
@@ -203,6 +220,8 @@ def project_group() -> None:
 @click.option("--image", default=None, metavar="IMAGE", help="自定义 Docker 镜像（如 my-image:latest），留空使用共享镜像")
 @click.option("--docker-socket", default=None, metavar="SOCKET",
               help="项目级 Docker socket 覆盖：off / auto / /path/to/docker.sock")
+@click.option("--secondary", "secondary_accounts", multiple=True, metavar="ACCOUNT",
+              help="绑定一个从账号（仅挂载认证目录/env，不参与任务调度），可重复传入以绑定多个")
 @click.pass_context
 def cmd_project_add(
     ctx: click.Context,
@@ -214,6 +233,7 @@ def cmd_project_add(
     disabled: bool,
     image: Optional[str],
     docker_socket: Optional[str],
+    secondary_accounts: tuple[str, ...],
 ) -> None:
     """Add a new project."""
     ws: Path = ctx.obj["workspace"]
@@ -222,9 +242,8 @@ def cmd_project_add(
         raise click.ClickException("项目名称只能包含字母、数字、连字符")
 
     accounts_conf = ws / "accounts.conf"
-    accounts = {r["NAME"] for r in parse_conf(accounts_conf) if "NAME" in r}
-    if account not in accounts:
-        raise click.ClickException(f"账号 '{account}' 不存在")
+    accounts_conf_records = parse_conf(accounts_conf)
+    _validate_account_bindings(accounts_conf_records, account, list(secondary_accounts))
     if ide and ide_port is not None:
         if ide_port < 1024 or ide_port > 65535:
             raise click.ClickException("IDE 端口必须在 1024-65535 之间")
@@ -237,6 +256,8 @@ def cmd_project_add(
 
     ensure_workspace(ws)
     tokens = {"NAME": name, "ACCOUNT": account, "PATH": path}
+    if secondary_accounts:
+        tokens["SECONDARY_ACCOUNTS"] = ",".join(secondary_accounts)
     if ide:
         if ide_port is None:
             try:
@@ -341,6 +362,73 @@ def cmd_project_set_docker_socket(ctx: click.Context, name: str, socket: str) ->
     else:
         update_conf_field(projects_conf, name, "DOCKER_SOCKET", socket)
         click.secho(f"✓ 项目 '{name}' 已设置 DOCKER_SOCKET={socket}", fg="green")
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+def _project_record(projects_conf: Path, name: str) -> dict[str, str]:
+    for p in parse_conf(projects_conf):
+        if p.get("NAME") == name:
+            return p
+    raise click.ClickException(f"项目 '{name}' 不存在")
+
+
+def _write_secondary_accounts(projects_conf: Path, name: str, secondaries: list[str]) -> None:
+    if secondaries:
+        update_conf_field(projects_conf, name, "SECONDARY_ACCOUNTS", ",".join(secondaries))
+        return
+    # 清空：把 SECONDARY_ACCOUNTS= 这个 token 从该行移除
+    lines = projects_conf.read_text(encoding="utf-8").splitlines(keepends=True)
+    new_lines = []
+    name_pat = re.compile(rf"\bNAME={re.escape(name)}(\s|$)")
+    for line in lines:
+        if name_pat.search(line):
+            tokens = [t for t in line.rstrip("\n").split() if not t.upper().startswith("SECONDARY_ACCOUNTS=")]
+            new_lines.append("  ".join(tokens) + "\n")
+        else:
+            new_lines.append(line)
+    projects_conf.write_text("".join(new_lines), encoding="utf-8")
+
+
+@project_group.command("add-secondary")
+@click.argument("name")
+@click.argument("account")
+@click.pass_context
+def cmd_project_add_secondary(ctx: click.Context, name: str, account: str) -> None:
+    """Bind a secondary account to an existing project (credentials mounted only, never used for tasks)."""
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+    project = _project_record(projects_conf, name)
+
+    secondaries = [s.strip() for s in project.get("SECONDARY_ACCOUNTS", "").split(",") if s.strip()]
+    if account in secondaries:
+        raise click.ClickException(f"账号 '{account}' 已是项目 '{name}' 的从账号")
+    secondaries.append(account)
+
+    accounts_conf_records = parse_conf(ws / "accounts.conf")
+    _validate_account_bindings(accounts_conf_records, project["ACCOUNT"], secondaries)
+
+    _write_secondary_accounts(projects_conf, name, secondaries)
+    click.secho(f"✓ 项目 '{name}' 已绑定从账号 '{account}'", fg="green")
+    click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
+
+
+@project_group.command("remove-secondary")
+@click.argument("name")
+@click.argument("account")
+@click.pass_context
+def cmd_project_remove_secondary(ctx: click.Context, name: str, account: str) -> None:
+    """Unbind a secondary account from an existing project."""
+    ws: Path = ctx.obj["workspace"]
+    projects_conf = ws / "projects.conf"
+    project = _project_record(projects_conf, name)
+
+    secondaries = [s.strip() for s in project.get("SECONDARY_ACCOUNTS", "").split(",") if s.strip()]
+    if account not in secondaries:
+        raise click.ClickException(f"账号 '{account}' 不是项目 '{name}' 的从账号")
+    secondaries.remove(account)
+
+    _write_secondary_accounts(projects_conf, name, secondaries)
+    click.secho(f"✓ 项目 '{name}' 已解绑从账号 '{account}'", fg="green")
     click.secho("  执行 coderfleet apply 使配置生效", fg="yellow")
 
 

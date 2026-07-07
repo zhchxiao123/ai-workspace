@@ -634,3 +634,172 @@ def test_account_add_accepts_kimi_env_account(tmp_path: Path) -> None:
     assert "ENV_FILE=./accounts/api-kimi/env" in accounts_conf
     assert "KIMI_MODEL_NAME" in result.stdout
     assert "KIMI_MODEL_API_KEY" in result.stdout
+
+
+def test_project_add_accepts_secondary_account(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "project",
+        "add",
+        "repo",
+        "api-claude",
+        str(workspace / "repo"),
+        "--secondary",
+        "api-codex",
+    )
+
+    assert result.returncode == 0, result.stderr
+    projects_conf = (workspace / "projects.conf").read_text(encoding="utf-8")
+    assert "SECONDARY_ACCOUNTS=api-codex" in projects_conf
+
+
+def test_project_add_rejects_secondary_of_same_type_as_primary(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-claude-2 TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace,
+        fake_docker_path(tmp_path),
+        "project",
+        "add",
+        "repo",
+        "api-claude",
+        str(workspace / "repo"),
+        "--secondary",
+        "api-claude-2",
+    )
+
+    assert result.returncode != 0
+    assert "claude" in result.stderr
+    assert not (workspace / "projects.conf").read_text(encoding="utf-8").strip()
+
+
+def test_project_add_secondary_updates_existing_project(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "project", "add-secondary", "repo", "api-codex",
+    )
+
+    assert result.returncode == 0, result.stderr
+    projects_conf = (workspace / "projects.conf").read_text(encoding="utf-8")
+    assert "SECONDARY_ACCOUNTS=api-codex" in projects_conf
+
+
+def test_project_add_secondary_rejects_type_collision(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-claude-2 TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'}\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "project", "add-secondary", "repo", "api-claude-2",
+    )
+
+    assert result.returncode != 0
+    assert "claude" in result.stderr
+    assert "SECONDARY_ACCOUNTS" not in (workspace / "projects.conf").read_text(encoding="utf-8")
+
+
+def test_project_remove_secondary_clears_field(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'} SECONDARY_ACCOUNTS=api-codex\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "project", "remove-secondary", "repo", "api-codex",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SECONDARY_ACCOUNTS" not in (workspace / "projects.conf").read_text(encoding="utf-8")
+
+
+def test_apply_mounts_secondary_account_auth_dir_into_primary_service(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-codex TYPE=codex AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'} SECONDARY_ACCOUNTS=api-codex\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "claude-project-repo:" in compose
+    assert "codex-project-repo:" not in compose  # 从账号不生成独立容器
+    assert "./accounts/api-claude:/home/byclaw/.claude" in compose
+    assert "./accounts/api-codex:/home/byclaw/.codex" in compose
+
+
+def test_apply_injects_secondary_env_account_env_file(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n"
+        "NAME=api-codex TYPE=codex AUTH=env ENV_FILE=./accounts/api-codex/env\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'} SECONDARY_ACCOUNTS=api-codex\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode == 0, result.stderr
+    compose = (workspace / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "./accounts/api-codex:/home/byclaw/.codex" in compose
+    assert "- ./accounts/api-codex/env" in compose
+
+
+def test_apply_rejects_hand_edited_type_collision(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\nNAME=api-claude-2 TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    # 绕过 CLI 校验，直接手写 projects.conf 产生 TYPE 冲突
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'} SECONDARY_ACCOUNTS=api-claude-2\n",
+        encoding="utf-8",
+    )
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "apply")
+
+    assert result.returncode != 0
+    assert "claude" in result.stderr
+    assert not (workspace / "docker-compose.yml").exists()

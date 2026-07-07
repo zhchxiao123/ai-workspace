@@ -14,7 +14,7 @@ import yaml
 
 from coderfleet.config import load_config, parse_conf
 from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
-from coderfleet.account_type_registry import ACCOUNT_TYPES
+from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types
 from coderfleet.ports import allocate_ide_port
 
 
@@ -167,6 +167,19 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         acc_env_file = acc.get("ENV_FILE", "")
         acc_proxy    = acc.get("PROXY", "relay")
 
+        secondary_names = [n.strip() for n in p.get("SECONDARY_ACCOUNTS", "").split(",") if n.strip()]
+        secondary_types = []
+        for sec_name in secondary_names:
+            sec_acc = accounts.get(sec_name)
+            if not sec_acc:
+                raise click.ClickException(f"项目 {pname} 绑定的从账号 {sec_name} 不存在")
+            secondary_types.append(sec_acc.get("TYPE", "codex"))
+        dupes = duplicate_account_types([acc_type, *secondary_types])
+        if dupes:
+            raise click.ClickException(
+                f"项目 {pname} 绑定的账号类型冲突：{' / '.join(dupes)} 类型的账号只能绑定一个"
+            )
+
         # 从注册表查 per-type 信息（不存在则回退到 codex 默认值）
         spec     = ACCOUNT_TYPES.get(acc_type, ACCOUNT_TYPES["codex"])
         auth_dst = spec.auth_dir
@@ -221,6 +234,17 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         if acc_proxy != "off":
             svc["dns"] = [relay_ip]
 
+        # 从账号：仅挂载认证目录（+ env_file），不生成独立容器，不参与任务调度
+        for sec_name in secondary_names:
+            sec_acc = accounts[sec_name]
+            sec_spec = ACCOUNT_TYPES.get(sec_acc.get("TYPE", "codex"), ACCOUNT_TYPES["codex"])
+            (ws / "accounts" / sec_name).mkdir(parents=True, exist_ok=True)
+            svc["volumes"].append(f"./accounts/{sec_name}:{sec_spec.auth_dir}")
+            if sec_acc.get("AUTH", "login") == "env":
+                sec_env_file = sec_acc.get("ENV_FILE", "")
+                if sec_env_file and sec_env_file != "-":
+                    svc.setdefault("env_file", []).append(sec_env_file)
+
         docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, p))
         if docker_socket is not None:
             svc["volumes"].append(docker_socket.volume)
@@ -251,7 +275,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             })
 
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
-            svc["env_file"] = [acc_env_file]
+            svc["env_file"] = [acc_env_file] + svc.get("env_file", [])
 
         # 项目级环境变量：覆盖到 environment（优先级高于账号级）
         project_env_file = ws / "projects" / pname / "env"

@@ -129,6 +129,35 @@ def test_project_form_exposes_docker_socket_override() -> None:
     assert "docker_socket: dockerSocket" in source
 
 
+def test_project_form_exposes_secondary_accounts() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    # 选择器 + 下方已选列表（而非原生多选框），且选择器不包含已选为主账号的那个
+    assert 'id="project-form-secondary-account-picker"' in html
+    assert 'id="project-form-secondary-accounts-rows"' in html
+    assert "multiple" not in re.search(
+        r'<select id="project-form-secondary-account-picker".*?>', html
+    ).group(0)
+    assert "function addProjectSecondaryAccount" in source
+    assert "function removeProjectSecondaryAccountRow" in source
+    assert "function renderSecondaryAccountPicker" in source
+    # 候选列表按 TYPE 过滤：排除主账号类型，也排除已选从账号的类型（同一项目不能绑两个同类型账号）
+    assert "a.type !== primaryType" in source
+    assert "!selectedTypes.has(a.type)" in source
+    assert "secondary_accounts: _selectedSecondaryAccounts" in source
+
+    # 已选从账号渲染为独立的 chip 行（而非借用 env-row/env-key，避免固定宽度错位）
+    ui_source = read_ui_source()
+    assert ".secondary-account-row {" in ui_source
+    assert "secondary-account-row" in source
+    assert "secondary-account-name" in source
+    assert "secondary-account-remove" in source
+    assert "env-row" not in re.search(
+        r"function renderProjectSecondaryAccountsRows\(\)\s*\{.*?\n\}\n", source, re.S
+    ).group(0)
+
+
 def test_apply_modal_exposes_full_rebuild_opt_in_with_confirmation() -> None:
     html = read_index()
     source = read_ui_source()

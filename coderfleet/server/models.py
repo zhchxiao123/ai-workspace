@@ -101,6 +101,7 @@ class Project(BaseModel):
     docker_socket: str = ""
     ephemeral:   bool = False
     git_url:     str = ""
+    secondary_accounts: list[str] = []
 
     @property
     def mount_path(self) -> str:
@@ -130,6 +131,9 @@ class Project(BaseModel):
             docker_socket=record.get("DOCKER_SOCKET", ""),
             ephemeral=truthy(record.get("EPHEMERAL", "off")),
             git_url=record.get("GIT_URL", ""),
+            secondary_accounts=[
+                name.strip() for name in record.get("SECONDARY_ACCOUNTS", "").split(",") if name.strip()
+            ],
         )
 
 
@@ -506,6 +510,7 @@ class ProjectResponse(BaseModel):
     docker_socket: str = ""
     ephemeral:   bool = False
     git_url:     str = ""
+    secondary_accounts: list[str] = []
     container_running: Optional[bool] = None
 
     @classmethod
@@ -525,6 +530,7 @@ class ProjectResponse(BaseModel):
             docker_socket=getattr(p, "docker_socket", ""),
             ephemeral=getattr(p, "ephemeral", False),
             git_url=getattr(p, "git_url", ""),
+            secondary_accounts=getattr(p, "secondary_accounts", []),
         )
 
 

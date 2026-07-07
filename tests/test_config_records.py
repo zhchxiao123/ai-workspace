@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from coderfleet.account_type_registry import duplicate_account_types
 from coderfleet.config import parse_conf, parse_optional_int, truthy
 from coderfleet.server.models import Account, AccountAuth, AccountType, Project
 from coderfleet.server.scheduler import Scheduler
@@ -62,6 +63,34 @@ def test_project_record_flags_and_home_expansion() -> None:
 
 def test_project_record_missing_required() -> None:
     assert Project.from_conf_record({"NAME": "web", "ACCOUNT": "alice"}) is None  # 缺 PATH
+
+
+def test_project_record_parses_secondary_accounts() -> None:
+    proj = Project.from_conf_record({
+        "NAME": "web", "ACCOUNT": "alice", "PATH": "/srv/web",
+        "SECONDARY_ACCOUNTS": "bob, carol",
+    })
+    assert proj is not None
+    assert proj.secondary_accounts == ["bob", "carol"]
+
+
+def test_project_record_defaults_secondary_accounts_to_empty() -> None:
+    proj = Project.from_conf_record({"NAME": "web", "ACCOUNT": "alice", "PATH": "/srv/web"})
+    assert proj is not None
+    assert proj.secondary_accounts == []
+
+
+# ── duplicate_account_types（primary/secondary 类型互斥校验） ──────────
+def test_duplicate_account_types_none_when_all_distinct() -> None:
+    assert duplicate_account_types(["claude", "codex"]) == []
+
+
+def test_duplicate_account_types_flags_primary_secondary_collision() -> None:
+    assert duplicate_account_types(["claude", "claude"]) == ["claude"]
+
+
+def test_duplicate_account_types_flags_secondary_secondary_collision() -> None:
+    assert duplicate_account_types(["claude", "codex", "codex"]) == ["codex"]
 
 
 # ── 端到端：scheduler 读取 .conf → 类型化对象 ──────────────────────────

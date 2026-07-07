@@ -71,6 +71,7 @@ from coderfleet.server.models import (
     WorkflowRunResponse,
     WorkflowTemplateResponse,
 )
+from coderfleet.account_type_registry import duplicate_account_types
 from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.image_builds import ImageBuildRegistry
 from coderfleet.server.marketplace import MarketplaceManager
@@ -147,6 +148,7 @@ class ProjectCreateRequest(BaseModel):
     ide_remote:  bool = False
     image:       str = ""
     docker_socket: str = ""
+    secondary_accounts: list[str] = []
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -159,6 +161,7 @@ class ProjectUpdateRequest(BaseModel):
     ide_remote:  Optional[bool] = None
     image:       Optional[str]  = None
     docker_socket: Optional[str] = None
+    secondary_accounts: Optional[list[str]] = None
 
 
 class BoardCreateRequest(BaseModel):
@@ -855,6 +858,21 @@ async def list_projects():
     return responses
 
 
+def _validate_secondary_accounts(secondary_accounts: list[str], primary_account: str) -> None:
+    accounts_by_name = {a.name: a for a in scheduler.get_accounts()}
+    for n in secondary_accounts:
+        if n not in accounts_by_name:
+            raise HTTPException(status_code=404, detail=f"账号 '{n}' 不存在")
+    primary_type = accounts_by_name[primary_account].type.value
+    secondary_types = [accounts_by_name[n].type.value for n in secondary_accounts]
+    dupes = duplicate_account_types([primary_type, *secondary_types])
+    if dupes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"账号类型互斥：{' / '.join(dupes)} 类型的账号在同一项目中只能绑定一个",
+        )
+
+
 @app.post("/api/projects", status_code=201)
 async def create_project(req: ProjectCreateRequest):
     _validate_identifier(req.name, "项目")
@@ -863,8 +881,9 @@ async def create_project(req: ProjectCreateRequest):
         raise HTTPException(status_code=409, detail=f"项目 '{req.name}' 已存在")
     if not any(a.name == req.account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{req.account}' 不存在")
+    _validate_secondary_accounts(req.secondary_accounts, req.account)
     try:
-        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote, req.image, req.docker_socket)
+        project = scheduler.save_project(req.name, req.account, req.path, req.active, req.ide_enabled, req.ide_port, req.ide_auth, req.ide_remote, req.image, req.docker_socket, req.secondary_accounts)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)
@@ -884,13 +903,15 @@ async def update_project(name: str, req: ProjectUpdateRequest):
     new_ide_remote = existing.ide_remote if req.ide_remote is None else req.ide_remote
     new_image = existing.image if req.image is None else req.image
     new_docker_socket = existing.docker_socket if req.docker_socket is None else req.docker_socket
+    new_secondary_accounts = existing.secondary_accounts if req.secondary_accounts is None else req.secondary_accounts
     if not new_ide_enabled:
         new_ide_port = None
     _validate_ide_port(new_ide_enabled, new_ide_port)
     if req.account and not any(a.name == new_account for a in scheduler.get_accounts()):
         raise HTTPException(status_code=404, detail=f"账号 '{new_account}' 不存在")
+    _validate_secondary_accounts(new_secondary_accounts, new_account)
     try:
-        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote, new_image, new_docker_socket)
+        project = scheduler.save_project(name, new_account, new_path, new_active, new_ide_enabled, new_ide_port, new_ide_auth, new_ide_remote, new_image, new_docker_socket, new_secondary_accounts)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return ProjectResponse.from_project(project)

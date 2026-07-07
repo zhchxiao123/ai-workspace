@@ -193,6 +193,8 @@ function submitForCurrentProject() {
 
 // ── 项目 CRUD ─────────────────────────────────────────────
 let _editingProjectName = null;
+let _projectAccountsCache = [];
+let _selectedSecondaryAccounts = [];
 
 async function openProjectFormModal(name) {
   _editingProjectName = name || null;
@@ -203,9 +205,9 @@ async function openProjectFormModal(name) {
   nameInput.disabled = !!name;
 
   // 填充账号下拉
-  const accounts = (await fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => []));
+  _projectAccountsCache = (await fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => []));
   const sel = document.getElementById('project-form-account');
-  sel.innerHTML = accounts.map(a =>
+  sel.innerHTML = _projectAccountsCache.map(a =>
     `<option value="${esc(a.name)}">${esc(a.name)} (${a.type})</option>`
   ).join('');
 
@@ -221,10 +223,11 @@ async function openProjectFormModal(name) {
       document.getElementById('project-form-ide-auth').value = project.ide_auth || 'none';
       document.getElementById('project-form-ide-remote').checked = !!project.ide_remote;
       document.getElementById('project-form-docker-socket').value = project.docker_socket || '';
+      _selectedSecondaryAccounts = [...(project.secondary_accounts || [])];
     }
   } else {
     nameInput.value = '';
-    sel.value = accounts[0]?.name || '';
+    sel.value = _projectAccountsCache[0]?.name || '';
     document.getElementById('project-form-path').value = '';
     document.getElementById('project-form-active').checked = true;
     document.getElementById('project-form-ide-enabled').checked = false;
@@ -232,10 +235,68 @@ async function openProjectFormModal(name) {
     document.getElementById('project-form-ide-auth').value = 'none';
     document.getElementById('project-form-ide-remote').checked = false;
     document.getElementById('project-form-docker-socket').value = '';
+    _selectedSecondaryAccounts = [];
   }
   toggleProjectIdePort();
+  renderSecondaryAccountPicker();
+  renderProjectSecondaryAccountsRows();
 
   document.getElementById('project-form-modal').style.display = '';
+}
+
+function onProjectAccountChanged() {
+  const primaryAccount = document.getElementById('project-form-account').value;
+  _selectedSecondaryAccounts = _selectedSecondaryAccounts.filter(n => n !== primaryAccount);
+  renderSecondaryAccountPicker();
+  renderProjectSecondaryAccountsRows();
+}
+
+function renderSecondaryAccountPicker() {
+  const picker = document.getElementById('project-form-secondary-account-picker');
+  const primaryAccount = document.getElementById('project-form-account').value;
+  const primaryType = _projectAccountsCache.find(a => a.name === primaryAccount)?.type;
+  const selectedTypes = new Set(
+    _selectedSecondaryAccounts.map(n => _projectAccountsCache.find(a => a.name === n)?.type)
+  );
+  // 同一项目不能绑定两个相同类型的账号：候选列表按 TYPE 过滤，排除主账号类型及已选从账号的类型
+  const candidates = _projectAccountsCache.filter(a => a.type !== primaryType && !selectedTypes.has(a.type));
+  picker.innerHTML = candidates.map(a =>
+    `<option value="${esc(a.name)}">${esc(a.name)} (${a.type})</option>`
+  ).join('');
+}
+
+function renderProjectSecondaryAccountsRows() {
+  const container = document.getElementById('project-form-secondary-accounts-rows');
+  if (!_selectedSecondaryAccounts.length) {
+    container.innerHTML = '<div style="color:var(--text-3);font-size:12px;padding:2px 0">未绑定从账号</div>';
+    return;
+  }
+  container.innerHTML = _selectedSecondaryAccounts.map(name => {
+    const acc = _projectAccountsCache.find(a => a.name === name);
+    return `
+      <div class="secondary-account-row">
+        <span class="secondary-account-name" title="${esc(name)}">
+          ${esc(name)}
+          ${acc ? `<span class="secondary-account-type">${esc(acc.type)}</span>` : ''}
+        </span>
+        <button type="button" class="btn danger secondary-account-remove" title="移除从账号" onclick="removeProjectSecondaryAccountRow('${esc(name)}')">×</button>
+      </div>`;
+  }).join('');
+}
+
+function addProjectSecondaryAccount() {
+  const picker = document.getElementById('project-form-secondary-account-picker');
+  const name = picker.value;
+  if (!name || _selectedSecondaryAccounts.includes(name)) return;
+  _selectedSecondaryAccounts.push(name);
+  renderSecondaryAccountPicker();
+  renderProjectSecondaryAccountsRows();
+}
+
+function removeProjectSecondaryAccountRow(name) {
+  _selectedSecondaryAccounts = _selectedSecondaryAccounts.filter(n => n !== name);
+  renderSecondaryAccountPicker();
+  renderProjectSecondaryAccountsRows();
 }
 
 function closeProjectFormModal(event) {
@@ -271,8 +332,8 @@ async function saveProjectForm() {
       method: isEdit ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(isEdit
-        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket }
-        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket }),
+        ? { account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket, secondary_accounts: _selectedSecondaryAccounts }
+        : { name, account, path, active, ide_enabled: ideEnabled, ide_port: idePort, ide_auth: ideAuth, ide_remote: ideRemote, docker_socket: dockerSocket, secondary_accounts: _selectedSecondaryAccounts }),
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) { showProjectFormMsg(data.detail || '保存失败', 'error'); return; }

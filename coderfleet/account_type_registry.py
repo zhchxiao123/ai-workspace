@@ -363,6 +363,21 @@ def env_auth_type_ids() -> list[str]:
     return [t for t, s in ACCOUNT_TYPES.items() if s.supports_env_auth]
 
 
+def duplicate_account_types(account_types: list[str]) -> list[str]:
+    """返回 account_types 中重复出现的 TYPE 值（去重，保持首次重复出现的顺序）。
+
+    用于校验一个项目绑定的账号集合（主账号 + 从账号）：每种 TYPE 在容器内
+    只有一个固定挂载路径，同一项目不能绑定两个相同 TYPE 的账号。
+    """
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for t in account_types:
+        if t in seen and t not in dupes:
+            dupes.append(t)
+        seen.add(t)
+    return dupes
+
+
 # ── AccountType 枚举（从注册表自动派生，勿手动编辑）───────────
 # 与 class AccountType(str, Enum) 等价，支持 AccountType.claude 等属性访问。
 
