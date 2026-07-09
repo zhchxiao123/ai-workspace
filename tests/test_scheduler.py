@@ -22,10 +22,12 @@ from coderfleet.server.models import (
     Project,
     Schedule,
     ScheduleType,
+    NodeExecution,
     Task,
     TaskStatus,
     TemplateNode,
     WorkflowNodeState,
+    WorkflowRun,
 )
 from coderfleet.server.scheduler import Scheduler
 
@@ -411,6 +413,35 @@ def test_blocked_board_card_recovers_to_running_on_retry(tmp_path: Path) -> None
     sched._sync_board_card_for_task(retry)
 
     assert sched.get_board_card(card.id).status == BoardCardStatus.running
+
+
+def test_update_workflow_node_appends_attempt_history(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    run = WorkflowRun(
+        id="wr-1",
+        legacy_pipeline_id="pipe-1",
+        node_executions=[NodeExecution(node_id="a", name="build")],
+    )
+    run.save(sched.workflow_runs_dir)
+
+    # 第一次失败尝试
+    sched._update_workflow_node(
+        "pipe-1", "a",
+        state=WorkflowNodeState.running,
+        append_attempt={"task_id": "t1", "state": "failed", "finished_at": "2026-07-10T10:00:00"},
+    )
+    # 第二次尝试成功
+    sched._update_workflow_node(
+        "pipe-1", "a",
+        state=WorkflowNodeState.succeeded,
+        append_attempt={"task_id": "t2", "state": "succeeded", "finished_at": "2026-07-10T10:05:00"},
+    )
+
+    reloaded = sched.get_workflow_run_by_legacy_pipeline_id("pipe-1")
+    node = reloaded.node_executions[0]
+    assert node.state == WorkflowNodeState.succeeded
+    assert [a["task_id"] for a in node.attempts] == ["t1", "t2"]
+    assert node.attempts[0]["state"] == "failed"
 
 
 def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> None:
