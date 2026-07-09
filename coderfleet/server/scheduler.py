@@ -2812,10 +2812,14 @@ class Scheduler:
         run = self.get_workflow_run_by_legacy_pipeline_id(pipeline_id)
         if run is None or run.legacy_pipeline_id != pipeline_id:
             return
+        # append_attempt 追加一条尝试记录（不覆盖），用于前端展示重试历史
+        attempt = updates.pop("append_attempt", None)
         for node in run.node_executions:
             if node.node_id == node_id:
                 for key, value in updates.items():
                     setattr(node, key, value)
+                if attempt is not None:
+                    node.attempts.append(attempt)
                 break
         run.updated = datetime.now().isoformat(timespec="seconds")
         run.save(self.workflow_runs_dir)
@@ -3604,16 +3608,26 @@ class Scheduler:
                             node_outputs[node.node_id] = ""
                             node_output = ""
                         succeeded_nodes.add(node.node_id)
+                        _now = datetime.now().isoformat(timespec="seconds")
                         self._update_workflow_node(
                             pipeline_id, node.node_id,
                             state=WorkflowNodeState.succeeded,
                             outputs={"text": node_output},
-                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            finished_at=_now,
                             error_message="",
+                            append_attempt={"task_id": task.id, "state": "succeeded", "finished_at": _now},
                         )
                         break
 
-                    # Task failed / killed — retry logic
+                    # Task failed / killed — 记录本次失败尝试后再决定是否重试
+                    self._update_workflow_node(
+                        pipeline_id, node.node_id,
+                        append_attempt={
+                            "task_id": task.id,
+                            "state": final_status.value,
+                            "finished_at": datetime.now().isoformat(timespec="seconds"),
+                        },
+                    )
                     if attempt < max_retries:
                         attempt += 1
                         print(

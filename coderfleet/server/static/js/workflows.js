@@ -714,7 +714,10 @@ async function _openWorkflowDetail(taskId) {
     ]);
     const dur = fmtDuration(task.created, task.finished);
     const nodeRun = pipeline?.node_runs?.find(n => n.task_id === taskId);
-    const outputText = outputData?.text || '';
+    const nodeExecFull = pipeline?.node_executions?.find(n => n.task_id === taskId);
+    // 节点输出优先取任务实时输出，回退到 WorkflowRun 保存的节点输出
+    const outputText = outputData?.text || nodeExecFull?.outputs?.text || '';
+    const attemptsHtml = _renderAttemptHistory(nodeExecFull);
 
     const canRetry = task.status === 'failed' || task.status === 'killed';
     const outputHtml = (task.status === 'done' && outputText) ? `
@@ -753,6 +756,7 @@ async function _openWorkflowDetail(taskId) {
         </div>
         <button class="close-btn" onclick="closeWorkflowDetail()">✕</button>
       </div>
+      ${attemptsHtml}
       ${outputHtml}
       <div style="flex:1;overflow:auto;min-height:0" id="workflow-log-content"></div>`;
 
@@ -764,6 +768,29 @@ async function _openWorkflowDetail(taskId) {
   } catch (e) {
     detail.innerHTML = `<div style="padding:16px;color:var(--red)">加载失败：${esc(e.message)}</div>`;
   }
+}
+
+// 渲染节点的重试历史（每次尝试的 task_id、状态、时间）。仅在有多次尝试时显示。
+function _renderAttemptHistory(nodeExec) {
+  const attempts = nodeExec?.attempts || [];
+  if (attempts.length <= 1) return '';
+  const rows = attempts.map((a, i) => {
+    const st = a.state || 'unknown';
+    const cls = ({ succeeded: 'done', failed: 'failed', killed: 'killed' })[st] || 'pending';
+    const when = a.finished_at ? a.finished_at.replace('T', ' ') : '';
+    return `<div style="display:flex;gap:8px;align-items:center;font-size:11px;padding:3px 0">
+      <span style="color:var(--text-3);width:36px;flex-shrink:0">#${i + 1}</span>
+      <span class="status-dot ${cls}">${statusLabel(cls)}</span>
+      <span style="color:var(--text-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.task_id || '')}</span>
+      <span style="color:var(--text-3);flex-shrink:0">${esc(when)}</span>
+    </div>`;
+  }).join('');
+  return `<div class="workflow-output-section">
+    <div class="workflow-output-header" style="cursor:default">
+      <span style="font-size:11px;font-weight:600;color:var(--text-2)">重试历史（${attempts.length} 次尝试）</span>
+    </div>
+    <div style="padding:4px 8px 8px">${rows}</div>
+  </div>`;
 }
 
 function _toggleOutputSection() {
