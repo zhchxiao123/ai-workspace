@@ -356,6 +356,63 @@ def test_board_card_status_follows_task_lifecycle_conservatively(tmp_path: Path)
     assert sched.get_board_card(card.id).status == BoardCardStatus.review
 
 
+def _running_card_with_task(sched: Scheduler, tmp_path: Path) -> tuple:
+    board = sched.create_board("开发专题", "repo")
+    card = sched.create_board_card(board.id, title="看板 MVP", status=BoardCardStatus.planned)
+    task = Task(
+        id="task-1",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.codex,
+        prompt="implement board",
+        project=str(tmp_path / "repo"),
+        project_name="repo",
+        board_card_id=card.id,
+    )
+    task.save(sched.tasks_dir)
+    sched.add_task_to_board_card(card.id, task.id)
+    assert sched.get_board_card(card.id).status == BoardCardStatus.running
+    return card, task
+
+
+@pytest.mark.parametrize("terminal_status", [TaskStatus.failed, TaskStatus.killed])
+def test_board_card_moves_to_blocked_when_task_fails_or_is_killed(
+    tmp_path: Path, terminal_status: TaskStatus
+) -> None:
+    sched = Scheduler(tmp_path)
+    card, task = _running_card_with_task(sched, tmp_path)
+
+    task.update_status(terminal_status, sched.tasks_dir)
+    sched._sync_board_card_for_task(task)
+
+    assert sched.get_board_card(card.id).status == BoardCardStatus.blocked
+
+
+def test_blocked_board_card_recovers_to_running_on_retry(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    card, task = _running_card_with_task(sched, tmp_path)
+
+    task.update_status(TaskStatus.failed, sched.tasks_dir)
+    sched._sync_board_card_for_task(task)
+    assert sched.get_board_card(card.id).status == BoardCardStatus.blocked
+
+    # 重试：新任务开始运行，卡片自动从 blocked 恢复到 running
+    retry = Task(
+        id="task-2",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.codex,
+        prompt="retry board",
+        project=str(tmp_path / "repo"),
+        project_name="repo",
+        board_card_id=card.id,
+    )
+    retry.save(sched.tasks_dir)
+    sched._sync_board_card_for_task(retry)
+
+    assert sched.get_board_card(card.id).status == BoardCardStatus.running
+
+
 def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
     board = sched.create_board("开发专题", "repo")

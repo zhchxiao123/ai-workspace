@@ -4,6 +4,7 @@ const BOARD_COLUMNS = [
   { id: 'running', label: '执行中' },
   { id: 'review', label: '待验收' },
   { id: 'done', label: '已完成' },
+  { id: 'blocked', label: '受阻' },
   { id: 'parked', label: '已搁置' },
 ];
 

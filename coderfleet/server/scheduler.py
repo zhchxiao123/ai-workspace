@@ -906,11 +906,20 @@ class Scheduler:
         if task.status in (TaskStatus.pending, TaskStatus.scheduled) and card.status == BoardCardStatus.planned:
             card.status = BoardCardStatus.todo
             changed = True
-        elif task.status == TaskStatus.running and card.status in (BoardCardStatus.planned, BoardCardStatus.todo):
+        elif task.status == TaskStatus.running and card.status in (
+            BoardCardStatus.planned, BoardCardStatus.todo, BoardCardStatus.blocked
+        ):
+            # blocked → running：重试的新任务开始运行时自动恢复
             card.status = BoardCardStatus.running
             changed = True
         elif task.status == TaskStatus.done and card.status == BoardCardStatus.running:
             card.status = BoardCardStatus.review
+            changed = True
+        elif task.status in (TaskStatus.failed, TaskStatus.killed) and card.status in (
+            BoardCardStatus.planned, BoardCardStatus.todo, BoardCardStatus.running
+        ):
+            # 关联任务失败/终止：卡片进入 blocked，等待人工重试或放行
+            card.status = BoardCardStatus.blocked
             changed = True
 
         if changed:
