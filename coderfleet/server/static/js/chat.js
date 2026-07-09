@@ -801,7 +801,7 @@ async function renderEmptyChatState() {
     <div class="chat-viewport-wrap">
       <div class="chat-main-viewport" id="chat-viewport">
         <div id="chat-content">
-          <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发</div>
+          <div class="empty" style="margin-top: 60px;">输入第一条指令，开始与 AI 结对开发<br><span style="font-size:12px;color:var(--text-3)">连续对话会以任务链形式共享上下文；需要并行/条件编排请用「工作流」</span></div>
         </div>
       </div>
       <button id="scroll-to-bottom-btn" class="scroll-to-bottom-btn" onclick="scrollToBottomAndResume()" title="跳到底部，继续跟随输出">

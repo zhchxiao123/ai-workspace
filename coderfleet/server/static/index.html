@@ -437,6 +437,7 @@
             <button class="wf-tab active" id="wf-tab-templates" onclick="switchWfTab('templates')">模板库</button>
             <button class="wf-tab"        id="wf-tab-runs"      onclick="switchWfTab('runs')">运行记录</button>
           </div>
+          <div class="section-subtitle" style="padding:0 4px 8px">声明式 DAG 编排：模板定义流程、运行记录执行；含条件分支、人工审批与重试。串行多步请用「AI 对话」的任务链。</div>
 
           <!-- 运行记录（原 Pipeline DAG 视图） -->
           <div class="wf-panel" id="wf-panel-runs" style="display:none">
@@ -594,7 +595,8 @@
               <div class="digest-scroll-body" id="digest-scroll-body">
                 <div class="empty digest-placeholder">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".3"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h2M8 17h5"/></svg>
-                  <p>从左侧日历选择一个日期</p>
+                  <p>按天汇总任务的完成/失败、Token 与成本，并可生成 AI 摘要</p>
+                  <p style="font-size:12px;color:var(--text-3)">从左侧日历选择一个有任务活动的日期查看当日日报</p>
                 </div>
               </div>
             </div>
