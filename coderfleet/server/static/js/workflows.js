@@ -164,7 +164,36 @@ function _workflowStateToTaskStatus(state) {
     failed: 'failed',
     skipped: 'killed',
     cancelled: 'killed',
+    waiting_approval: 'running',
   })[state] || 'pending';
+}
+
+// 节点真实执行状态 → DAG 视觉类名 + 文案。
+// 优先使用 WorkflowRun.node_executions[].state（八态状态机）；
+// 无节点态的 legacy 运行回退到 task.status。
+const WF_NODE_STATE_META = {
+  // WorkflowNodeState（后端权威状态机）
+  pending:          { cls: 'pending',          label: '待执行' },
+  waiting_deps:     { cls: 'scheduled',        label: '等待依赖' },
+  running:          { cls: 'running',          label: '运行中' },
+  succeeded:        { cls: 'done',             label: '成功' },
+  failed:           { cls: 'failed',           label: '失败' },
+  skipped:          { cls: 'skipped',          label: '已跳过' },
+  cancelled:        { cls: 'killed',           label: '已取消' },
+  waiting_approval: { cls: 'waiting-approval', label: '待批准' },
+  // legacy TaskStatus 回退
+  scheduled:        { cls: 'scheduled',        label: '定时中' },
+  done:             { cls: 'done',             label: '成功' },
+  killed:           { cls: 'killed',           label: '已终止' },
+};
+
+// 取一个 DAG 节点（可能是真实 task，也可能是 workflow 合成节点）的权威状态键。
+function _dagNodeState(t) {
+  return t.workflow_node_state || t.status || 'pending';
+}
+
+function _dagStateMeta(state) {
+  return WF_NODE_STATE_META[state] || { cls: (state || 'pending'), label: statusLabel(state) };
 }
 
 function _workflowNodeDomId(nodeId) {
@@ -349,11 +378,13 @@ function renderDag(pipeline, tasks) {
     const nodeTitle = nodeRun?.node_name || prompt;
     const nodeSubtitle = nodeRun?.node_name ? prompt : '';
     const projectLabel = nodeRun?.resolved_project || t.project_name || t.project.split('/').pop();
-    const dur = t.finished
+    const state = _dagNodeState(t);
+    const meta = _dagStateMeta(state);
+    const dur = (t.finished && state !== 'skipped')
       ? fmtDuration(t.created, t.finished)
-      : t.status === 'running' ? '运行中' : statusLabel(t.status);
+      : state === 'running' ? '运行中' : meta.label;
 
-    return `<div class="dag-node dag-status-${t.status}${isSelected ? ' dag-selected' : ''}"
+    return `<div class="dag-node dag-status-${meta.cls}${isSelected ? ' dag-selected' : ''}"
         id="dag-node-${esc(t.id)}"
         style="left:${pos.x}px;top:${pos.y}px;width:${DAG_NODE_W}px"
         onclick="selectDagNode('${esc(t.id)}')">
@@ -392,14 +423,16 @@ function _patchDagNode(task, pipeline) {
   const nodeEl = document.getElementById(`dag-node-${task.id}`);
   if (!nodeEl) return false;
   const isSelected = workflowSelectedTaskId === task.id;
-  const newClass = `dag-node dag-status-${task.status}${isSelected ? ' dag-selected' : ''}`;
+  const state = _dagNodeState(task);
+  const meta = _dagStateMeta(state);
+  const newClass = `dag-node dag-status-${meta.cls}${isSelected ? ' dag-selected' : ''}`;
   if (nodeEl.className !== newClass) nodeEl.className = newClass;
   // 更新 footer 时长/状态文本
   const durEl = nodeEl.querySelector('.dag-node-footer span:last-child');
   if (durEl) {
-    durEl.textContent = task.finished
+    durEl.textContent = (task.finished && state !== 'skipped')
       ? fmtDuration(task.created, task.finished)
-      : task.status === 'running' ? '运行中' : statusLabel(task.status);
+      : state === 'running' ? '运行中' : meta.label;
   }
   return true;
 }
