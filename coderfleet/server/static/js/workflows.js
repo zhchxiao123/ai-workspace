@@ -34,6 +34,7 @@ async function loadWorkflows() {
       fetch(`${API}/api/tasks?limit=300`).then(r => r.json()).catch(() => []),
     ]);
     const templatePipelines = pipelines.filter(p => p.template_id);
+    _notifyNewApprovals(templatePipelines);
     pipelinesCache     = templatePipelines;
     workflowTasksCache = tasks;
     renderPipelineList(templatePipelines, tasks);
@@ -196,6 +197,42 @@ function _dagStateMeta(state) {
   return WF_NODE_STATE_META[state] || { cls: (state || 'pending'), label: statusLabel(state) };
 }
 
+// 记录上一轮各 run 的状态，用于检测「新进入待审批」的跃迁并提示用户。
+const _wfRunStatusSeen = new Map();
+
+function _notifyNewApprovals(runs) {
+  for (const r of runs) {
+    const prev = _wfRunStatusSeen.get(r.id);
+    if (r.status === 'waiting_approval' && prev !== 'waiting_approval') {
+      _wfToast(`工作流「${r.name || r.id}」等待人工批准`, r.id);
+    }
+    _wfRunStatusSeen.set(r.id, r.status);
+  }
+}
+
+// 轻量浮层提示（点击可跳转到对应 run）。
+function _wfToast(message, runId) {
+  let host = document.getElementById('wf-toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'wf-toast-host';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.className = 'wf-toast';
+  el.innerHTML = `<span>⏸ ${esc(message)}</span>`;
+  el.onclick = () => { if (runId) openPipeline(runId); el.remove(); };
+  host.appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
+// 特殊状态在节点上的醒目标记（待批准 / 已跳过）。
+function _dagNodeFlag(state) {
+  if (state === 'waiting_approval') return '<div class="dag-node-flag dag-flag-approval">⏸ 待批准</div>';
+  if (state === 'skipped') return '<div class="dag-node-flag dag-flag-skipped">⤳ 已跳过</div>';
+  return '';
+}
+
 function _workflowNodeDomId(nodeId) {
   return `node:${nodeId}`;
 }
@@ -344,6 +381,7 @@ function renderDag(pipeline, tasks) {
 
   const { positions, canvasW, canvasH } = _computeDagLayout(tasks);
   const taskMap = new Map(tasks.map(t => [t.id, t]));
+  const stateById = new Map(tasks.map(t => [t.id, _dagNodeState(t)]));
   const W = Math.max(canvasW, 480);
   const H = Math.max(canvasH, 320);
 
@@ -365,7 +403,10 @@ function renderDag(pipeline, tasks) {
     const fx = fp.x + DAG_NODE_W / 2, fy = fp.y + DAG_NODE_H;
     const tx = tp.x + DAG_NODE_W / 2, ty = tp.y;
     const mid = (fy + ty) / 2;
-    return `<path class="dag-edge" d="M${fx},${fy} C${fx},${mid} ${tx},${mid} ${tx},${ty}"/>`;
+    // 通向被跳过节点的边：虚线弱化，直观呈现未走的分支
+    const skipped = stateById.get(to) === 'skipped';
+    const cls = skipped ? 'dag-edge dag-edge-skipped' : 'dag-edge';
+    return `<path class="${cls}" d="M${fx},${fy} C${fx},${mid} ${tx},${mid} ${tx},${ty}"/>`;
   }).join('');
 
   // 节点 HTML
@@ -383,7 +424,6 @@ function renderDag(pipeline, tasks) {
     const dur = (t.finished && state !== 'skipped')
       ? fmtDuration(t.created, t.finished)
       : state === 'running' ? '运行中' : meta.label;
-
     return `<div class="dag-node dag-status-${meta.cls}${isSelected ? ' dag-selected' : ''}"
         id="dag-node-${esc(t.id)}"
         style="left:${pos.x}px;top:${pos.y}px;width:${DAG_NODE_W}px"
@@ -395,6 +435,7 @@ function renderDag(pipeline, tasks) {
       </div>
       <div class="dag-node-prompt">${esc(nodeTitle)}</div>
       ${nodeSubtitle ? `<div style="font-size:10px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:-2px">${esc(nodeSubtitle)}</div>` : ''}
+      <div class="dag-node-flags">${_dagNodeFlag(state)}</div>
       <div class="dag-node-footer">
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%">${esc(projectLabel)}</span>
         <span style="flex-shrink:0">${dur}</span>
@@ -427,6 +468,12 @@ function _patchDagNode(task, pipeline) {
   const meta = _dagStateMeta(state);
   const newClass = `dag-node dag-status-${meta.cls}${isSelected ? ' dag-selected' : ''}`;
   if (nodeEl.className !== newClass) nodeEl.className = newClass;
+  // 同步特殊状态标记（待批准 / 已跳过）
+  const flagsEl = nodeEl.querySelector('.dag-node-flags');
+  if (flagsEl) {
+    const flag = _dagNodeFlag(state);
+    if (flagsEl.innerHTML !== flag) flagsEl.innerHTML = flag;
+  }
   // 更新 footer 时长/状态文本
   const durEl = nodeEl.querySelector('.dag-node-footer span:last-child');
   if (durEl) {
@@ -650,7 +697,13 @@ async function _openWorkflowDetail(taskId) {
           </div>
           <button class="close-btn" onclick="closeWorkflowDetail()">✕</button>
         </div>
-        <div style="padding:14px;font-size:12px;color:var(--text-3)">底层任务尚未创建。节点进入运行后会在这里显示日志和输出。</div>`;
+        ${nodeExec.state === 'waiting_approval' ? `
+        <div style="padding:14px">
+          <div style="font-size:12px;color:var(--yellow,#e0a53f);font-weight:600;margin-bottom:6px">⏸ 工作流已暂停于此审批节点，等待人工批准</div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:10px">批准后，下游节点将继续执行。</div>
+          <button class="btn primary" onclick="approveWorkflowRun()">✓ 批准继续</button>
+        </div>` : `
+        <div style="padding:14px;font-size:12px;color:var(--text-3)">底层任务尚未创建。节点进入运行后会在这里显示日志和输出。</div>`}`;
       return;
     }
 
