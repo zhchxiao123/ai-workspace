@@ -41,6 +41,7 @@ class BoardCardStatus(str, Enum):
     review     = "review"
     done       = "done"
     parked     = "parked"
+    blocked    = "blocked"   # 关联任务失败/终止，等待人工介入
 
 
 # AccountType 从账号类型注册表自动派生，添加新类型只需编辑注册表。
