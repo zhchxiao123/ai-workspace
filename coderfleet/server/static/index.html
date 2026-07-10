@@ -710,7 +710,6 @@
         </div>
         <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
           <button class="btn primary" id="resume-btn" onclick="resumeCurrentTask()" style="display:none">续接任务</button>
-          <button class="btn" id="spawn-btn" onclick="spawnSubtaskFromLog()" style="display:none">派生子任务</button>
           <button class="btn danger" id="kill-btn" onclick="killCurrentTask()" style="display:none">终止</button>
           <button class="btn" id="follow-btn" onclick="toggleFollow()" aria-label="切换日志跟踪">
             <span aria-hidden="true" id="follow-icon">▶</span><span>跟踪</span>
@@ -748,55 +747,6 @@
     </div>
   </div>
 
-  <!-- 统一添加任务弹窗（用于从日志派生子任务 / 手动流水线） -->
-  <div class="modal-backdrop" id="add-task-modal" style="display:none" onclick="closeAddTaskModal(event)">
-    <div class="modal-sm" onclick="event.stopPropagation()">
-      <div class="section-head">
-        <div>
-          <div class="modal-title" id="add-task-modal-title">添加任务</div>
-          <div class="section-subtitle" id="add-task-modal-subtitle"></div>
-        </div>
-        <button class="btn" onclick="closeAddTaskModal()">关闭</button>
-      </div>
-      <input type="hidden" id="add-task-pipeline-id">
-      <input type="hidden" id="add-task-parent-id">
-      <!-- 仅当从日志模态框进入、且任务未在工作流中时显示 -->
-      <div id="add-task-pipeline-group" style="display:none">
-        <div class="form-group">
-          <label>加入工作流</label>
-          <select id="add-task-pipeline-sel" onchange="onAddTaskPipelineChange()">
-            <option value="__new__">-- 新建工作流 --</option>
-          </select>
-        </div>
-        <div class="form-group" id="add-task-new-pipeline-name-group">
-          <label>工作流名称</label>
-          <input id="add-task-new-pipeline-name" type="text" placeholder="例如：实现登录+代码审查">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>执行账号（项目）*</label>
-        <select id="add-task-project"><option value="">选择项目</option></select>
-      </div>
-      <div class="form-group">
-        <label>任务描述 *</label>
-        <textarea id="add-task-prompt" placeholder="描述要 AI 完成的任务..." rows="3"></textarea>
-      </div>
-      <div class="form-group" id="add-task-deps-group" style="display:none">
-        <label>前置依赖（等下列任务完成后再执行，可多选）</label>
-        <div id="add-task-deps-list" style="display:flex;flex-direction:column;gap:5px;margin-top:6px"></div>
-      </div>
-      <div class="form-group">
-        <div class="toggle-row">
-          <input type="checkbox" id="add-task-auto" checked>
-          <label for="add-task-auto" style="margin:0;cursor:pointer">全自动模式</label>
-        </div>
-      </div>
-      <div class="flex gap-8">
-        <button class="btn primary" id="add-task-submit-btn" onclick="submitAddTask()">添加任务</button>
-        <button class="btn" onclick="closeAddTaskModal()">取消</button>
-      </div>
-    </div>
-  </div>
 
   <!-- 运行模板弹窗 -->
   <div class="modal-backdrop" id="run-template-modal" style="display:none" onclick="closeRunTemplateModal(event)">

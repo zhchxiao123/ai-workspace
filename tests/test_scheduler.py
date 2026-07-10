@@ -516,6 +516,20 @@ def test_update_board_card_enforces_single_ref_xor(tmp_path: Path) -> None:
     assert card.conversation_id == "conv-1" and card.pipeline_id == ""
 
 
+def test_backfills_workflow_run_for_legacy_pipeline(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    # legacy 手动流水线（无模板、无 node_runs）
+    Pipeline(id="pipe-legacy", name="旧手动流水线").save(sched.pipelines_dir)
+
+    runs = sched.list_workflow_runs()
+
+    # 已持久化对应 WorkflowRun 文件，且可经 API 查看
+    assert (sched.workflow_runs_dir / "pipe-legacy.json").exists()
+    persisted = WorkflowRun.load(sched.workflow_runs_dir / "pipe-legacy.json")
+    assert persisted.legacy_pipeline_id == "pipe-legacy"
+    assert any(r.legacy_pipeline_id == "pipe-legacy" for r in runs)
+
+
 def test_extract_native_session_id_from_codex_jsonl() -> None:
     assert Scheduler.extract_native_session_id(
         AccountType.codex,

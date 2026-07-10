@@ -14,7 +14,6 @@ async function openLogModal(taskId) {
   resetLogSummary();
   document.getElementById('kill-btn').style.display = 'none';
   document.getElementById('resume-btn').style.display = 'none';
-  document.getElementById('spawn-btn').style.display = 'none';
   setFollowButton(false);
 
   // 初始化 renderer
@@ -38,7 +37,6 @@ async function openLogModal(taskId) {
 
     if (task.status === 'running') document.getElementById('kill-btn').style.display = '';
     if (task.conversation_id || task.native_session_id) document.getElementById('resume-btn').style.display = '';
-    if (task.status === 'done' || task.status === 'running') document.getElementById('spawn-btn').style.display = '';
 
     renderer.render(logText, task.type);
     scrollChatToBottom();

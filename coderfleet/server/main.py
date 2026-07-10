@@ -2096,14 +2096,9 @@ async def list_logical_projects():
 
 # ── Pipeline CRUD ─────────────────────────────────────────
 
-class PipelineCreateRequest(BaseModel):
-    name:         str
-    project_name: str = ""
-    task_ids:     list[str] = []
-
-
-class PipelineAddTaskRequest(BaseModel):
-    task_id: str
+# NOTE: v1「手动创建流水线 / 手动加任务」端点已下线（见 #17）。
+# 工作流一律经模板运行产生 WorkflowRun；下方仅保留只读/删除/恢复端点以兼容历史数据。
+# 执行引擎脱离 Pipeline 并删除模型类的工作见 #28。
 
 
 @app.get("/api/pipelines", response_model=list[PipelineResponse])
@@ -2116,32 +2111,11 @@ async def list_pipelines():
     ]
 
 
-@app.post("/api/pipelines", response_model=PipelineResponse, status_code=201)
-async def create_pipeline(req: PipelineCreateRequest):
-    pipeline = scheduler.create_pipeline(
-        name         = req.name,
-        task_ids     = req.task_ids,
-        project_name = req.project_name,
-    )
-    return PipelineResponse.from_pipeline(pipeline)
-
-
 @app.get("/api/pipelines/{pipeline_id}", response_model=PipelineResponse)
 async def get_pipeline(pipeline_id: str):
     pipeline = scheduler.get_pipeline(pipeline_id)
     if pipeline is None:
         raise HTTPException(status_code=404, detail=f"工作流 '{pipeline_id}' 不存在")
-    all_tasks = {t.id: t for t in scheduler.list_tasks()}
-    tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
-    return PipelineResponse.from_pipeline(pipeline, tasks)
-
-
-@app.post("/api/pipelines/{pipeline_id}/tasks", response_model=PipelineResponse)
-async def add_task_to_pipeline(pipeline_id: str, req: PipelineAddTaskRequest):
-    try:
-        pipeline = scheduler.add_task_to_pipeline(pipeline_id, req.task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
     all_tasks = {t.id: t for t in scheduler.list_tasks()}
     tasks = [all_tasks[tid] for tid in pipeline.task_ids if tid in all_tasks]
     return PipelineResponse.from_pipeline(pipeline, tasks)

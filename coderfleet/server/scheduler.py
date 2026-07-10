@@ -85,6 +85,7 @@ class Scheduler:
         self._push_manager = None  # set by main.py after both are initialized
         self._last_auto_digest_date: str = ""
         self._board_migration_done = False  # 单一引用迁移只跑一次/进程
+        self._pipeline_migration_done = False  # Pipeline→WorkflowRun backfill 只跑一次/进程
 
     async def _notify(self, task: Task) -> None:
         if self._push_manager is None:
@@ -2672,7 +2673,32 @@ class Scheduler:
             return None
         return Pipeline.load(path)
 
+    def _migrate_pipelines_to_workflow_runs(self) -> None:
+        """
+        一次性 backfill（幂等）：为每个缺少对应 WorkflowRun 的历史 Pipeline
+        （含无模板的手动流水线）持久化一份 WorkflowRun，使全部历史运行都能经
+        /api/workflow-runs 持久查看。执行引擎脱离 Pipeline 的工作见 #28。
+        """
+        if self._pipeline_migration_done:
+            return
+        self._pipeline_migration_done = True
+        if not self.pipelines_dir.exists():
+            return
+        existing = {
+            r.legacy_pipeline_id
+            for r in WorkflowRun.load_all(self.workflow_runs_dir)
+            if r.legacy_pipeline_id
+        }
+        for pipeline in self.list_pipelines():
+            if pipeline.id in existing:
+                continue
+            try:
+                self._workflow_run_from_pipeline(pipeline).save(self.workflow_runs_dir)
+            except Exception:
+                continue
+
     def list_workflow_runs(self) -> list[WorkflowRun]:
+        self._migrate_pipelines_to_workflow_runs()
         runs = WorkflowRun.load_all(self.workflow_runs_dir)
         known_legacy_ids = {r.legacy_pipeline_id for r in runs if r.legacy_pipeline_id}
         for pipeline in self.list_pipelines():
