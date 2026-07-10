@@ -85,12 +85,21 @@ class JsonStore(Generic[T]):
         """目录下所有记录，按 mtime 倒序；损坏文件静默跳过。
 
         mtime+size 未变的文件直接用缓存的已解析记录，跳过读盘与 json.loads。
+        每个文件只 stat 一次（排序和缓存比对共用同一次 stat 结果），
+        文件量大时能省下一半的 stat 系统调用。
         """
         if not self._dir.exists():
             return []
+        entries: list[tuple[Path, os.stat_result]] = []
+        for p in self._dir.glob("*.json"):
+            try:
+                entries.append((p, p.stat()))
+            except FileNotFoundError:
+                continue
+        entries.sort(key=lambda e: e[1].st_mtime, reverse=True)
+
         out: list[T] = []
-        for p in sorted(self._dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-            st = p.stat()
+        for p, st in entries:
             cached = self._cache.get(p)
             if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
                 out.append(cached[2])
