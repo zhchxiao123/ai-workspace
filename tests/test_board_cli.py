@@ -79,3 +79,24 @@ def test_card_move(monkeypatch):
 def test_card_move_rejects_bad_status(monkeypatch):
     result = CliRunner().invoke(board_cmds.card_group, ["move", "bc-1", "nonsense"])
     assert result.exit_code != 0  # click.Choice 校验拦截
+
+
+def test_card_rm_deletes_with_confirmation(monkeypatch):
+    calls = {}
+    def fake_delete(url, **kw):
+        calls["url"] = url
+        return _FakeResp(status_code=204)
+    monkeypatch.setattr(httpx, "delete", fake_delete)
+    # 通过 stdin 传入 "y" 确认
+    result = CliRunner().invoke(board_cmds.card_group, ["rm", "bc-1"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert calls["url"].endswith("/api/board-cards/bc-1")
+    assert "已删除" in result.output
+
+
+def test_card_rm_aborts_without_confirmation(monkeypatch):
+    called = {"n": 0}
+    monkeypatch.setattr(httpx, "delete", lambda url, **kw: called.__setitem__("n", called["n"] + 1) or _FakeResp(204))
+    result = CliRunner().invoke(board_cmds.card_group, ["rm", "bc-1"], input="n\n")
+    assert result.exit_code != 0  # 用户取消
+    assert called["n"] == 0  # 未发起删除请求

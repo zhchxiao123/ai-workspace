@@ -749,23 +749,20 @@ class Scheduler:
             return None
         return Board.load(path)
 
-    def create_board(self, name: str, project_name: str = "") -> Board:
+    def create_board(self, name: str) -> Board:
         board = Board(
             id=self.new_board_id(),
             name=name.strip() or "开发看板",
-            project_name=project_name.strip(),
         )
         board.save(self.boards_dir)
         return board
 
-    def update_board(self, board_id: str, name: Optional[str] = None, project_name: Optional[str] = None) -> Board:
+    def update_board(self, board_id: str, name: Optional[str] = None) -> Board:
         board = self.get_board(board_id)
         if board is None:
             raise ValueError(f"看板 '{board_id}' 不存在")
         if name is not None:
             board.name = name.strip() or board.name
-        if project_name is not None:
-            board.project_name = project_name.strip()
         board.touch(self.boards_dir)
         return board
 
@@ -2881,7 +2878,6 @@ class Scheduler:
         run = WorkflowRun(
             id                 = self.new_workflow_run_id(),
             template_id        = tpl.id,
-            template_version   = 1,
             name               = pipeline.name,
             trigger_input      = pipeline.trigger_input,
             status             = "running",
@@ -3220,7 +3216,8 @@ class Scheduler:
 
         sorted_nodes = self._topo_sort_nodes(tpl.nodes)
         workspace_policy = (workspace_policy or "isolated").strip()
-        if workspace_policy not in {"isolated", "shared_ephemeral", "artifact_sync"}:
+        # artifact_sync 已下线（从未实现真正的目录同步，见 #20）；legacy 值回退为 isolated
+        if workspace_policy not in {"isolated", "shared_ephemeral"}:
             workspace_policy = "isolated"
         resolved_projects: dict[str, str] = {}
         for node in sorted_nodes:
@@ -3291,10 +3288,6 @@ class Scheduler:
             default_account = default_account,
             workspace_policy = workspace_policy,
         )
-        if workspace_policy == "artifact_sync":
-            artifact_dir = self.workspace_dir / "workflow_artifacts" / pipeline.id
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            pipeline.artifact_dir = str(artifact_dir.resolve())
         if workspace_policy == "shared_ephemeral":
             shared_conv = self._create_shared_workflow_conversation(pipeline, sorted_nodes, resolved_projects)
             pipeline.shared_conversation_id = shared_conv.id

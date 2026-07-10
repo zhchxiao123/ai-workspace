@@ -189,7 +189,6 @@ class Conversation(BaseModel):
 class Board(BaseModel):
     id:      str
     name:    str
-    project_name: str = ""
     created: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -417,7 +416,6 @@ class TaskHeartbeat(BaseModel):
 class BoardResponse(BaseModel):
     id:      str
     name:    str
-    project_name: str = ""
     created: str
     updated: str
 
@@ -426,7 +424,6 @@ class BoardResponse(BaseModel):
         return cls(
             id=b.id,
             name=b.name,
-            project_name=b.project_name,
             created=b.created,
             updated=b.updated,
         )
@@ -590,7 +587,7 @@ class Pipeline(BaseModel):
     project_map:     dict[str, str] = Field(default_factory=dict)
     default_project: str = ""
     default_account: str = ""
-    workspace_policy: str = "isolated"  # isolated | shared_ephemeral | artifact_sync
+    workspace_policy: str = "isolated"  # isolated | shared_ephemeral
     shared_conversation_id: str = ""
     artifact_dir: str = ""
     created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
@@ -1129,7 +1126,6 @@ class WorkflowRun(BaseModel):
     """
     id:                          str
     template_id:                 str = ""
-    template_version:            int = 1
     name:                        str = ""
     trigger_input:               str = ""
     status:                      str = "running"  # running | succeeded | failed | cancelled | partial | waiting_approval
@@ -1166,7 +1162,6 @@ class WorkflowRun(BaseModel):
 class WorkflowRunResponse(BaseModel):
     id:                          str
     template_id:                 str = ""
-    template_version:            int = 1
     name:                        str = ""
     trigger_input:               str = ""
     status:                      str = "running"
@@ -1220,7 +1215,6 @@ class WorkflowRunResponse(BaseModel):
         return cls(
             id                 = run.id,
             template_id        = run.template_id,
-            template_version   = run.template_version,
             name               = run.name,
             trigger_input      = run.trigger_input,
             status             = run.status,

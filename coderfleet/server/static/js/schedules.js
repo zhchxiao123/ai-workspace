@@ -445,7 +445,6 @@ function _initScheduleModal() {
         <select id="sched-workspace-policy" class="form-input">
           <option value="isolated">节点独立执行</option>
           <option value="shared_ephemeral">共享临时沙箱</option>
-          <option value="artifact_sync">Artifact 同步（预留）</option>
         </select>
       </div>
       <div class="form-group sched-task-field">
