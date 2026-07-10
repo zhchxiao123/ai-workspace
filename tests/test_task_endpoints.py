@@ -74,3 +74,17 @@ def test_list_tasks_without_conversation_id_returns_everything(
     ))
 
     assert {r.id for r in result} == {"t1", "t2"}
+
+
+def test_manual_pipeline_creation_endpoints_removed() -> None:
+    """v1 手动创建流水线/加任务端点已下线（见 #17）。"""
+    from coderfleet.server import main as m
+    post_paths = {
+        r.path for r in m.app.routes
+        if "POST" in getattr(r, "methods", set())
+    }
+    assert "/api/pipelines" not in post_paths
+    assert "/api/pipelines/{pipeline_id}/tasks" not in post_paths
+    # 只读/删除/恢复端点保留以兼容历史数据
+    all_paths = {r.path for r in m.app.routes}
+    assert "/api/pipelines" in all_paths  # GET 仍在

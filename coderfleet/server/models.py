@@ -573,6 +573,11 @@ class PipelineNodeRun(BaseModel):
 
 
 class Pipeline(BaseModel):
+    """
+    DEPRECATED（见 #17 / #28）：v1 工作流实体，现仅作为执行引擎的**内部状态载体**，
+    不再对用户暴露（手动创建/加任务的 API 与前端入口已下线）。用户侧一律使用
+    模板运行产生的 WorkflowRun。执行引擎脱离 Pipeline 并删除本类的工作见 #28。
+    """
     id:              str
     name:            str
     project_name:    str = ""
