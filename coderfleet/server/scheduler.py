@@ -84,6 +84,7 @@ class Scheduler:
         self._loop_task: Optional[asyncio.Task] = None
         self._push_manager = None  # set by main.py after both are initialized
         self._last_auto_digest_date: str = ""
+        self._board_migration_done = False  # 单一引用迁移只跑一次/进程
 
     async def _notify(self, task: Task) -> None:
         if self._push_manager is None:
@@ -775,7 +776,42 @@ class Scheduler:
         for card in self.list_board_cards(board_id=board_id, include_archived=True):
             self.delete_board_card(card.id)
 
+    def _migrate_board_cards_single_ref(self) -> None:
+        """
+        一次性迁移（幂等）：把 legacy 卡片的 task_ids 反向写入任务的 board_card_id，
+        并将卡片收敛为单一执行单元引用（pipeline_id XOR conversation_id）。迁移后
+        重写卡片文件以去除 task_ids。
+        """
+        if self._board_migration_done:
+            return
+        self._board_migration_done = True
+        if not self.board_cards_dir.exists():
+            return
+        import json as _json
+        for path in self.board_cards_dir.glob("*.json"):
+            try:
+                raw = _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            legacy_task_ids = raw.get("task_ids") or []
+            card_id = raw.get("id") or ""
+            has_both = bool(raw.get("pipeline_id")) and bool(raw.get("conversation_id"))
+            if not legacy_task_ids and not has_both:
+                continue  # 已是新结构，无需迁移
+            # 1) 反向指针：确保关联任务记录其归属卡片
+            for tid in legacy_task_ids:
+                task = self.get_task(tid)
+                if task is not None and getattr(task, "board_card_id", "") != card_id:
+                    task.board_card_id = card_id
+                    task.save(self.tasks_dir)
+            # 2) 收敛为单一引用（工作流优先），并重写文件去除 task_ids
+            card = BoardCard.load(path)
+            if card.pipeline_id and card.conversation_id:
+                card.conversation_id = ""
+            card.save(self.board_cards_dir)
+
     def list_board_cards(self, board_id: str = "", include_archived: bool = False) -> list[BoardCard]:
+        self._migrate_board_cards_single_ref()
         cards = BoardCard.load_all(self.board_cards_dir)
         self._reconcile_board_cards_from_tasks(cards)
         if board_id:
@@ -848,10 +884,15 @@ class Scheduler:
             card.status = status
         if priority is not None:
             card.priority = priority.strip() or card.priority
+        # 单一引用互斥：设置其一（非空）会清除另一个
         if conversation_id is not None:
             card.conversation_id = conversation_id.strip()
+            if card.conversation_id:
+                card.pipeline_id = ""
         if pipeline_id is not None:
             card.pipeline_id = pipeline_id.strip()
+            if card.pipeline_id:
+                card.conversation_id = ""
         if archived is not None:
             card.archived = archived
         card.touch(self.board_cards_dir)
@@ -867,19 +908,53 @@ class Scheduler:
         card = self.get_board_card(card_id)
         if card is None:
             raise ValueError(f"看板卡片 '{card_id}' 不存在")
-        if task_id not in card.task_ids:
-            card.task_ids.append(task_id)
         task = self.get_task(task_id)
         if task is not None:
-            if task.conversation_id and not card.conversation_id:
-                card.conversation_id = task.conversation_id
-            if task.pipeline_id and not card.pipeline_id:
-                card.pipeline_id = task.pipeline_id
-            if task.project_name and not card.project_name:
-                card.project_name = task.project_name
+            # 反向指针：任务记录其归属卡片，用于反查（卡片不再直接持有 task_ids）
+            if getattr(task, "board_card_id", "") != card_id:
+                task.board_card_id = card_id
+                task.save(self.tasks_dir)
             return self._sync_board_card_for_task(task, card)
         card.touch(self.board_cards_dir)
         return card
+
+    @staticmethod
+    def _establish_card_ref(card: BoardCard, task: Task) -> bool:
+        """
+        为卡片建立/校正「单一执行单元引用」：工作流运行(pipeline_id) 优先于会话(conversation_id)，
+        二者互斥。仅在卡片尚无引用时建立。返回是否发生变更。
+        """
+        if card.pipeline_id or card.conversation_id:
+            return False
+        if task.pipeline_id:
+            card.pipeline_id = task.pipeline_id
+            return True
+        if task.conversation_id:
+            card.conversation_id = task.conversation_id
+            return True
+        return False
+
+    def tasks_for_board_card(self, card: BoardCard) -> list[Task]:
+        """
+        反查卡片关联的任务：board_card_id 反向指针，或所指执行单元
+        （pipeline_id / conversation_id）下的任务。按创建时间排序、去重。
+        """
+        out: list[Task] = []
+        seen: set[str] = set()
+        for t in Task.load_all(self.tasks_dir):
+            match = (
+                getattr(t, "board_card_id", "") == card.id
+                or (card.pipeline_id and t.pipeline_id == card.pipeline_id)
+                or (card.conversation_id and t.conversation_id == card.conversation_id)
+            )
+            if match and t.id not in seen:
+                seen.add(t.id)
+                out.append(t)
+        out.sort(key=lambda t: t.created or "")
+        return out
+
+    def task_ids_for_board_card(self, card: BoardCard) -> list[str]:
+        return [t.id for t in self.tasks_for_board_card(card)]
 
     def _sync_board_card_for_task(self, task: Task, card: Optional[BoardCard] = None) -> Optional[BoardCard]:
         card_id = getattr(task, "board_card_id", "")
@@ -890,14 +965,8 @@ class Scheduler:
             return None
 
         changed = False
-        if task.id not in card.task_ids:
-            card.task_ids.append(task.id)
-            changed = True
-        if task.conversation_id and not card.conversation_id:
-            card.conversation_id = task.conversation_id
-            changed = True
-        if task.pipeline_id and not card.pipeline_id:
-            card.pipeline_id = task.pipeline_id
+        # 建立卡片的单一执行单元引用（工作流优先于会话），任务本身通过 board_card_id 反查
+        if self._establish_card_ref(card, task):
             changed = True
         if task.project_name and not card.project_name:
             card.project_name = task.project_name

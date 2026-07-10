@@ -791,7 +791,7 @@ async def list_board_cards(
     if scheduler.get_board(board_id) is None:
         raise HTTPException(status_code=404, detail=f"看板 '{board_id}' 不存在")
     return [
-        BoardCardResponse.from_card(c)
+        BoardCardResponse.from_card(c, task_ids=scheduler.task_ids_for_board_card(c))
         for c in scheduler.list_board_cards(board_id=board_id, include_archived=include_archived)
     ]
 
@@ -811,7 +811,7 @@ async def create_board_card(board_id: str, req: BoardCardCreateRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return BoardCardResponse.from_card(card)
+    return BoardCardResponse.from_card(card)  # 新卡片无关联任务，task_ids 为空
 
 
 @app.patch("/api/board-cards/{card_id}", response_model=BoardCardResponse)
@@ -832,7 +832,7 @@ async def update_board_card(card_id: str, req: BoardCardUpdateRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return BoardCardResponse.from_card(card)
+    return BoardCardResponse.from_card(card, task_ids=scheduler.task_ids_for_board_card(card))
 
 
 @app.delete("/api/board-cards/{card_id}", status_code=204)
