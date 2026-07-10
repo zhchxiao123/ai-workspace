@@ -306,7 +306,7 @@ def test_reconcile_alive_task_schedules_reattach(
 
 def test_board_card_tracks_related_task(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     card = sched.create_board_card(
         board.id,
         title="看板 MVP",
@@ -336,7 +336,7 @@ def test_board_card_tracks_related_task(tmp_path: Path) -> None:
 
 def test_board_card_status_follows_task_lifecycle_conservatively(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     card = sched.create_board_card(board.id, title="看板 MVP", status=BoardCardStatus.planned)
     task = Task(
         id="task-1",
@@ -361,7 +361,7 @@ def test_board_card_status_follows_task_lifecycle_conservatively(tmp_path: Path)
 
 
 def _running_card_with_task(sched: Scheduler, tmp_path: Path) -> tuple:
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     card = sched.create_board_card(board.id, title="看板 MVP", status=BoardCardStatus.planned)
     task = Task(
         id="task-1",
@@ -448,7 +448,7 @@ def test_update_workflow_node_appends_attempt_history(tmp_path: Path) -> None:
 
 def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     card = sched.create_board_card(board.id, title="工作空间管理优化")
     task = Task(
         id="task-2",
@@ -471,7 +471,7 @@ def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> N
 def test_migrates_legacy_board_card_task_ids_to_single_ref(tmp_path: Path) -> None:
     import json
     sched = Scheduler(tmp_path)
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     # 手工写入一张 legacy 卡片：既有 task_ids，又同时有 pipeline_id + conversation_id
     card_id = "bc-legacy"
     sched.board_cards_dir.mkdir(parents=True, exist_ok=True)
@@ -506,7 +506,7 @@ def test_migrates_legacy_board_card_task_ids_to_single_ref(tmp_path: Path) -> No
 
 def test_update_board_card_enforces_single_ref_xor(tmp_path: Path) -> None:
     sched = Scheduler(tmp_path)
-    board = sched.create_board("开发专题", "repo")
+    board = sched.create_board("开发专题")
     card = sched.create_board_card(board.id, title="卡片")
     # 先设为工作流引用
     card = sched.update_board_card(card.id, pipeline_id="pipe-1")

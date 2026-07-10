@@ -120,6 +120,24 @@ def cmd_card_add(
     click.echo(f"  {d.get('title','')}  状态：{_STATUS_LABEL.get(d.get('status',''), d.get('status',''))}")
 
 
+@card_group.command("rm")
+@click.argument("card_id")
+@click.confirmation_option(prompt="确定要永久删除该卡片吗？")
+def cmd_card_rm(card_id: str) -> None:
+    """Permanently delete CARD_ID (硬删除；日常建议用 move 到「已搁置」归档)."""
+    api = _require_server()
+    try:
+        r = httpx.delete(f"{api}/api/board-cards/{card_id}", timeout=10)
+    except httpx.RequestError as e:
+        raise click.ClickException(f"请求失败：{e}")
+    if r.status_code == 404:
+        raise click.ClickException(f"看板卡片 '{card_id}' 不存在")
+    if r.status_code not in (200, 204):
+        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
+        raise click.ClickException(f"删除失败（HTTP {r.status_code}）：{detail}")
+    click.secho(f"✓ 已删除卡片 {card_id}", fg="green")
+
+
 @card_group.command("move")
 @click.argument("card_id")
 @click.argument("status", type=click.Choice(_STATUS_CHOICES))

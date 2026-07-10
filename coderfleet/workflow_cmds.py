@@ -78,7 +78,7 @@ def cmd_template_list() -> None:
 @click.option("--default-project", default="", help="运行时默认项目")
 @click.option("--default-account", default="", help="临时沙箱默认账号")
 @click.option("--workspace-policy", default="isolated",
-              type=click.Choice(["isolated", "shared_ephemeral", "artifact_sync"]),
+              type=click.Choice(["isolated", "shared_ephemeral"]),
               show_default=True)
 def cmd_template_run(
     template_id: str,

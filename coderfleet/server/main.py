@@ -166,12 +166,10 @@ class ProjectUpdateRequest(BaseModel):
 
 class BoardCreateRequest(BaseModel):
     name:         str
-    project_name: str = ""
 
 
 class BoardUpdateRequest(BaseModel):
     name:         Optional[str] = None
-    project_name: Optional[str] = None
 
 
 class BoardCardCreateRequest(BaseModel):
@@ -758,18 +756,14 @@ async def create_board(req: BoardCreateRequest):
     name = req.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="看板名称不能为空")
-    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
-        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
-    board = scheduler.create_board(name, req.project_name)
+    board = scheduler.create_board(name)
     return BoardResponse.from_board(board)
 
 
 @app.patch("/api/boards/{board_id}", response_model=BoardResponse)
 async def update_board(board_id: str, req: BoardUpdateRequest):
-    if req.project_name and scheduler.find_project_by_name(req.project_name) is None:
-        raise HTTPException(status_code=404, detail=f"项目 '{req.project_name}' 不存在")
     try:
-        board = scheduler.update_board(board_id, req.name, req.project_name)
+        board = scheduler.update_board(board_id, req.name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return BoardResponse.from_board(board)
