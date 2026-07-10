@@ -217,8 +217,9 @@ class BoardCard(BaseModel):
     project_name:    str = ""
     status:          BoardCardStatus = BoardCardStatus.planned
     priority:        str = "normal"
+    # 覆盖层：卡片指向单一执行单元——一条会话(conversation_id) XOR 一个工作流运行(pipeline_id)。
+    # 任务不再由卡片直接持有，而是从所指执行单元反查（见 scheduler.tasks_for_board_card）。
     conversation_id: str = ""
-    task_ids:        list[str] = Field(default_factory=list)
     pipeline_id:     str = ""
     archived:        bool = False
     created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
@@ -440,15 +441,17 @@ class BoardCardResponse(BaseModel):
     status:          BoardCardStatus
     priority:        str = "normal"
     conversation_id: str = ""
-    task_ids:        list[str] = []
+    task_ids:        list[str] = []   # 反查得到的任务 id（响应计算字段，非持久化）
     pipeline_id:     str = ""
     archived:        bool = False
     created:         str
     updated:         str
 
     @classmethod
-    def from_card(cls, c: BoardCard) -> "BoardCardResponse":
-        return cls(**c.model_dump())
+    def from_card(cls, c: BoardCard, task_ids: Optional[list[str]] = None) -> "BoardCardResponse":
+        data = c.model_dump()
+        data["task_ids"] = list(task_ids or [])
+        return cls(**data)
 
 
 class ConversationResponse(BaseModel):

@@ -154,6 +154,9 @@ function taskByIdMap() {
   return map;
 }
 
+// 卡片作为纯覆盖层：任务从其所指执行单元反查。
+// 优先用后端计算好的 task_ids（board_card_id / pipeline_id / conversation_id 的并集），
+// 并在前端再兜底匹配一次，保证即使 task_ids 缺失也能显示。
 function tasksForBoardCard(card, taskMap) {
   const seen = new Set();
   const result = [];
@@ -165,7 +168,10 @@ function tasksForBoardCard(card, taskMap) {
     }
   });
   (tasksCache || []).forEach(task => {
-    if (task.board_card_id === card.id && !seen.has(task.id)) {
+    const match = task.board_card_id === card.id
+      || (card.pipeline_id && task.pipeline_id === card.pipeline_id)
+      || (card.conversation_id && task.conversation_id === card.conversation_id);
+    if (match && !seen.has(task.id)) {
       seen.add(task.id);
       result.push(task);
     }

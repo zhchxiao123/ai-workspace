@@ -327,7 +327,9 @@ def test_board_card_tracks_related_task(tmp_path: Path) -> None:
 
     updated = sched.add_task_to_board_card(card.id, task.id)
 
-    assert updated.task_ids == ["task-1"]
+    # 卡片不再直接持有 task_ids；任务通过 board_card_id 反查
+    assert sched.task_ids_for_board_card(updated) == ["task-1"]
+    assert sched.get_task("task-1").board_card_id == card.id
     assert updated.conversation_id == "conv-1"
     assert sched.list_board_cards(board_id=board.id)[0].status == BoardCardStatus.todo
 
@@ -462,8 +464,56 @@ def test_list_board_cards_reconciles_tasks_by_board_card_id(tmp_path: Path) -> N
 
     cards = sched.list_board_cards(board_id=board.id)
 
-    assert cards[0].task_ids == ["task-2"]
+    assert sched.task_ids_for_board_card(cards[0]) == ["task-2"]
     assert cards[0].status == BoardCardStatus.running
+
+
+def test_migrates_legacy_board_card_task_ids_to_single_ref(tmp_path: Path) -> None:
+    import json
+    sched = Scheduler(tmp_path)
+    board = sched.create_board("开发专题", "repo")
+    # 手工写入一张 legacy 卡片：既有 task_ids，又同时有 pipeline_id + conversation_id
+    card_id = "bc-legacy"
+    sched.board_cards_dir.mkdir(parents=True, exist_ok=True)
+    (sched.board_cards_dir / f"{card_id}.json").write_text(json.dumps({
+        "id": card_id, "board_id": board.id, "title": "旧卡片",
+        "status": "running", "priority": "normal",
+        "conversation_id": "conv-x", "pipeline_id": "pipe-x",
+        "task_ids": ["task-a"],
+        "created": "2026-07-01T00:00:00", "updated": "2026-07-01T00:00:00",
+    }), encoding="utf-8")
+    task = Task(
+        id="task-a", status=TaskStatus.running, account="alice",
+        type=AccountType.codex, prompt="legacy", project=str(tmp_path / "repo"),
+        pipeline_id="pipe-x",
+    )
+    task.save(sched.tasks_dir)
+
+    cards = sched.list_board_cards(board_id=board.id)
+    migrated = next(c for c in cards if c.id == card_id)
+
+    # legacy task 的反向指针已回填
+    assert sched.get_task("task-a").board_card_id == card_id
+    # 单一引用：工作流优先，会话被清除
+    assert migrated.pipeline_id == "pipe-x"
+    assert migrated.conversation_id == ""
+    # 反查仍能拿到任务
+    assert "task-a" in sched.task_ids_for_board_card(migrated)
+    # 磁盘上不再持有 task_ids
+    raw = json.loads((sched.board_cards_dir / f"{card_id}.json").read_text(encoding="utf-8"))
+    assert "task_ids" not in raw
+
+
+def test_update_board_card_enforces_single_ref_xor(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    board = sched.create_board("开发专题", "repo")
+    card = sched.create_board_card(board.id, title="卡片")
+    # 先设为工作流引用
+    card = sched.update_board_card(card.id, pipeline_id="pipe-1")
+    assert card.pipeline_id == "pipe-1" and card.conversation_id == ""
+    # 改为会话引用会清除工作流引用
+    card = sched.update_board_card(card.id, conversation_id="conv-1")
+    assert card.conversation_id == "conv-1" and card.pipeline_id == ""
 
 
 def test_extract_native_session_id_from_codex_jsonl() -> None:
