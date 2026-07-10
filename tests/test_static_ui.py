@@ -201,6 +201,38 @@ def test_project_image_build_modal_exposes_manual_stop() -> None:
     assert "/image/build/${encodeURIComponent(activeImageBuildId)}" in source
 
 
+def test_project_build_history_panel_is_wired_up() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    assert 'id="project-build-history-list"' in html
+    assert "function loadProjectBuildHistory" in source
+    assert "function viewBuildHistoryEntry" in source
+    assert "/api/builds?project=" in source
+    assert "/logs/stream?skip_bytes=" in source
+
+
+def test_build_history_resume_uses_byte_length_not_char_length() -> None:
+    """skip_bytes 是服务端日志文件的字节偏移量；构建日志里有中文，JS 字符串的
+    .length（UTF-16 code unit 数）和 UTF-8 字节数对不上，必须用 TextEncoder 编码
+    后的字节数，否则续传时会重复或漏掉内容。"""
+    source = read_projects_js()
+
+    assert "new TextEncoder().encode(output.textContent).length" in source
+    assert "skip_bytes=${output.textContent.length}" not in source
+
+
+def test_shared_image_build_trigger_is_wired_up() -> None:
+    html = read_index()
+    source = read_projects_js()
+
+    assert 'onclick="buildSharedImage()"' in html
+    assert 'id="shared-image-build-history-list"' in html
+    assert "function buildSharedImage" in source
+    assert "/api/image/build" in source
+    assert "/api/builds?kind=shared" in source
+
+
 def test_development_board_page_is_exposed() -> None:
     html = read_index()
     source = read_ui_source()

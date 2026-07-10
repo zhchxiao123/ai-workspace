@@ -10,6 +10,12 @@ API 路由：
   GET  /api/tasks/{id}/logs       获取完整日志（文本）
   GET  /api/tasks/{id}/logs/stream  SSE 实时日志流
   POST /api/tasks/clean           清理旧任务记录
+  POST /api/image/build           触发共享镜像构建
+  DELETE /api/image/build/{id}    停止共享镜像构建
+  GET  /api/builds                列出镜像构建历史（含共享镜像与项目专属镜像）
+  GET  /api/builds/{id}           查看某次构建详情
+  GET  /api/builds/{id}/logs      获取某次构建的完整日志（文本）
+  GET  /api/builds/{id}/logs/stream  SSE 实时构建日志流（可对已结束的构建重放）
   GET  /api/health                健康检查
 """
 from __future__ import annotations
@@ -48,6 +54,8 @@ from coderfleet.server.models import (
     ConversationMode,
     ConversationResponse,
     ConversationStatus,
+    ImageBuild,
+    ImageBuildStatus,
     LogicalProject,
     MarketplaceInstallRequest,
     Pipeline,
@@ -76,6 +84,7 @@ from coderfleet.server.models import (
 from coderfleet.account_type_registry import duplicate_account_types
 from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.image_builds import ImageBuildRegistry
+from coderfleet.server.image_build_runner import run_image_build
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import Scheduler
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
@@ -1036,7 +1045,13 @@ async def save_project_dockerfile(name: str, req: DockerfileUpdateRequest):
 
 @app.post("/api/projects/{name}/image/build")
 async def build_project_image(name: str, req: ImageBuildRequest = None):
-    """触发 docker build 构建项目专属镜像，SSE 流式输出构建日志。
+    """触发 docker build 构建项目专属镜像。
+
+    构建本身通过 asyncio.create_task 在后台运行，与本次 HTTP 请求的生命周期无关——
+    调用方（浏览器）断开连接不会中断构建，只是不再收到这次响应里的输出。响应体仍是
+    一段纯文本流（tail 构建日志文件），保持与旧版一致的前端消费方式；构建记录与完整
+    日志落盘在 builds/ 下，随时可通过 /api/builds/{build_id} 系列接口回看。
+
     req.image_tag 优先；未提供则用 projects.conf 中的 IMAGE=，再 fallback 到自动推导名。
     构建成功后始终将最终镜像名写入 projects.conf。
     """
@@ -1052,54 +1067,31 @@ async def build_project_image(name: str, req: ImageBuildRequest = None):
 
     image_tag = req.image_tag.strip() or existing.image or _default_project_image(name)
     build_id = req.build_id.strip() or uuid.uuid4().hex
-    cfg = __import__("coderfleet.config", fromlist=["load_config"]).load_config(WORKSPACE_DIR)
+    cfg = _load_config(WORKSPACE_DIR)
     platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
 
-    async def _stream() -> AsyncIterator[str]:
-        proc = None
-        try:
-            yield f">>> 构建 ID：{build_id}\n"
-            yield f">>> 构建镜像 {image_tag}（平台：{platform}）...\n"
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "build",
-                "--platform", platform,
-                "--tag", image_tag,
-                "--file", str(dockerfile),
-                str(dockerfile.parent),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            image_builds.track(build_id, name, proc)
-            assert proc.stdout is not None
-            async for line in proc.stdout:
-                yield line.decode("utf-8", errors="replace")
-            rc = await proc.wait()
-            if rc != 0:
-                yield f"\n✗ 构建失败（exit={rc}）\n"
-            else:
-                yield f"\n✓ 镜像构建完成：{image_tag}\n"
-                # 构建成功后始终将镜像名写入 projects.conf（新增或更名均生效）
-                if image_tag != existing.image:
-                    scheduler.save_project(
-                        name, existing.account, existing.path,
-                        existing.active, existing.ide_enabled, existing.ide_port,
-                        existing.ide_auth, existing.ide_remote, image_tag,
-                        existing.docker_socket,
-                    )
-                    yield f"  已写入 IMAGE={image_tag} 到 projects.conf\n"
-        except asyncio.CancelledError:
-            if image_builds.get(build_id) is not None:
-                await image_builds.cancel(build_id)
-            elif proc is not None and proc.returncode is None:
-                proc.terminate()
-                await proc.wait()
-            raise
-        except Exception as e:
-            yield f"\n✗ 构建出错：{e}\n"
-        finally:
-            image_builds.forget(build_id)
+    build = ImageBuild(id=build_id, kind="project", project_name=name, image_tag=image_tag, triggered_by="web")
+    build.save(scheduler.builds_dir)
 
-    return StreamingResponse(_stream(), media_type="text/plain; charset=utf-8")
+    def _on_success(tag: str) -> None:
+        if tag != existing.image:
+            scheduler.save_project(
+                name, existing.account, existing.path,
+                existing.active, existing.ide_enabled, existing.ide_port,
+                existing.ide_auth, existing.ide_remote, tag,
+                existing.docker_socket,
+            )
+            with scheduler.get_build_log_path(build_id).open("a", encoding="utf-8") as f:
+                f.write(f"  已写入 IMAGE={tag} 到 projects.conf\n")
+
+    asyncio.create_task(run_image_build(
+        build, scheduler.builds_dir, dockerfile, dockerfile.parent, platform,
+        image_builds, on_success=_on_success,
+    ))
+
+    return StreamingResponse(
+        _tail_build_log_plain(build_id), media_type="text/plain; charset=utf-8",
+    )
 
 
 @app.delete("/api/projects/{name}/image/build/{build_id}", status_code=200)
@@ -1110,6 +1102,126 @@ async def cancel_project_image_build(name: str, build_id: str):
         raise HTTPException(status_code=404, detail="没有正在构建的镜像")
     result = await image_builds.cancel(build_id)
     return {"ok": result.cancelled, "message": result.message}
+
+
+class SharedImageBuildRequest(BaseModel):
+    build_id: str = ""
+
+
+@app.post("/api/image/build")
+async def build_shared_image(req: SharedImageBuildRequest = None):
+    """触发 docker build 构建共享镜像。
+
+    与项目专属镜像构建（build_project_image）共用同一套 run_image_build /
+    builds/ 落盘逻辑：后台运行、断线不中断、记录进同一份构建历史，kind="shared"
+    与项目专属构建区分开。
+    """
+    if req is None:
+        req = SharedImageBuildRequest()
+    dockerfile = WORKSPACE_DIR / "Dockerfile"
+    if not dockerfile.exists():
+        raise HTTPException(status_code=400, detail="共享 Dockerfile 不存在")
+
+    cfg = _load_config(WORKSPACE_DIR)
+    platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+    image_tag = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
+    build_id = req.build_id.strip() or uuid.uuid4().hex
+
+    build = ImageBuild(id=build_id, kind="shared", project_name="", image_tag=image_tag, triggered_by="web")
+    build.save(scheduler.builds_dir)
+
+    asyncio.create_task(run_image_build(
+        build, scheduler.builds_dir, dockerfile, WORKSPACE_DIR, platform, image_builds,
+    ))
+
+    return StreamingResponse(
+        _tail_build_log_plain(build_id), media_type="text/plain; charset=utf-8",
+    )
+
+
+@app.delete("/api/image/build/{build_id}", status_code=200)
+async def cancel_shared_image_build(build_id: str):
+    """停止正在执行的共享镜像构建。"""
+    result = await image_builds.cancel(build_id)
+    return {"ok": result.cancelled, "message": result.message}
+
+
+# ── 镜像构建历史 ──────────────────────────────────────────
+
+async def _iter_build_log_chunks(build_id: str, start_offset: int = 0) -> AsyncIterator[bytes]:
+    """轮询 builds/{id}.log 的字节增量，直到构建结束才停止。
+
+    只读文件，不碰子进程——这是"查看构建"和"驱动构建"解耦之后唯一的连接点：
+    调用方（无论是本次触发构建的响应，还是历史面板的重连）断开都不影响构建本身。
+    """
+    log_path = scheduler.get_build_log_path(build_id)
+    last_size = start_offset
+    while True:
+        if log_path.exists():
+            cur_size = log_path.stat().st_size
+            if cur_size > last_size:
+                async with aiofiles.open(log_path, "rb") as f:
+                    await f.seek(last_size)
+                    data = await f.read()
+                last_size = cur_size
+                yield data
+        build = scheduler.get_build(build_id)
+        if build is None or build.status != ImageBuildStatus.running:
+            return
+        await asyncio.sleep(0.3)
+
+
+async def _tail_build_log_plain(build_id: str) -> AsyncIterator[str]:
+    async for chunk in _iter_build_log_chunks(build_id):
+        yield chunk.decode("utf-8", errors="replace")
+
+
+async def _tail_build_log_sse(build_id: str, start_offset: int = 0) -> AsyncIterator[str]:
+    async for chunk in _iter_build_log_chunks(build_id, start_offset):
+        for line in chunk.decode("utf-8", errors="replace").splitlines(keepends=True):
+            yield f"data: {line.rstrip()}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@app.get("/api/builds")
+async def list_builds(
+    project: Optional[str] = None,
+    kind: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+):
+    builds = scheduler.list_builds(project_name=project, kind=kind)
+    return builds[:limit]
+
+
+@app.get("/api/builds/{build_id}")
+async def get_build(build_id: str):
+    build = scheduler.get_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail=f"构建记录 '{build_id}' 不存在")
+    return build
+
+
+@app.get("/api/builds/{build_id}/logs", response_class=PlainTextResponse)
+async def get_build_logs(build_id: str):
+    log_path = scheduler.get_build_log_path(build_id)
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail=f"日志文件不存在：{build_id}")
+    return log_path.read_text(encoding="utf-8")
+
+
+@app.get("/api/builds/{build_id}/logs/stream")
+async def stream_build_logs(
+    build_id: str,
+    skip_bytes: int = Query(0, ge=0, description="客户端已获取的字节偏移量，从此处开始推送剩余内容"),
+):
+    """Server-Sent Events 实时构建日志流，可对已结束的构建重放全部日志（skip_bytes=0）。"""
+    if scheduler.get_build(build_id) is None:
+        raise HTTPException(status_code=404, detail=f"构建记录 '{build_id}' 不存在")
+    return StreamingResponse(
+        _tail_build_log_sse(build_id, skip_bytes),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.delete("/api/projects/{name}/image", status_code=200)

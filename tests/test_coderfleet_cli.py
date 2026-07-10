@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -803,3 +804,103 @@ def test_apply_rejects_hand_edited_type_collision(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "claude" in result.stderr
     assert not (workspace / "docker-compose.yml").exists()
+
+
+def test_build_shared_image_persists_a_build_record(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build")
+
+    assert result.returncode == 0, result.stderr
+    builds_dir = workspace / "builds"
+    records = list(builds_dir.glob("*.json"))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text(encoding="utf-8"))
+    assert record["kind"] == "shared"
+    assert record["status"] == "succeeded"
+    assert record["triggered_by"] == "cli"
+    assert (builds_dir / f"{record['id']}.log").exists()
+
+
+def test_build_project_image_persists_a_build_record_scoped_to_project(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    (workspace / "projects" / "repo").mkdir(parents=True)
+    (workspace / "projects" / "repo" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build", "repo")
+
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(p.read_text(encoding="utf-8")) for p in (workspace / "builds").glob("*.json")]
+    assert len(records) == 1
+    assert records[0]["kind"] == "project"
+    assert records[0]["project_name"] == "repo"
+
+
+def test_build_history_lists_records_newest_first_and_filters_by_project(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    (workspace / "projects" / "repo").mkdir(parents=True)
+    (workspace / "projects" / "repo" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (workspace / "projects" / "repo2").mkdir(parents=True)
+    (workspace / "projects" / "repo2" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    docker_path = fake_docker_path(tmp_path)
+    assert run_coderfleet(workspace, docker_path, "build", "repo").returncode == 0
+    assert run_coderfleet(workspace, docker_path, "build", "repo2").returncode == 0
+
+    result = run_coderfleet(workspace, docker_path, "build-history")
+    assert result.returncode == 0, result.stderr
+    assert "repo" in result.stdout and "repo2" in result.stdout
+
+    scoped = run_coderfleet(workspace, docker_path, "build-history", "--project", "repo")
+    assert scoped.returncode == 0, scoped.stderr
+    assert "repo2" not in scoped.stdout
+    assert "repo" in scoped.stdout
+
+
+def test_build_history_with_no_records_reports_empty(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build-history")
+
+    assert result.returncode == 0, result.stderr
+    assert "暂无构建记录" in result.stdout
+
+
+def test_build_logs_prints_persisted_log_for_a_build_id(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    assert run_coderfleet(workspace, fake_docker_path(tmp_path), "build").returncode == 0
+    build_id = next((workspace / "builds").glob("*.json")).stem
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build-logs", build_id)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_build_logs_missing_build_id_fails(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build-logs", "missing")
+
+    assert result.returncode != 0
+    assert "missing" in result.stderr
+
+
+def test_build_all_projects_persists_a_record_per_image(tmp_path: Path) -> None:
+    workspace = make_two_project_workspace(tmp_path)
+    (workspace / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (workspace / "projects" / "repo").mkdir(parents=True)
+    (workspace / "projects" / "repo" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (workspace / "projects" / "repo2").mkdir(parents=True)
+    (workspace / "projects" / "repo2" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "build", "--all-projects")
+
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(p.read_text(encoding="utf-8")) for p in (workspace / "builds").glob("*.json")]
+    assert len(records) == 3
+    kinds = {(r["kind"], r["project_name"]) for r in records}
+    assert kinds == {("shared", ""), ("project", "repo"), ("project", "repo2")}
+    assert all(r["status"] == "succeeded" for r in records)

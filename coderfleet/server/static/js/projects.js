@@ -517,6 +517,215 @@ async function loadProjectImage(name) {
   } catch {
     // ignore
   }
+  await loadProjectBuildHistory(name);
+}
+
+// ── 构建历史 ──────────────────────────────────────────────
+
+const BUILD_STATUS_LABEL = {
+  running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已停止',
+};
+
+async function loadProjectBuildHistory(name) {
+  const list = document.getElementById('project-build-history-list');
+  if (!list || !name) return;
+  try {
+    const builds = await fetch(`${API}/api/builds?project=${encodeURIComponent(name)}&limit=20`).then(r => r.json());
+    if (!Array.isArray(builds) || builds.length === 0) {
+      list.innerHTML = '<div style="font-size:12px;color:var(--text-3)">暂无构建记录</div>';
+      return;
+    }
+    list.innerHTML = builds.map(b => {
+      const label = BUILD_STATUS_LABEL[b.status] || b.status;
+      const badgeClass = b.status === 'succeeded' ? 'ok' : (b.status === 'failed' ? 'error' : (b.status === 'running' ? 'running' : ''));
+      return `
+        <div class="build-history-row" style="display:flex;align-items:center;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px"
+             onclick="viewBuildHistoryEntry('${esc(b.id)}', '${esc(name)}')">
+          <span class="badge ${badgeClass}" style="font-size:11px">${esc(label)}</span>
+          <span style="font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.image_tag)}</span>
+          <span style="color:var(--text-3)">${esc(fmtTime(b.created))}</span>
+          <span style="color:var(--text-3)">${esc(fmtDuration(b.created, b.finished))}</span>
+        </div>`;
+    }).join('');
+  } catch {
+    list.innerHTML = '<div style="font-size:12px;color:var(--text-3)">构建历史加载失败</div>';
+  }
+}
+
+let activeBuildHistoryEventSource = null;
+
+function closeBuildHistoryStream() {
+  if (activeBuildHistoryEventSource) {
+    activeBuildHistoryEventSource.close();
+    activeBuildHistoryEventSource = null;
+  }
+}
+
+async function viewBuildHistoryEntry(buildId, projectName) {
+  closeBuildHistoryStream();
+  const modal = document.getElementById('image-build-modal');
+  const output = document.getElementById('image-build-output');
+  const running = document.getElementById('image-build-running');
+  const doneBtn = document.getElementById('image-build-done-btn');
+  const stopBtn = document.getElementById('image-build-stop-btn');
+  const title = document.getElementById('image-build-modal-title');
+  if (!modal || !output) return;
+
+  let build;
+  try {
+    build = await fetch(`${API}/api/builds/${encodeURIComponent(buildId)}`).then(r => r.json());
+  } catch {
+    return;
+  }
+
+  title.textContent = projectName ? `构建历史 · ${projectName}` : '构建历史 · 共享镜像';
+  output.textContent = await fetch(`${API}/api/builds/${encodeURIComponent(buildId)}/logs`).then(r => r.ok ? r.text() : '').catch(() => '');
+  output.scrollTop = output.scrollHeight;
+  doneBtn.style.display = '';
+
+  if (build.status === 'running') {
+    running.style.display = '';
+    running.textContent = '执行中…';
+    if (stopBtn) {
+      stopBtn.style.display = '';
+      stopBtn.disabled = false;
+      stopBtn.textContent = '停止构建';
+    }
+    activeImageBuildId = buildId;
+    activeImageBuildProject = projectName;
+    // skip_bytes 是服务端日志文件里的字节偏移量，不能直接用 JS 字符串的 .length——
+    // 构建日志里带中文（"镜像构建完成" 之类），UTF-16 code unit 数和 UTF-8 字节数对不上，
+    // 会导致续传时重复或漏掉一段内容。用 TextEncoder 编码成实际字节数再传。
+    const skipBytes = new TextEncoder().encode(output.textContent).length;
+    const es = new EventSource(`${API}/api/builds/${encodeURIComponent(buildId)}/logs/stream?skip_bytes=${skipBytes}`);
+    activeBuildHistoryEventSource = es;
+    es.onmessage = (event) => {
+      if (event.data === '[DONE]') {
+        closeBuildHistoryStream();
+        running.textContent = '已完成';
+        if (stopBtn) stopBtn.style.display = 'none';
+        if (projectName) loadProjectBuildHistory(projectName);
+        else if (typeof loadSharedImageBuildHistory === 'function') loadSharedImageBuildHistory();
+        return;
+      }
+      output.textContent += `${event.data}\n`;
+      output.scrollTop = output.scrollHeight;
+    };
+    es.onerror = () => {
+      // 连接异常断开且没收到 [DONE]：回退成一次性查询最终状态，避免面板永远卡在"执行中…"。
+      closeBuildHistoryStream();
+      fetch(`${API}/api/builds/${encodeURIComponent(buildId)}`).then(r => r.json()).then(b => {
+        if (b && b.status !== 'running') {
+          running.textContent = BUILD_STATUS_LABEL[b.status] || b.status;
+          if (stopBtn) stopBtn.style.display = 'none';
+        }
+      }).catch(() => {});
+    };
+  } else {
+    running.style.display = 'none';
+    if (stopBtn) stopBtn.style.display = 'none';
+  }
+
+  modal.style.display = '';
+}
+
+// ── 共享镜像构建（Settings · 运行配置）─────────────────────
+
+async function loadSharedImageBuildHistory() {
+  const list = document.getElementById('shared-image-build-history-list');
+  if (!list) return;
+  try {
+    const builds = await fetch(`${API}/api/builds?kind=shared&limit=20`).then(r => r.json());
+    if (!Array.isArray(builds) || builds.length === 0) {
+      list.innerHTML = '<div style="font-size:12px;color:var(--text-3)">暂无构建记录</div>';
+      return;
+    }
+    list.innerHTML = builds.map(b => {
+      const label = BUILD_STATUS_LABEL[b.status] || b.status;
+      const badgeClass = b.status === 'succeeded' ? 'ok' : (b.status === 'failed' ? 'error' : (b.status === 'running' ? 'running' : ''));
+      return `
+        <div class="build-history-row" style="display:flex;align-items:center;gap:10px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px"
+             onclick="viewBuildHistoryEntry('${esc(b.id)}', '')">
+          <span class="badge ${badgeClass}" style="font-size:11px">${esc(label)}</span>
+          <span style="font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.image_tag)}</span>
+          <span style="color:var(--text-3)">${esc(fmtTime(b.created))}</span>
+          <span style="color:var(--text-3)">${esc(fmtDuration(b.created, b.finished))}</span>
+        </div>`;
+    }).join('');
+  } catch {
+    list.innerHTML = '<div style="font-size:12px;color:var(--text-3)">构建历史加载失败</div>';
+  }
+}
+
+async function buildSharedImage() {
+  const modal = document.getElementById('image-build-modal');
+  const output = document.getElementById('image-build-output');
+  const running = document.getElementById('image-build-running');
+  const doneBtn = document.getElementById('image-build-done-btn');
+  const stopBtn = document.getElementById('image-build-stop-btn');
+  const title = document.getElementById('image-build-modal-title');
+  if (!modal || !output) return;
+
+  output.textContent = '';
+  running.style.display = '';
+  running.textContent = '执行中…';
+  doneBtn.style.display = 'none';
+  if (stopBtn) {
+    stopBtn.style.display = '';
+    stopBtn.disabled = false;
+    stopBtn.textContent = '停止构建';
+  }
+  title.textContent = '构建共享镜像';
+  modal.style.display = '';
+
+  const buildId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const controller = new AbortController();
+  activeImageBuildId = buildId;
+  activeImageBuildProject = '';
+  activeImageBuildController = controller;
+  try {
+    const resp = await fetch(`${API}/api/image/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ build_id: buildId }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const d = await resp.json().catch(() => ({}));
+      output.textContent = d.detail || '请求失败';
+      running.textContent = '✗ 失败';
+      doneBtn.style.display = '';
+      if (stopBtn) stopBtn.style.display = 'none';
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      output.textContent += decoder.decode(value, { stream: true });
+      output.scrollTop = output.scrollHeight;
+    }
+    running.textContent = '已完成';
+    doneBtn.style.display = '';
+    if (stopBtn) stopBtn.style.display = 'none';
+    await loadSharedImageBuildHistory();
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      running.textContent = '已停止';
+    } else {
+      output.textContent += `\n✗ 错误：${e.message}`;
+      running.textContent = '✗ 失败';
+    }
+    doneBtn.style.display = '';
+    if (stopBtn) stopBtn.style.display = 'none';
+  } finally {
+    if (activeImageBuildId === buildId) {
+      activeImageBuildId = '';
+      activeImageBuildProject = '';
+      activeImageBuildController = null;
+    }
+  }
 }
 
 async function saveProjectDockerfile() {
@@ -641,7 +850,7 @@ async function buildProjectImage() {
 }
 
 async function stopProjectImageBuild() {
-  if (!activeImageBuildId || !activeImageBuildProject) return;
+  if (!activeImageBuildId) return;
   const stopBtn = document.getElementById('image-build-stop-btn');
   const running = document.getElementById('image-build-running');
   const output = document.getElementById('image-build-output');
@@ -652,10 +861,12 @@ async function stopProjectImageBuild() {
   }
   if (running) running.textContent = '停止中…';
   const projectName = activeImageBuildProject;
+  // 共享镜像构建没有 project 归属，走独立的 /api/image/build/{id} 停止接口。
+  const stopUrl = projectName
+    ? `${API}/api/projects/${encodeURIComponent(projectName)}/image/build/${encodeURIComponent(activeImageBuildId)}`
+    : `${API}/api/image/build/${encodeURIComponent(activeImageBuildId)}`;
   try {
-    const r = await fetch(`${API}/api/projects/${encodeURIComponent(projectName)}/image/build/${encodeURIComponent(activeImageBuildId)}`, {
-      method: 'DELETE',
-    });
+    const r = await fetch(stopUrl, { method: 'DELETE' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || '停止失败');
     if (output && d.message) output.textContent += `\n${d.message}\n`;
@@ -696,6 +907,7 @@ async function clearProjectImage() {
 
 function closeImageBuildModal(event) {
   if (event && event.target !== event.currentTarget) return;
+  closeBuildHistoryStream();
   document.getElementById('image-build-modal').style.display = 'none';
 }
 

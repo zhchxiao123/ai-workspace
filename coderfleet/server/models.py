@@ -25,6 +25,13 @@ class TaskStatus(str, Enum):
     killed  = "killed"
 
 
+class ImageBuildStatus(str, Enum):
+    running   = "running"
+    succeeded = "succeeded"
+    failed    = "failed"
+    cancelled = "cancelled"
+
+
 class ConversationStatus(str, Enum):
     active   = "active"
     archived = "archived"
@@ -299,6 +306,41 @@ class Task(BaseModel):
     @property
     def log_path_str(self) -> str:
         return f"tasks/{self.id}.log"
+
+
+# ── 镜像构建 ──────────────────────────────────────────────
+
+class ImageBuild(BaseModel):
+    id:           str
+    kind:         str = "project"  # "project" | "shared"
+    project_name: str = ""         # kind=="shared" 时为空
+    image_tag:    str
+    status:       ImageBuildStatus = ImageBuildStatus.running
+    triggered_by: str = "web"      # "web" | "cli"
+    created:      str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    finished:     Optional[str] = None
+    exit_code:    Optional[int] = None
+
+    def save(self, builds_dir: Path) -> None:
+        JsonStore(ImageBuild, builds_dir).save(self)
+
+    @classmethod
+    def load(cls, path: Path) -> "ImageBuild":
+        return JsonStore(cls, path.parent).load(path)
+
+    @classmethod
+    def load_all(cls, builds_dir: Path) -> list["ImageBuild"]:
+        return JsonStore(cls, builds_dir).all()
+
+    def update_status(
+        self, status: ImageBuildStatus, builds_dir: Path, exit_code: Optional[int] = None,
+    ) -> None:
+        self.status = status
+        if status != ImageBuildStatus.running:
+            self.finished = datetime.now().isoformat(timespec="seconds")
+        if exit_code is not None:
+            self.exit_code = exit_code
+        self.save(builds_dir)
 
 
 # ── HTTP 请求/响应结构 ─────────────────────────────────────

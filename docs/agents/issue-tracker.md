@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repo live as GitHub issues in `zhchxiao123/ai-workspace`. Use the `gh` CLI for all operations.
+Issues and PRDs for this repo live as GitHub issues in `zhchxiao123/coderfleet` (renamed from `ai-workspace`; GitHub redirects the old name, but use the new one directly). Use the `gh` CLI for all operations.
 
 ## Conventions
 

@@ -424,6 +424,16 @@
                   <div id="project-image-msg" style="display:none;font-size:12px"></div>
                 </div>
               </div>
+              <!-- 构建历史（跨两列） -->
+              <div class="card" id="project-build-history-card" style="padding:16px;display:flex;flex-direction:column;gap:10px;grid-column:1/-1">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div style="font-weight:600;font-size:13px;color:var(--text-2)">构建历史</div>
+                  <button class="btn" style="font-size:11px" onclick="loadProjectBuildHistory(projectContext && projectContext.name)">刷新</button>
+                </div>
+                <div id="project-build-history-list" style="display:flex;flex-direction:column;gap:6px">
+                  <div style="font-size:12px;color:var(--text-3)">暂无构建记录</div>
+                </div>
+              </div>
             </div>
             <!-- 保留隐藏 iframe 供 backToProjects 清理 -->
             <iframe id="project-ide-frame" style="display:none" src="about:blank" title=""></iframe>
@@ -671,6 +681,19 @@
               <div class="settings-runtime-note">修改带「需 apply」的配置后，需要执行 coderfleet apply 并重启容器。</div>
               <div class="settings-wrap" id="settings-runtime-wrap">
                 <div class="empty">加载中...</div>
+              </div>
+              <div class="settings-card" id="shared-image-build-card" style="margin-top:16px">
+                <div class="settings-card-head">
+                  <div class="settings-card-title">共享镜像构建</div>
+                  <div class="settings-card-help">构建 config.conf 中 IMAGE_NAME:IMAGE_TAG 指定的共享基础镜像，供未设置专属镜像的项目使用。</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:12px">
+                  <button class="btn primary" style="font-size:12px" onclick="buildSharedImage()">构建共享镜像</button>
+                  <button class="btn" style="font-size:11px" onclick="loadSharedImageBuildHistory()">刷新历史</button>
+                </div>
+                <div id="shared-image-build-history-list" style="display:flex;flex-direction:column;gap:6px;padding:0 12px 12px">
+                  <div style="font-size:12px;color:var(--text-3)">暂无构建记录</div>
+                </div>
               </div>
             </div>
             <div class="settings-panel" id="settings-panel-account" role="tabpanel" aria-labelledby="settings-tab-account" hidden>

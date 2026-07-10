@@ -75,6 +75,7 @@ function loadRuntimeSettings() {
       wrap.innerHTML = settingsGroups.map(renderSettingsGroup).join('');
     })
     .catch(e => { wrap.innerHTML = `<div class="empty">加载失败：${esc(String(e.message || e))}</div>`; });
+  if (typeof loadSharedImageBuildHistory === 'function') loadSharedImageBuildHistory();
 }
 
 function renderAccountSettings() {

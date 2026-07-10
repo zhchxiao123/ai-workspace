@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +17,7 @@ import click
 
 from coderfleet.config import load_config, parse_conf
 from coderfleet.compose import write_compose
+from coderfleet.server.models import ImageBuild, ImageBuildStatus
 
 
 # ── helpers ───────────────────────────────────────────────────
@@ -57,6 +60,29 @@ def _get_accounts(ws: Path) -> dict[str, dict[str, str]]:
 
 def _get_projects(ws: Path) -> list[dict[str, str]]:
     return [p for p in parse_conf(ws / "projects.conf") if "NAME" in p and "ACCOUNT" in p]
+
+
+def _run_and_record_build(cmd: list[str], image: str, ws: Path, kind: str, project_name: str = "") -> bool:
+    """执行 docker build，实时回显到终端的同时把完整输出和构建记录落盘到 builds/ ——
+    与 Web 端触发的构建共用同一份存储，CLI 和 Web UI 因此能在同一个「构建历史」
+    列表里看到彼此的构建（见 GET /api/builds）。"""
+    builds_dir = ws / "builds"
+    build = ImageBuild(id=uuid.uuid4().hex, kind=kind, project_name=project_name, image_tag=image, triggered_by="cli")
+    build.save(builds_dir)
+    log_path = builds_dir / f"{build.id}.log"
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
+    with log_path.open("w", encoding="utf-8") as f:
+        for line in proc.stdout:
+            click.echo(line, nl=False)
+            f.write(line)
+    rc = proc.wait()
+
+    build.update_status(
+        ImageBuildStatus.succeeded if rc == 0 else ImageBuildStatus.failed, builds_dir, exit_code=rc,
+    )
+    return rc == 0
 
 
 def _service_names_for(ws: Path, project_names: tuple[str, ...]) -> list[str]:
@@ -126,7 +152,7 @@ def cmd_build(
     cfg = load_config(ws)
     platform = platform_override or cfg.get("BUILD_PLATFORM", "linux/amd64")
 
-    def _build_image(image: str, dockerfile: Path, context: Path) -> bool:
+    def _build_image(image: str, dockerfile: Path, context: Path, kind: str, project_name: str = "") -> bool:
         cmd = [
             "docker", "build",
             "--platform", platform,
@@ -138,7 +164,7 @@ def cmd_build(
         if pull:
             cmd.append("--pull")
         cmd.append(str(context))
-        return subprocess.run(cmd).returncode == 0
+        return _run_and_record_build(cmd, image, ws, kind, project_name)
 
     if project:
         # ── 构建单个项目专属镜像 ──────────────────────────────
@@ -158,7 +184,7 @@ def cmd_build(
         click.echo(f"构建项目镜像 {image}（平台：{platform}）...")
         click.echo()
 
-        if not _build_image(image, dockerfile, dockerfile.parent):
+        if not _build_image(image, dockerfile, dockerfile.parent, "project", project):
             raise click.ClickException("项目镜像构建失败")
 
         # 若 IMAGE= 未设置则写入 projects.conf
@@ -175,13 +201,13 @@ def cmd_build(
     if all_projects:
         # ── 构建共享镜像 + 所有有 Dockerfile 的项目镜像 ─────
         projects = parse_conf(ws / "projects.conf")
-        items: list[tuple[str, Path, Path]] = []  # (image, dockerfile, context)
+        items: list[tuple[str, Path, Path, str, str]] = []  # (image, dockerfile, context, kind, project_name)
 
         shared_dockerfile = ws / "Dockerfile"
         if shared_dockerfile.exists():
             image_name = cfg.get("IMAGE_NAME", "coderfleet")
             image_tag = tag_override or cfg.get("IMAGE_TAG", "latest")
-            items.append((f"{image_name}:{image_tag}", shared_dockerfile, ws))
+            items.append((f"{image_name}:{image_tag}", shared_dockerfile, ws, "shared", ""))
 
         for p in projects:
             pname = p.get("NAME", "")
@@ -190,16 +216,16 @@ def cmd_build(
             df = ws / "projects" / pname / "Dockerfile"
             if df.exists():
                 img = p.get("IMAGE") or f"coderfleet-{pname}:latest"
-                items.append((img, df, df.parent))
+                items.append((img, df, df.parent, "project", pname))
 
         if not items:
             raise click.ClickException("没有找到任何 Dockerfile")
 
         click.echo(f"构建 {len(items)} 个镜像（平台：{platform}）...")
         failed = []
-        for image, dockerfile, context in items:
+        for image, dockerfile, context, kind, pname in items:
             click.secho(f"\n  → {image}", bold=True)
-            if not _build_image(image, dockerfile, context):
+            if not _build_image(image, dockerfile, context, kind, pname):
                 failed.append(image)
 
         click.echo()
@@ -228,11 +254,67 @@ def cmd_build(
     click.secho("首次构建约需 5~10 分钟，请耐心等待", dim=True)
     click.echo()
 
-    if not _build_image(image, dockerfile, ws):
+    if not _build_image(image, dockerfile, ws, "shared"):
         raise click.ClickException("镜像构建失败")
 
     click.echo()
     click.secho(f"✓ 镜像构建完成：{image}", fg="green")
+
+
+_BUILD_STATUS_STYLE = {
+    "running":   ("yellow", "○ 执行中"),
+    "succeeded": ("green",  "✓ 成功  "),
+    "failed":    ("red",    "✗ 失败  "),
+    "cancelled": ("yellow", "⊘ 已停止"),
+}
+
+
+@click.command("build-history")
+@click.option("--project", "project_filter", default=None, help="只看指定项目的构建记录")
+@click.pass_context
+def cmd_build_history(ctx: click.Context, project_filter: Optional[str]) -> None:
+    """List past image builds (CLI 和 Web UI 触发的都会出现在同一份历史里)."""
+    ws: Path = ctx.obj["workspace"]
+    builds = ImageBuild.load_all(ws / "builds")
+    if project_filter:
+        builds = [b for b in builds if b.project_name == project_filter]
+    if not builds:
+        click.echo("暂无构建记录")
+        return
+    for b in builds:
+        color, label = _BUILD_STATUS_STYLE.get(b.status.value, ("white", b.status.value))
+        target = b.project_name or "(共享镜像)"
+        click.secho(f"{b.id}  ", nl=False, dim=True)
+        click.secho(label, fg=color, nl=False)
+        click.echo(f"  {b.image_tag:<32s}  {target:<20s}  {b.created}  [{b.triggered_by}]")
+
+
+@click.command("build-logs")
+@click.argument("build_id")
+@click.option("-f", "--follow", is_flag=True, help="持续输出仍在进行中的构建的后续日志")
+@click.pass_context
+def cmd_build_logs(ctx: click.Context, build_id: str, follow: bool) -> None:
+    """Print (or, with -f, follow) the log of a specific image build."""
+    ws: Path = ctx.obj["workspace"]
+    builds_dir = ws / "builds"
+    log_path = builds_dir / f"{build_id}.log"
+    if not log_path.exists():
+        raise click.ClickException(f"找不到构建 '{build_id}' 的日志")
+
+    with log_path.open("r", encoding="utf-8") as f:
+        click.echo(f.read(), nl=False)
+        if not follow:
+            return
+        while True:
+            record_path = builds_dir / f"{build_id}.json"
+            build = ImageBuild.load(record_path) if record_path.exists() else None
+            line = f.readline()
+            if line:
+                click.echo(line, nl=False)
+                continue
+            if build is None or build.status != ImageBuildStatus.running:
+                return
+            time.sleep(0.3)
 
 
 @click.command("apply")

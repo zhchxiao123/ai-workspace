@@ -40,6 +40,7 @@ from coderfleet.server.models import (
     Conversation,
     ConversationMode,
     ConversationStatus,
+    ImageBuild,
     LogicalProject,
     LogicalProjectEntry,
     NodeType,
@@ -81,6 +82,7 @@ class Scheduler:
         self.schedules_dir  = workspace_dir / "schedules"
         self.digests_dir    = workspace_dir / "digests"
         self.sessions_dir   = workspace_dir / "sessions"
+        self.builds_dir     = workspace_dir / "builds"
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
@@ -676,6 +678,25 @@ class Scheduler:
 
     def get_log_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id}.log"
+
+    # ── 镜像构建管理 ──────────────────────────────────────
+
+    def list_builds(self, project_name: Optional[str] = None, kind: Optional[str] = None) -> list[ImageBuild]:
+        builds = ImageBuild.load_all(self.builds_dir)
+        if project_name is not None:
+            builds = [b for b in builds if b.project_name == project_name]
+        if kind is not None:
+            builds = [b for b in builds if b.kind == kind]
+        return builds
+
+    def get_build(self, build_id: str) -> Optional[ImageBuild]:
+        path = self.builds_dir / f"{build_id}.json"
+        if not path.exists():
+            return None
+        return ImageBuild.load(path)
+
+    def get_build_log_path(self, build_id: str) -> Path:
+        return self.builds_dir / f"{build_id}.log"
 
     # ── 定时计划管理 ──────────────────────────────────────
 

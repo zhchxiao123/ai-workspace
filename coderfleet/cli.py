@@ -28,7 +28,7 @@ from coderfleet.board_cmds import board_group, card_group
 from coderfleet.workflow_cmds import workflow_group
 from coderfleet.config_cmds import account_group, config_group, project_group
 from coderfleet.docker_ops import (
-    cmd_build, cmd_apply, cmd_up, cmd_down,
+    cmd_build, cmd_build_history, cmd_build_logs, cmd_apply, cmd_up, cmd_down,
     cmd_restart, cmd_status, cmd_logs, cmd_enter, cmd_check_proxy,
 )
 from coderfleet.login_cmd import cmd_login
@@ -43,6 +43,8 @@ main.add_command(account_group)
 main.add_command(project_group)
 main.add_command(config_group)
 main.add_command(cmd_build)
+main.add_command(cmd_build_history)
+main.add_command(cmd_build_logs)
 main.add_command(cmd_apply)
 main.add_command(cmd_up)
 main.add_command(cmd_down)
