@@ -87,9 +87,11 @@ function shouldRefreshActiveChatForTaskStatusChange(nextTasks) {
   });
 }
 
-// 5 秒轮询入口：先问一次轻量心跳（只有 id/status/conversation_id/finished），
-// 只有心跳显示当前会话真的发生了状态变化，才去做一次全量刷新；
-// 侧边栏的运行中角标则直接用心跳数据就地更新缓存，不用整份重新拉取。
+// 5 秒轮询入口：先问一次轻量心跳（只有 id/status/conversation_id/finished）。
+// 心跳只用来快速刷新侧边栏的运行中角标；但心跳既不带时间戳也不认识心跳到来前
+// 才新建的任务 id，所以「当前会话状态变化」「出现心跳未见过的任务 id」「任意任务
+// 状态变化」都需要触发一次全量刷新，否则「最近访问」的排序和运行角标会滞后于
+// 其它会话/后台任务的实时变化。
 async function pollChatHeartbeat() {
   let heartbeat;
   try {
@@ -99,19 +101,27 @@ async function pollChatHeartbeat() {
   }
   if (!Array.isArray(heartbeat)) return;
 
-  const needsFullRefresh = shouldRefreshActiveChatForTaskStatusChange(heartbeat);
+  const needsActiveWorkspaceRefresh = shouldRefreshActiveChatForTaskStatusChange(heartbeat);
 
   const byId = new Map(tasksCache.map(t => [t.id, t]));
+  let hasNewOrChangedTask = false;
   heartbeat.forEach(h => {
     const existing = byId.get(h.id);
     if (existing) {
+      if (existing.status !== h.status || existing.finished !== h.finished) {
+        hasNewOrChangedTask = true;
+      }
       existing.status = h.status;
       existing.finished = h.finished;
+    } else {
+      // 心跳里出现了缓存里没有的任务 id：说明有新任务提交了，侧边栏的
+      // 「最近访问」需要用一次全量刷新去拿到它所属会话的最新排序时间。
+      hasNewOrChangedTask = true;
     }
   });
   if (currentPage === 'chat') renderConversations(chatConversationsList, projectsCache, tasksCache);
 
-  if (needsFullRefresh) loadConversations(false);
+  if (needsActiveWorkspaceRefresh || hasNewOrChangedTask) loadConversations(false);
 }
 
 // 以项目大标题分组渲染会话列表
@@ -759,7 +769,12 @@ function startNewChat(options = {}) {
   activeTabId = 'chat';
   chatNewSessionProject = options.projectName || '';
   showPage('chat');
-  loadConversations();
+  // showPage('chat') 已经会在后台触发一次 loadConversations()（见 nav.js 的 refreshCurrent），
+  // 这里不再重复调用一次——之前这里会让每次点“+”都并发打两遍 /api/conversations、
+  // /api/projects、/api/tasks?limit=1000。空状态本身只需要已缓存的项目信息，
+  // 不用等那次全量刷新的网络请求跑完，直接同步渲染即可。
+  renderEmptyChatState();
+  syncBottomTerminalProjectFromContext();
 }
 
 // 渲染新会话空状态（无历史记录的初始界面）
@@ -1181,8 +1196,10 @@ async function renderChatWorkspace(conv) {
   currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
   pendingImages = [];
 
-  const chatAccountType = await getChatAccountType(conv.account);
+  const chatAccount = await getChatAccount(conv.account);
+  const chatAccountType = chatAccount?.type || '';
   const modelPillHtml = chatAccountType === 'claude' ? buildChatModelPillHtml() : '';
+  const usagePillHtml = buildChatUsagePillHtml(chatAccount);
 
   workspace.innerHTML = `
 <!-- 会话头部 -->
@@ -1192,7 +1209,7 @@ async function renderChatWorkspace(conv) {
     <div class="chat-main-subtitle">
       项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
       账号: <span>${esc(conv.account || '未指定')}</span> ·
-      活跃: <span>${fmtTime(conv.updated)}</span>${modelPillHtml}
+      活跃: <span>${fmtTime(conv.updated)}</span>${modelPillHtml}${usagePillHtml}
     </div>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
@@ -2014,15 +2031,55 @@ const CHAT_MODEL_OPTIONS = [
   { value: '',       label: '默认模型',        title: '跟随账号 / CLI 的默认模型设置' },
   { value: 'opus',   label: 'Opus 4.8 · 最强推理', title: 'Claude Opus 4.8 —— 推理能力最强，速度较慢，适合复杂任务' },
   { value: 'sonnet', label: 'Sonnet 5 · 均衡推荐', title: 'Claude Sonnet 5 —— 速度与能力均衡，日常任务首选' },
+  { value: 'fable',  label: 'Fable 5 · 快速输出', title: 'Claude Fable 5 —— Opus 级能力、更快输出，Fast 模式使用' },
   { value: 'haiku',  label: 'Haiku 4.5 · 最快响应', title: 'Claude Haiku 4.5 —— 响应最快，适合简单或大批量任务' },
 ];
 
-async function getChatAccountType(accountName) {
-  if (!accountName) return '';
+async function getChatAccount(accountName) {
+  if (!accountName) return null;
   if (!globalAccountsCache.length) {
-    try { globalAccountsCache = await fetch(`${API}/api/accounts`).then(r => r.json()); } catch { return ''; }
+    try { globalAccountsCache = await fetch(`${API}/api/accounts`).then(r => r.json()); } catch { return null; }
   }
-  return globalAccountsCache.find(a => a.name === accountName)?.type || '';
+  return globalAccountsCache.find(a => a.name === accountName) || null;
+}
+
+async function getChatAccountType(accountName) {
+  const acc = await getChatAccount(accountName);
+  return acc?.type || '';
+}
+
+// 会话头部的套餐用量徽章（Claude Max / ChatGPT(Codex) 账号、且探测到过数据时显示）
+function buildChatUsagePillHtml(account) {
+  const usage = account?.usage;
+  const w = usage?.five_hour;
+  if (!account || !usage || usage.error || !w || w.utilization == null) return '';
+  const pct = Math.max(0, Math.min(100, Math.round(w.utilization)));
+  const fillClass = pct >= 90 ? 'usage-fill usage-danger' : pct >= 75 ? 'usage-fill usage-warn' : 'usage-fill';
+  const sevenDay = usage.seven_day;
+  const titleParts = [`5h 窗口已用 ${pct}%`];
+  if (w.resets_at) titleParts.push(`重置：${new Date(w.resets_at).toLocaleString()}`);
+  if (sevenDay?.utilization != null) titleParts.push(`7d 已用 ${Math.round(sevenDay.utilization)}%`);
+  titleParts.push('点击刷新');
+  return `
+      <span class="chat-usage-pill" id="chat-usage-pill" title="${esc(titleParts.join(' · '))}"
+            onclick="refreshChatUsage('${esc(account.name)}',event)">
+        <span class="chat-model-pill-label">5h 用量</span>
+        <span class="chat-usage-track"><span class="${fillClass}" style="width:${pct}%"></span></span>
+        <span style="font-size:11px;color:var(--text-2)">${pct}%</span>
+      </span>`;
+}
+
+async function refreshChatUsage(accountName, event) {
+  event?.stopPropagation();
+  const pill = document.getElementById('chat-usage-pill');
+  if (pill) pill.style.opacity = '.5';
+  try {
+    await fetch(`${API}/api/accounts/${encodeURIComponent(accountName)}/usage/refresh`, { method: 'POST' });
+  } catch { /* 探测失败也重新拉一次账号列表，把 error 状态展示出来 */ }
+  try {
+    globalAccountsCache = await fetch(`${API}/api/accounts`).then(r => r.json());
+  } catch { return; }
+  if (activeConversationId) selectConversation(activeConversationId);
 }
 
 function buildChatModelPillHtml() {

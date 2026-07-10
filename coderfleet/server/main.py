@@ -28,6 +28,7 @@ import uuid
 
 import aiofiles
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +40,7 @@ from coderfleet.server.models import (
     AccountProxy,
     AccountResponse,
     AccountType,
+    AccountUsage,
     BoardCardResponse,
     BoardCardStatus,
     BoardResponse,
@@ -241,6 +243,7 @@ async def reconcile_tasks_on_startup():
     scheduler._push_manager = push_manager
     await scheduler.reconcile_running_tasks()
     scheduler.start_scheduling_loop()
+    scheduler.start_usage_polling_loop()
 
 
 @app.get("/", include_in_schema=False)
@@ -547,6 +550,15 @@ async def list_account_types():
 async def list_accounts():
     """列出所有账号，包含容器状态和忙碌状态"""
     return scheduler.list_accounts()
+
+
+@app.post("/api/accounts/{name}/usage/refresh", response_model=AccountUsage)
+async def refresh_account_usage(name: str):
+    """立即探测一次指定账号的 Claude Max 套餐用量（而非等下一次后台轮询）"""
+    try:
+        return await scheduler.refresh_account_usage(name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 import re as _re
@@ -1520,10 +1532,11 @@ async def project_terminal(websocket: WebSocket, project_name: str):
 
 @app.get("/api/conversations", response_model=list[ConversationResponse])
 async def list_conversations(include_archived: bool = Query(False)):
-    return [
-        ConversationResponse.from_conversation(c)
-        for c in scheduler.list_conversations(include_archived=include_archived)
-    ]
+    # list_conversations() 是同步磁盘扫描（逐个会话 JSON 文件 stat + 解析），
+    # 丢进线程池执行，避免会话/任务较多时卡住事件循环上其他并发请求
+    # （SSE 日志流、WebSocket 终端、心跳轮询等）。
+    convs = await run_in_threadpool(scheduler.list_conversations, include_archived=include_archived)
+    return [ConversationResponse.from_conversation(c) for c in convs]
 
 
 @app.post("/api/conversations", response_model=ConversationResponse, status_code=201)
@@ -1791,7 +1804,8 @@ async def list_tasks(
     limit:   int           = Query(50,   description="返回条数上限"),
     include_archived: bool = Query(False, description="是否包含已归档的任务"),
 ):
-    tasks = scheduler.list_tasks()
+    # 同上：list_tasks() 会扫描 tasks/ 目录下的全部任务文件，丢进线程池执行。
+    tasks = await run_in_threadpool(scheduler.list_tasks)
 
     if not include_archived:
         tasks = [t for t in tasks if not getattr(t, "archived", False)]
@@ -1815,7 +1829,7 @@ async def list_tasks(
 @app.get("/api/tasks/heartbeat", response_model=list[TaskHeartbeat])
 async def tasks_heartbeat():
     """给前端高频轮询用的瘦身端点：只探测状态变化，避免每 5 秒都拉全量任务详情。"""
-    tasks = scheduler.list_tasks()
+    tasks = await run_in_threadpool(scheduler.list_tasks)
     return [TaskHeartbeat.from_task(t) for t in tasks if not getattr(t, "archived", False)]
 
 

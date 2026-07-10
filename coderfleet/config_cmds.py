@@ -201,6 +201,99 @@ def cmd_account_list(ctx: click.Context) -> None:
     click.echo()
 
 
+def _format_usage_window(label: str, window) -> str:
+    if window is None or window.utilization is None:
+        return f"  {label:<12} 无数据"
+    pct = f"{window.utilization:.0f}%"
+    reset = ""
+    if window.resets_at:
+        reset = f"，{window.resets_at} 重置"
+    return f"  {label:<12} 已用 {pct}{reset}"
+
+
+_USAGE_ERROR_HINTS = {
+    "no_credentials":      "找不到登录凭据，先执行 coderfleet login <账号名>",
+    "unauthorized":        "token 已过期，等账号被任务用到自动刷新后重试，或重新 login",
+    "rate_limited":        "被 Anthropic 限流了，稍后再试",
+    "no_running_container": "这个账号当前没有正在运行的项目容器，先 coderfleet up 对应项目",
+}
+
+
+def _find_running_container_for_account(projects_conf: Path, acc_name: str, acc_type: str) -> Optional[str]:
+    """探测必须从账号所在容器打出去（走 gost 代理），不能从宿主机裸连——
+    否则同一账号的流量一会儿走代理一会儿裸连，容易触发风控。"""
+    for p in parse_conf(projects_conf):
+        if p.get("ACCOUNT") != acc_name:
+            continue
+        container = _container_name(p.get("NAME", ""), acc_type)
+        if _is_running(container):
+            return container
+    return None
+
+
+_USAGE_ELIGIBLE_TYPES = ("claude", "codex")
+
+
+@account_group.command("usage")
+@click.argument("name", required=False)
+@click.option("--debug", is_flag=True, help="打印原始探测结果，便于排查解析问题")
+@click.pass_context
+def cmd_account_usage(ctx: click.Context, name: Optional[str], debug: bool) -> None:
+    """查看 Claude Max / ChatGPT (Codex) 套餐用量（仅对 AUTH=login 的账号有效）。
+
+    探测请求从账号当前正在运行的项目容器里发出（走该容器的 gost 代理），
+    不会从宿主机直连 —— 账号需要有至少一个项目容器正在运行。
+    """
+    from coderfleet import usage_probe
+
+    ws: Path = ctx.obj["workspace"]
+    accounts_conf = ws / "accounts.conf"
+    projects_conf = ws / "projects.conf"
+    accounts = parse_conf(accounts_conf)
+    eligible = [
+        r for r in accounts
+        if r.get("TYPE") in _USAGE_ELIGIBLE_TYPES and r.get("AUTH", "login") == "login"
+    ]
+    if name:
+        eligible = [r for r in eligible if r.get("NAME") == name]
+        if not eligible:
+            raise click.ClickException(f"账号 '{name}' 不存在，或不是 TYPE=claude/codex AUTH=login 的账号")
+
+    if not eligible:
+        click.secho("  没有可查用量的账号（需要 TYPE=claude 或 codex，且 AUTH=login）", fg="yellow")
+        return
+
+    click.echo()
+    for rec in eligible:
+        acc_name = rec["NAME"]
+        acc_type = rec.get("TYPE", "claude")
+        click.echo(f"  ── {acc_name} " + "─" * max(1, 58 - len(acc_name)))
+        container = _find_running_container_for_account(projects_conf, acc_name, acc_type)
+        if container is None:
+            usage = None
+            click.secho(f"  探测失败：{_USAGE_ERROR_HINTS['no_running_container']}", fg="red")
+        elif acc_type == "codex":
+            usage = usage_probe.probe_codex_via_container(container)
+        else:
+            usage = usage_probe.probe_via_container(container)
+        if usage is not None:
+            if usage.error:
+                hint = _USAGE_ERROR_HINTS.get(usage.error, usage.error)
+                click.secho(f"  探测失败：{hint}", fg="red")
+            else:
+                if usage.subscription_type:
+                    click.echo(f"  套餐：{usage.subscription_type}")
+                click.echo(_format_usage_window("5 小时窗口", usage.five_hour))
+                click.echo(_format_usage_window("7 天窗口", usage.seven_day))
+                if usage.seven_day_opus:
+                    click.echo(_format_usage_window("7 天 Opus", usage.seven_day_opus))
+                if usage.seven_day_sonnet:
+                    click.echo(_format_usage_window("7 天 Sonnet", usage.seven_day_sonnet))
+            if debug:
+                click.secho(f"  raw: {usage.model_dump_json()}", dim=True)
+        click.echo()
+
+
 # ── project ───────────────────────────────────────────────────
 
 

@@ -69,6 +69,7 @@ function renderAccounts(accounts) {
           <div class="account-running-prompt">${esc(a.running_task_prompt)}</div>
         </div>`
       : '';
+    const usageBlock = renderUsageBlock(a);
     return `<div class="account-card" onclick="openAccount('${esc(a.name)}')" style="cursor:pointer">
   <div class="account-card-head">
     <div class="account-identity">
@@ -97,6 +98,7 @@ function renderAccounts(accounts) {
   </div>
   <div class="chip-list">${projectChips}</div>
   <div class="container-list">${containerRows}</div>
+  ${usageBlock}
   ${runningTaskBlock}
   <div class="account-footer">
     <button class="btn" style="font-size:12px" onclick="filterTasksByAccount('${esc(a.name)}');event.stopPropagation()">查看任务</button>
@@ -105,6 +107,60 @@ function renderAccounts(accounts) {
   </div>
 </div>`;
   }).join('');
+}
+
+const USAGE_ERROR_HINTS = {
+  no_credentials: '未登录',
+  unauthorized:   'token 已过期',
+  rate_limited:   '被限流',
+};
+
+function _usageFillClass(pct) {
+  if (pct >= 90) return 'usage-fill usage-danger';
+  if (pct >= 75) return 'usage-fill usage-warn';
+  return 'usage-fill';
+}
+
+function _usageRow(label, window) {
+  if (!window || window.utilization == null) return '';
+  const pct = Math.max(0, Math.min(100, Math.round(window.utilization)));
+  const resetTitle = window.resets_at
+    ? `重置：${esc(new Date(window.resets_at).toLocaleString())}`
+    : '';
+  return `<div class="usage-row" title="${resetTitle}">
+    <span class="usage-label">${esc(label)}</span>
+    <div class="usage-track"><div class="${_usageFillClass(pct)}" style="width:${pct}%"></div></div>
+    <span class="usage-pct">${pct}%</span>
+  </div>`;
+}
+
+function renderUsageBlock(a) {
+  const usage = a.usage;
+  if (!usage) return '';
+  if (usage.error) {
+    const hint = USAGE_ERROR_HINTS[usage.error] || usage.error;
+    return `<div class="account-usage-error">
+      用量：${esc(hint)}
+      <a href="javascript:void(0)" onclick="refreshAccountUsage('${esc(a.name)}',event)">重试</a>
+    </div>`;
+  }
+  const rows = [
+    _usageRow('5h', usage.five_hour),
+    _usageRow('7d', usage.seven_day),
+  ].filter(Boolean).join('');
+  if (!rows) return '';
+  return `<div class="account-usage" onclick="event.stopPropagation()">
+    ${rows}
+    <a href="javascript:void(0)" style="font-size:11px;color:var(--text-3)" onclick="refreshAccountUsage('${esc(a.name)}',event)">刷新</a>
+  </div>`;
+}
+
+async function refreshAccountUsage(name, event) {
+  event?.stopPropagation();
+  try {
+    await fetch(`${API}/api/accounts/${encodeURIComponent(name)}/usage/refresh`, { method: 'POST' });
+  } catch { /* 探测失败也重新拉一次列表，把 error 字段展示出来 */ }
+  await loadAccounts();
 }
 
 function filterTasksByAccount(accountName) {

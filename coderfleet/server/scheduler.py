@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from coderfleet.config import parse_conf
+from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
 from coderfleet.ports import allocate_ide_port
@@ -32,6 +33,7 @@ from coderfleet.server.models import (
     AccountProxy,
     AccountResponse,
     AccountType,
+    AccountUsage,
     Board,
     BoardCard,
     BoardCardStatus,
@@ -86,6 +88,10 @@ class Scheduler:
         self._last_auto_digest_date: str = ""
         self._board_migration_done = False  # 单一引用迁移只跑一次/进程
         self._pipeline_migration_done = False  # Pipeline→WorkflowRun backfill 只跑一次/进程
+        # Claude Max 套餐用量：内存缓存 + accounts/<name>/usage-cache.json 落盘
+        self._usage_cache: dict[str, AccountUsage] = {}
+        self._usage_loop_task: Optional[asyncio.Task] = None
+        self._load_cached_usage()
 
     async def _notify(self, task: Task) -> None:
         if self._push_manager is None:
@@ -450,8 +456,116 @@ class Scheduler:
                 running_task_prompt = rt.prompt if rt else "",
                 task_done_count     = done_counts.get(acc.name, 0),
                 task_failed_count   = failed_counts.get(acc.name, 0),
+                usage     = self._usage_cache.get(acc.name),
             ))
         return result
+
+    # ── Claude Max / ChatGPT (Codex) 套餐用量 ─────────────────────
+
+    _USAGE_PROBED_ACCOUNT_TYPES = (AccountType.claude, AccountType.codex)
+
+    def account_dir(self, name: str) -> Path:
+        return self.workspace_dir / "accounts" / name
+
+    def _usage_eligible_accounts(self) -> list[Account]:
+        """只有真正走 OAuth login 的 Claude / Codex 账号才有套餐用量可查。"""
+        return [
+            acc for acc in self.get_accounts()
+            if acc.type in self._USAGE_PROBED_ACCOUNT_TYPES and acc.auth == AccountAuth.login
+        ]
+
+    def _usage_cache_path(self, name: str) -> Path:
+        return self.account_dir(name) / "usage-cache.json"
+
+    def _load_cached_usage(self) -> None:
+        """server 重启后先用上一次落盘的结果垫底，避免刚启动时 UI 一片空白。"""
+        for acc in self._usage_eligible_accounts():
+            path = self._usage_cache_path(acc.name)
+            if not path.exists():
+                continue
+            try:
+                self._usage_cache[acc.name] = AccountUsage.model_validate_json(path.read_text())
+            except (ValueError, OSError):
+                pass
+
+    def _running_container_for_account(self, name: str, acc_type: AccountType) -> Optional[str]:
+        """探测必须从账号本身惯用的网络路径（容器 -> gost 代理）打出去，不能走宿主机裸连，
+        否则同一账号的请求一会儿走代理一会儿裸连，容易被判定异常触发风控。
+        这里找一个当下正在跑、挂载了这个账号凭据的容器。"""
+        for project in self.get_projects():
+            if project.account != name:
+                continue
+            container = project.container_name(acc_type)
+            if docker_mgr.is_container_running(container):
+                return container
+        return None
+
+    async def refresh_account_usage(self, name: str) -> AccountUsage:
+        """立即探测一次指定账号的用量（供手动刷新 / CLI 调用）。"""
+        acc = next((a for a in self.get_accounts() if a.name == name), None)
+        if acc is None:
+            raise ValueError(f"账号 '{name}' 不存在")
+        if acc.type not in self._USAGE_PROBED_ACCOUNT_TYPES or acc.auth != AccountAuth.login:
+            raise ValueError(f"账号 '{name}' 不是 OAuth 登录的 Claude/Codex 账号，没有套餐用量可查")
+
+        container = self._running_container_for_account(name, acc.type)
+        if container is None:
+            usage = AccountUsage(fetched_at=usage_probe.now_iso(), error="no_running_container")
+        elif acc.type == AccountType.codex:
+            usage = await usage_probe.probe_codex_via_container_async(container)
+        else:
+            usage = await usage_probe.probe_via_container_async(container)
+        self._usage_cache[name] = usage
+        try:
+            self._usage_cache_path(name).write_text(usage.model_dump_json())
+        except OSError:
+            pass
+        return usage
+
+    # Adaptive 探测间隔：以「账号是不是有任务在跑」为基准，而不是固定周期。
+    _USAGE_DELAY_BUSY = 300.0    # 账号当前有任务在跑
+    _USAGE_DELAY_IDLE = 3600.0   # 其他情况（包括从未跑过任务）
+    _USAGE_POLL_TICK_SECONDS = 30.0  # 轮询循环本身的检查粒度（不是探测间隔）
+
+    def _usage_adaptive_delay(self, name: str, busy: set[str]) -> float:
+        return self._USAGE_DELAY_BUSY if name in busy else self._USAGE_DELAY_IDLE
+
+    def start_usage_polling_loop(self, tick_seconds: float = _USAGE_POLL_TICK_SECONDS) -> None:
+        if self._usage_loop_task is None or self._usage_loop_task.done():
+            self._usage_loop_task = asyncio.create_task(
+                self._usage_polling_loop(tick_seconds),
+                name="scheduler-usage-poll-loop",
+            )
+
+    async def _usage_polling_loop(self, tick_seconds: float) -> None:
+        while True:
+            try:
+                await self._poll_due_account_usage()
+            except Exception:
+                import traceback
+                print("Error in usage polling loop:")
+                traceback.print_exc()
+            await asyncio.sleep(tick_seconds)
+
+    async def _poll_due_account_usage(self) -> None:
+        busy = self.get_busy_accounts()
+        now = datetime.now()
+        for acc in self._usage_eligible_accounts():
+            delay = self._usage_adaptive_delay(acc.name, busy)
+            cached = self._usage_cache.get(acc.name)
+            if cached and cached.fetched_at:
+                try:
+                    last_fetch = datetime.fromisoformat(cached.fetched_at)
+                    if (now - last_fetch).total_seconds() < delay:
+                        continue
+                except ValueError:
+                    pass
+            try:
+                await self.refresh_account_usage(acc.name)
+            except Exception:
+                import traceback
+                print(f"Error polling usage for account '{acc.name}':")
+                traceback.print_exc()
 
     def list_projects(self) -> list[Project]:
         return self.get_projects()
@@ -1515,6 +1629,8 @@ class Scheduler:
                 task_secrets   = dict(secrets),
             )
             task.save(self.tasks_dir)
+            if conversation:
+                conversation.touch(self.conversations_dir, last_task_id=task.id)
             if dag_pipeline:
                 self._register_task_in_pipeline(task_id, dag_pipeline)
             if card_id:
@@ -1584,6 +1700,8 @@ class Scheduler:
                 execution_mode = "persistent",
             )
             task.save(self.tasks_dir)
+            if conversation:
+                conversation.touch(self.conversations_dir, last_task_id=task.id)
             if dag_pipeline:
                 self._register_task_in_pipeline(task_id, dag_pipeline)
             if card_id:
@@ -1618,6 +1736,8 @@ class Scheduler:
                 execution_mode = "persistent",
             )
             task.save(self.tasks_dir)
+            if conversation:
+                conversation.touch(self.conversations_dir, last_task_id=task.id)
             if dag_pipeline:
                 self._register_task_in_pipeline(task_id, dag_pipeline)
             if card_id:
@@ -1654,6 +1774,8 @@ class Scheduler:
             execution_mode = "persistent",
         )
         task.save(self.tasks_dir)
+        if conversation:
+            conversation.touch(self.conversations_dir, last_task_id=task.id)
         if dag_pipeline:
             self._register_task_in_pipeline(task_id, dag_pipeline)
         if card_id:
@@ -1836,6 +1958,8 @@ class Scheduler:
             await self._append_usage_status(log_path, acc, container_name)
             self._append_log_footer(log_path, "done")
         else:
+            if conversation:
+                conversation.touch(self.conversations_dir, last_task_id=task.id)
             task.update_status(TaskStatus.failed, self.tasks_dir)
             self._sync_board_card_for_task(task)
             await self._append_usage_status(log_path, acc, container_name)
@@ -2204,6 +2328,8 @@ class Scheduler:
                 self._sync_board_card_for_task(task)
                 self._append_log_footer(log_path, "done")
             else:
+                if conversation:
+                    conversation.touch(self.conversations_dir, last_task_id=task.id)
                 task.update_status(TaskStatus.failed, self.tasks_dir)
                 self._sync_board_card_for_task(task)
                 self._append_log_footer(log_path, f"failed (exit={rc})")

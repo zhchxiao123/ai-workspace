@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from coderfleet.account_type_registry import env_auth_type_ids
 from coderfleet.config import parse_optional_int, truthy
 from coderfleet.server.store import JsonStore
+from coderfleet.usage_probe import AccountUsage, UsageWindow  # noqa: F401 (re-exported)
 
 
 class TaskStatus(str, Enum):
@@ -549,6 +550,7 @@ class AccountResponse(BaseModel):
     running_task_prompt: str = ""
     task_done_count:     int = 0
     task_failed_count:   int = 0
+    usage:     Optional[AccountUsage] = None  # Claude Max 套餐用量（仅 type=claude, auth=login）
 
 
 # ── 工作流 / Pipeline ──────────────────────────────────────

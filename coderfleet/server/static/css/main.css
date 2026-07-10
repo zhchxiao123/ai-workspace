@@ -801,6 +801,52 @@
       gap: 6px;
     }
 
+    .account-usage {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .usage-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .usage-label {
+      flex: 0 0 28px;
+      font-size: 11px;
+      color: var(--text-3);
+      font-weight: 700;
+    }
+    .usage-track {
+      flex: 1;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .usage-fill {
+      display: block;
+      height: 100%;
+      background: var(--green);
+      border-radius: 999px;
+    }
+    .usage-fill.usage-warn { background: #d97706; }
+    .usage-fill.usage-danger { background: var(--red); }
+    .usage-pct {
+      flex: 0 0 34px;
+      text-align: right;
+      font-size: 11px;
+      color: var(--text-2);
+      font-variant-numeric: tabular-nums;
+    }
+    .account-usage-error {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-3);
+    }
+
     /* ── 技能管理 ─────────────────────────────────────────── */
     .skill-grid {
       display: grid;
@@ -3940,6 +3986,30 @@
     .chat-model-pill-label {
       font-size: 11px;
       color: var(--text-3);
+    }
+
+    /* 会话头部的 Max 套餐用量徽章 */
+    .chat-usage-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border: 1px solid var(--border-md);
+      border-radius: 999px;
+      background: var(--surface-2);
+      vertical-align: middle;
+      cursor: pointer;
+    }
+    .chat-usage-track {
+      display: inline-block;
+      width: 40px;
+      height: 5px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      vertical-align: middle;
     }
 
     .chat-model-select {
