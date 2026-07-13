@@ -90,6 +90,10 @@ class Scheduler:
         self._last_auto_digest_date: str = ""
         self._board_migration_done = False  # 单一引用迁移只跑一次/进程
         self._pipeline_migration_done = False  # Pipeline→WorkflowRun backfill 只跑一次/进程
+        # legacy_pipeline_id → WorkflowRun.id 的内存索引：WorkflowRun 文件按自己的 id 存盘，
+        # 没有按 legacy_pipeline_id 建索引的文件名，查找只能靠内容匹配。懒加载建好后，
+        # 后续按 legacy id 查找不必每次都把 workflow_runs/ 目录全量扫一遍。
+        self._legacy_pipeline_run_ids: dict[str, str] = {}
         # Claude Max 套餐用量：内存缓存 + accounts/<name>/usage-cache.json 落盘
         self._usage_cache: dict[str, AccountUsage] = {}
         self._usage_loop_task: Optional[asyncio.Task] = None
@@ -2850,6 +2854,25 @@ class Scheduler:
                 runs.append(self._workflow_run_from_pipeline(pipeline))
         return sorted(runs, key=lambda r: r.updated, reverse=True)
 
+    def _find_workflow_run_by_legacy_pipeline_id(self, pipeline_id: str) -> Optional[WorkflowRun]:
+        """按 legacy_pipeline_id 查找 WorkflowRun：先查内存索引，未命中才扫一遍
+        workflow_runs/ 目录——扫描顺带把遇到的映射关系记进索引，下次同样的
+        （或别的）legacy id 查找不必再扫一遍全量目录。"""
+        cached_run_id = self._legacy_pipeline_run_ids.get(pipeline_id)
+        if cached_run_id:
+            cached_path = self.workflow_runs_dir / f"{cached_run_id}.json"
+            if cached_path.exists():
+                return WorkflowRun.load(cached_path)
+            self._legacy_pipeline_run_ids.pop(pipeline_id, None)
+
+        found: Optional[WorkflowRun] = None
+        for run in WorkflowRun.load_all(self.workflow_runs_dir):
+            if run.legacy_pipeline_id:
+                self._legacy_pipeline_run_ids[run.legacy_pipeline_id] = run.id
+            if run.legacy_pipeline_id == pipeline_id:
+                found = run
+        return found
+
     def get_workflow_run(self, run_id: str) -> Optional[WorkflowRun]:
         path = self.workflow_runs_dir / f"{run_id}.json"
         if path.exists():
@@ -2857,15 +2880,12 @@ class Scheduler:
         pipeline = self.get_pipeline(run_id)
         if pipeline and pipeline.template_id:
             return self._workflow_run_from_pipeline(pipeline)
-        for run in WorkflowRun.load_all(self.workflow_runs_dir):
-            if run.legacy_pipeline_id == run_id:
-                return run
-        return None
+        return self._find_workflow_run_by_legacy_pipeline_id(run_id)
 
     def get_workflow_run_by_legacy_pipeline_id(self, pipeline_id: str) -> Optional[WorkflowRun]:
-        for run in WorkflowRun.load_all(self.workflow_runs_dir):
-            if run.legacy_pipeline_id == pipeline_id:
-                return run
+        run = self._find_workflow_run_by_legacy_pipeline_id(pipeline_id)
+        if run:
+            return run
         pipeline = self.get_pipeline(pipeline_id)
         if pipeline and pipeline.template_id:
             return self._workflow_run_from_pipeline(pipeline)
@@ -3603,18 +3623,21 @@ class Scheduler:
         node: "TemplateNode",
         retention: str,
     ) -> Optional[str]:
-        if (getattr(node, "execution_mode", "inherit") or "inherit") != "ephemeral":
-            return None
-        pipeline = self.get_pipeline(pipeline_id)
-        if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
-            return getattr(pipeline, "shared_conversation_id", "") or None
-        if retention == "release_on_finish":
-            return None
+        is_ephemeral = (getattr(node, "execution_mode", "inherit") or "inherit") == "ephemeral"
+        if is_ephemeral:
+            pipeline = self.get_pipeline(pipeline_id)
+            if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
+                return getattr(pipeline, "shared_conversation_id", "") or None
+            if retention == "release_on_finish":
+                return None
+        # persistent/inherit 节点（默认、绝大多数工作流场景）也按节点粒度挂一条
+        # Conversation，命名规则与 ephemeral 节点一致，使工作流产出的对话能在聊天
+        # 界面里原生续链（原生 --resume），不必先手动"升级"成会话（issue #39）。
         name = f"workflow:{pipeline_id}:{node.node_id}"
         return next(
             (
                 c.id for c in self.list_conversations(include_archived=True)
-                if getattr(c, "ephemeral", False) and c.name == name
+                if getattr(c, "ephemeral", False) == is_ephemeral and c.name == name
             ),
             None,
         )
@@ -3625,13 +3648,13 @@ class Scheduler:
         node: "TemplateNode",
         retention: str,
     ) -> Optional[str]:
-        if (getattr(node, "execution_mode", "inherit") or "inherit") != "ephemeral":
-            return None
-        pipeline = self.get_pipeline(pipeline_id)
-        if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
-            return None
-        if retention == "release_on_finish":
-            return None
+        is_ephemeral = (getattr(node, "execution_mode", "inherit") or "inherit") == "ephemeral"
+        if is_ephemeral:
+            pipeline = self.get_pipeline(pipeline_id)
+            if pipeline and getattr(pipeline, "workspace_policy", "isolated") == "shared_ephemeral":
+                return None
+            if retention == "release_on_finish":
+                return None
         name = f"workflow:{pipeline_id}:{node.node_id}"
         existing = self._workflow_node_conversation_id(pipeline_id, node, retention)
         return None if existing else name

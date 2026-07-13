@@ -581,6 +581,38 @@ def test_backfills_workflow_run_for_legacy_pipeline(tmp_path: Path) -> None:
     assert any(r.legacy_pipeline_id == "pipe-legacy" for r in runs)
 
 
+def test_get_workflow_run_by_legacy_pipeline_id_scans_once_then_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #37：真正的模板运行里，WorkflowRun.id 是新生成的，legacy_pipeline_id 指向
+    旧 Pipeline.id——按旧 id 查找必然走回退分支。第一次未命中允许扫一遍
+    workflow_runs/ 目录，但要把映射记进内存索引；同一个（或另一个）legacy id
+    再查一次不该再触发一次全量扫描。"""
+    sched = Scheduler(tmp_path)
+    WorkflowRun(
+        id="wr-fresh", template_id="tpl-1", name="demo", status="running",
+        legacy_pipeline_id="pipe-old",
+    ).save(sched.workflow_runs_dir)
+
+    scan_calls: list[Path] = []
+    orig_load_all = WorkflowRun.load_all  # bound classmethod
+
+    def _tracking_load_all(cls, runs_dir):
+        scan_calls.append(runs_dir)
+        return orig_load_all(runs_dir)
+
+    monkeypatch.setattr(WorkflowRun, "load_all", classmethod(_tracking_load_all))
+
+    first = sched.get_workflow_run("pipe-old")
+    second = sched.get_workflow_run("pipe-old")
+    third = sched.get_workflow_run_by_legacy_pipeline_id("pipe-old")
+
+    assert first is not None and first.id == "wr-fresh"
+    assert second is not None and second.id == "wr-fresh"
+    assert third is not None and third.id == "wr-fresh"
+    assert len(scan_calls) == 1, "重复按 legacy id 查找不该反复全量扫描 workflow_runs 目录"
+
+
 def test_extract_native_session_id_from_codex_jsonl() -> None:
     assert Scheduler.extract_native_session_id(
         AccountType.codex,
@@ -1602,6 +1634,86 @@ def test_submit_pipeline_node_passes_node_execution_mode_and_output_dir(
     assert updated is not None
     assert updated.node_runs[0].execution_mode == "ephemeral"
     assert updated.node_runs[0].output_dir == "/tmp/node-out"
+
+
+def test_workflow_node_conversation_name_assigned_for_persistent_node(tmp_path: Path) -> None:
+    """persistent/inherit 模式节点（默认、绝大多数工作流场景）此前从不挂 Conversation，
+    导致工作流产出的对话没法在聊天界面里原生续链（issue #39）。首次执行时应该分配
+    一条节点粒度的会话名，命名规则与 ephemeral 节点保持一致。"""
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    node = TemplateNode(node_id="build", name="Build", prompt_tpl="build {{input}}")  # 默认 execution_mode=inherit
+
+    assert sched._workflow_node_conversation_id(pipeline.id, node, "release_on_finish") is None
+    assert (
+        sched._workflow_node_conversation_name(pipeline.id, node, "release_on_finish")
+        == f"workflow:{pipeline.id}:build"
+    )
+
+
+def test_workflow_node_conversation_id_reuses_existing_persistent_conversation(tmp_path: Path) -> None:
+    """第二次执行同一个持久节点时，应该复用已创建的 Conversation 而不是再申请一个新名字。"""
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    node = TemplateNode(node_id="build", name="Build", prompt_tpl="build {{input}}")
+    conv = Conversation(
+        id="conv-build", name=f"workflow:{pipeline.id}:build",
+        account="alice", type=AccountType.claude, project="/srv/x", project_name="web",
+    )
+    conv.save(sched.conversations_dir)
+
+    assert sched._workflow_node_conversation_id(pipeline.id, node, "release_on_finish") == "conv-build"
+    assert sched._workflow_node_conversation_name(pipeline.id, node, "release_on_finish") is None
+
+
+def test_workflow_node_conversation_ephemeral_release_on_finish_unchanged(tmp_path: Path) -> None:
+    """回归：ephemeral 节点在 release_on_finish 保留策略下，行为保持不变——不挂会话。"""
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    node = TemplateNode(node_id="build", name="Build", prompt_tpl="build {{input}}", execution_mode="ephemeral")
+
+    assert sched._workflow_node_conversation_id(pipeline.id, node, "release_on_finish") is None
+    assert sched._workflow_node_conversation_name(pipeline.id, node, "release_on_finish") is None
+
+
+def test_workflow_node_conversation_shared_ephemeral_unchanged(tmp_path: Path) -> None:
+    """回归：shared_ephemeral 策略下的 ephemeral 节点仍然复用 pipeline.shared_conversation_id。"""
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    pipeline.workspace_policy = "shared_ephemeral"
+    pipeline.shared_conversation_id = "conv-shared"
+    pipeline.save(sched.pipelines_dir)
+    node = TemplateNode(node_id="build", name="Build", prompt_tpl="build {{input}}", execution_mode="ephemeral")
+
+    assert sched._workflow_node_conversation_id(pipeline.id, node, "keep_until_ttl") == "conv-shared"
+    assert sched._workflow_node_conversation_name(pipeline.id, node, "keep_until_ttl") is None
+
+
+def test_submit_pipeline_node_persistent_node_gets_conversation_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sched = Scheduler(tmp_path)
+    pipeline = sched.create_pipeline("wf")
+    node = TemplateNode(node_id="build", name="Build", prompt_tpl="build {{input}}")
+
+    captured: dict = {}
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return Task(
+            id="task-build", status=TaskStatus.running, account="alice",
+            type=AccountType.claude, prompt=kwargs["prompt"], project="/srv/x",
+        )
+
+    monkeypatch.setattr(sched, "submit", fake_submit)
+
+    asyncio.run(
+        sched._submit_pipeline_node(node, pipeline.id, {"build": "repo"}, "input", {})
+    )
+
+    assert captured["conversation_id"] is None
+    assert captured["conversation_name"] == f"workflow:{pipeline.id}:build"
 
 
 def test_ephemeral_task_retention_starts_session_container_then_execs(

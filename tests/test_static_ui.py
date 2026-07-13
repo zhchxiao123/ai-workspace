@@ -953,3 +953,22 @@ def test_chat_reuses_cached_log_for_finished_tasks_instead_of_refetching() -> No
     assert "_finishedLogCache" in source
     assert "t.status !== 'running' && _finishedLogCache.has(t.id)" in source
     assert "_finishedLogCache.set(t.id, logs[idx])" in source
+
+
+def test_open_pipeline_does_not_refetch_full_task_list() -> None:
+    """loadWorkflows() 进入工作流 tab 时已经拉过 workflowTasksCache；点击某个工作流
+    不该在 openPipeline() 里重新拉一次 /api/tasks?limit=300——详情所需的任务已经
+    内嵌在 /api/workflow-runs/{id} 的响应里。"""
+    source = read_ui_source()
+
+    match = re.search(
+        r"async function openPipeline\(id\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+
+    assert "api/tasks?limit=300" not in body
+    assert "api/workflow-runs/${id}" in body
+    assert "renderPipelineList(pipelinesCache, workflowTasksCache)" in body
+    assert "_renderActivePipeline(pipeline, pipeline.tasks" in body

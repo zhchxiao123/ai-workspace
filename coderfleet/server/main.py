@@ -2261,10 +2261,11 @@ async def resume_pipeline(pipeline_id: str):
 
 
 def _workflow_run_response(run: WorkflowRun) -> WorkflowRunResponse:
-    all_tasks = {t.id: t for t in scheduler.list_tasks()}
+    # 按需精确查找这次运行涉及的任务，而不是 scheduler.list_tasks() 把 tasks/ 目录下的全部
+    # 任务加载一遍——get_task() 是单文件路径读取，开销只随本次运行的节点数增长。
     pipeline = scheduler.get_pipeline(run.legacy_pipeline_id) if run.legacy_pipeline_id else None
     task_ids = [n.task_id for n in run.node_executions if n.task_id]
-    tasks = [all_tasks[tid] for tid in task_ids if tid in all_tasks]
+    tasks = [t for t in (scheduler.get_task(tid) for tid in task_ids) if t is not None]
     return WorkflowRunResponse.from_run(
         run,
         tasks,
@@ -2288,17 +2289,29 @@ def _schedule_run_response(sched: Schedule, run_type: str, run_obj) -> ScheduleR
     )
 
 
+def _list_workflow_runs_sync() -> list[WorkflowRunResponse]:
+    return [_workflow_run_response(r) for r in scheduler.list_workflow_runs()]
+
+
 @app.get("/api/workflow-runs", response_model=list[WorkflowRunResponse])
 async def list_workflow_runs():
-    return [_workflow_run_response(r) for r in scheduler.list_workflow_runs()]
+    # 同上：list_workflow_runs() 会扫描 workflow_runs/ 及 pipelines/ 目录下的全部记录，丢进线程池执行。
+    return await run_in_threadpool(_list_workflow_runs_sync)
+
+
+def _get_workflow_run_sync(run_id: str) -> Optional[WorkflowRunResponse]:
+    run = scheduler.get_workflow_run(run_id)
+    if run is None:
+        return None
+    return _workflow_run_response(run)
 
 
 @app.get("/api/workflow-runs/{run_id}", response_model=WorkflowRunResponse)
 async def get_workflow_run(run_id: str):
-    run = scheduler.get_workflow_run(run_id)
-    if run is None:
+    response = await run_in_threadpool(_get_workflow_run_sync, run_id)
+    if response is None:
         raise HTTPException(status_code=404, detail=f"工作流运行 '{run_id}' 不存在")
-    return _workflow_run_response(run)
+    return response
 
 
 @app.delete("/api/workflow-runs/{run_id}", status_code=204)

@@ -136,14 +136,12 @@ async function openPipeline(id) {
   closeWorkflowDetail();
 
   try {
-    const [pipeline, tasks] = await Promise.all([
-      fetch(`${API}/api/workflow-runs/${id}`).then(r => r.json()),
-      fetch(`${API}/api/tasks?limit=300`).then(r => r.json()).catch(() => []),
-    ]);
-    workflowTasksCache = tasks;
+    // 详情所需的任务已内嵌在 pipeline.tasks 里（后端 _workflow_run_response 已按需查好），
+    // 不必再重新拉一次 /api/tasks；侧边栏列表复用 loadWorkflows() 已拉取的 workflowTasksCache。
+    const pipeline = await fetch(`${API}/api/workflow-runs/${id}`).then(r => r.json());
     pipelinesCache = pipelinesCache.map(p => p.id === id ? pipeline : p);
-    renderPipelineList(pipelinesCache, tasks);
-    _renderActivePipeline(pipeline, tasks);
+    renderPipelineList(pipelinesCache, workflowTasksCache);
+    _renderActivePipeline(pipeline, pipeline.tasks || []);
   } catch (e) {
     const area = document.getElementById('dag-area');
     if (area) area.innerHTML = `<div class="dag-empty"><span style="color:var(--red)">加载失败：${esc(e.message)}</span></div>`;
