@@ -475,6 +475,33 @@ def test_log_renderer_supports_opencode_events() -> None:
         assert token in source
 
 
+def test_log_renderer_supports_grok_text_data_events() -> None:
+    source = read_ui_source()
+
+    for token in [
+        "case 'thought':",
+        "this._grokToken('thought', d.data || '')",
+        "case 'text':",
+        "this._grokToken('text',    d.data || '')",
+        "case 'end':",
+        "d.sessionId || d.session_id || d.sessionID",
+        "_grokFlushCurrent()",
+    ]:
+        assert token in source
+
+
+def test_chat_optimistic_renderer_receives_account_type() -> None:
+    source = read_ui_source()
+
+    for token in [
+        "function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPending = false, accountType = '')",
+        "localRenderer.accountType = accountType || (tasksCache || []).find(t => t.id === taskId)?.type || ''",
+        "_appendOptimisticUserMessage(promptText, snapshotPaths, taskData.id, willPend1, taskData.type)",
+        "_appendOptimisticUserMessage(promptText, snapshotPaths, data.id, willPend, data.type)",
+    ]:
+        assert token in source
+
+
 def test_log_renderer_reassembles_multiline_json_events() -> None:
     source = read_ui_source()
 

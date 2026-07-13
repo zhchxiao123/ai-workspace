@@ -1050,8 +1050,9 @@ class ChatLogRenderer {
     // 用量 / 会话信息行
     const items = [];
     if (d.stopReason) items.push(`停止原因 <span>${esc(d.stopReason)}</span>`);
-    if (d.sessionId) {
-      const sid = String(d.sessionId);
+    const sessionId = d.sessionId || d.session_id || d.sessionID;
+    if (sessionId) {
+      const sid = String(sessionId);
       items.push(`Session <span title="${esc(sid)}">#${esc(sid.slice(0, 8))}</span>`);
     }
     if (items.length) {

@@ -109,14 +109,16 @@ def _build_hermes(prompt, auto, task_id, marker, task_env, session_id, images, m
 def _build_grok(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
     p    = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep   = shlex.quote(p)
-    sid  = session_id if session_id else task_id
-    qsid = shlex.quote(sid)
+    qsid = shlex.quote(session_id) if session_id else ""
     approve = " --always-approve" if auto else ""
-    # printf 先写 session_id 标记行到日志，再 exec 替换为 grok 进程
+    resume = f" --resume {qsid}" if session_id else ""
+    marker_line = f"printf 'grok_session_id=%s\\n' {qsid} && " if session_id else ""
+    # 新会话不指定 --session-id：当前 Grok CLI 要求它必须是 UUID，
+    # CoderFleet task_id 不是 UUID。会话 ID 从 streaming-json 输出提取。
     return (
-        f"printf 'grok_session_id=%s\\n' {qsid} && "
+        f"{marker_line}"
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-        f"grok -p {ep} -s {qsid}{approve} --no-auto-update --output-format streaming-json"
+        f"grok -p {ep}{resume}{approve} --no-auto-update --output-format streaming-json"
     )
 
 
@@ -204,8 +206,9 @@ def _extract_grok(text):
             d = json.loads(s)
         except json.JSONDecodeError:
             continue
-        if d.get("type") == "end" and d.get("sessionId"):
-            return str(d["sessionId"])
+        for key in ("sessionId", "session_id", "sessionID"):
+            if d.get(key):
+                return str(d[key])
     return ""
 
 

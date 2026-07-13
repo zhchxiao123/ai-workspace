@@ -995,6 +995,8 @@ function bindChatTextareaEvents(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
     _handleChatMentionInput(textarea);
+    // 任务运行中时，输入框内容的有无决定发送/停止合并按钮的外观
+    if (currentChatTaskId) _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
   });
   textarea.addEventListener('click', () => _validateChatMentionCursor(textarea));
   textarea.addEventListener('keyup', e => {
@@ -1213,9 +1215,6 @@ async function renderChatWorkspace(conv) {
     </div>
   </div>
   <div style="display: flex; gap: 8px; align-items: center;">
-    <div id="chat-header-actions" style="display:contents">
-      <!-- 动态渲染当前任务动作 -->
-    </div>
     <button id="files-panel-toggle-btn" class="btn files-panel-toggle-btn" onclick="toggleFilePanel()" title="浏览工作区文件">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5A2.5 2.5 0 015.5 4H10l2 2h6.5A2.5 2.5 0 0121 8.5v8A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5z"/></svg>
       文件
@@ -1295,38 +1294,19 @@ async function renderChatWorkspace(conv) {
       if (modelSelect.value !== remembered) modelSelect.value = ''; // 未知模型值时回退到默认选项
     }
 
-    // 渲染头部动作按钮与状态文本
-    const headerActions = document.getElementById('chat-header-actions');
     const runningTask = convTasks.find(t => t.status === 'running');
-
-    let actionBtnHtml = '';
-    if (runningTask) {
-      currentChatTaskId = runningTask.id;
-      actionBtnHtml = `<button class="btn danger" onclick="killChatTask('${runningTask.id}')">终止执行</button>`;
-    } else {
-      currentChatTaskId = null;
-    }
-
-    headerActions.innerHTML = `
-      ${actionBtnHtml}
-    `;
+    currentChatTaskId = runningTask ? runningTask.id : null;
 
     const runningCount = convTasks.filter(t => t.status === 'running').length;
     const pendingCount = convTasks.filter(t => t.status === 'pending').length;
     const scheduledCount = convTasks.filter(t => t.status === 'scheduled').length;
 
     // 渲染排队面板（只含 pending/scheduled 且排好序的任务）
-    const queuedTasks = convTasks
-      .filter(t => t.status === 'pending' || t.status === 'scheduled')
-      .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
+    const queuedTasks = _getQueuedChatTasks(conv.id);
     renderQueuePanel(queuedTasks);
 
-    // 若队列已满，禁用发送按钮
-    const sendBtn = document.getElementById('chat-send-btn');
-    if (sendBtn) {
-      sendBtn.disabled = queuedTasks.length >= CHAT_MAX_QUEUE;
-      sendBtn.title = queuedTasks.length >= CHAT_MAX_QUEUE ? '队列已满，请等待执行或删除队列中的任务后再发送' : '';
-    }
+    // 同步发送/停止合并按钮（队列已满时，仅在"发送"外观下禁用）
+    _syncChatSendButton(currentChatTaskId, queuedTasks.length >= CHAT_MAX_QUEUE);
 
     let statusHtml = '';
     if (runningCount > 0) {
@@ -1428,7 +1408,7 @@ function _isProjectAccountBusy(projectName) {
 // isPending: true → 任务进入排队，只加用户气泡 + 刷新队列面板，不加占位 bubble，不开 SSE
 // isPending: false → 立即执行，加用户气泡 + 执行中占位 + 开 SSE
 // 返回 true 表示操作成功（已找到 chat-content）
-function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPending = false) {
+function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPending = false, accountType = '') {
   const chatContent = document.getElementById('chat-content');
   if (!chatContent) return false;
 
@@ -1476,13 +1456,12 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
     chatContent.appendChild(logWrap);
 
     const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName);
+    localRenderer.accountType = accountType || (tasksCache || []).find(t => t.id === taskId)?.type || '';
     localRenderer.renderExecuting();
     chatRenderer = localRenderer;
 
-    const headerActions = document.getElementById('chat-header-actions');
-    if (headerActions) {
-      headerActions.innerHTML = `<button class="btn danger" onclick="killChatTask('${esc(taskId)}')">终止执行</button>`;
-    }
+    currentChatTaskId = taskId;
+    _syncChatSendButton(taskId, false);
     const statusText = document.getElementById('chat-status-text');
     if (statusText) {
       statusText.innerHTML = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
@@ -1503,7 +1482,7 @@ async function sendChatMessage() {
   const textarea = document.getElementById('chat-input');
   if (!textarea) return;
   let promptText = textarea.value.trim();
-  if (!promptText && pendingImages.length === 0) return;
+  if (!_hasChatInputContent()) return;
   if (!promptText && pendingImages.length > 0) {
     promptText = '请查看附件图片。';
   }
@@ -1514,14 +1493,9 @@ async function sendChatMessage() {
   }
 
   // 前端也检查队列是否已满（防止按钮状态不同步的情况）
-  if (activeConversationId && !activeConversationId.startsWith('task-')) {
-    const pendingInConv = (tasksCache || []).filter(
-      t => t.conversation_id === activeConversationId && (t.status === 'pending' || t.status === 'scheduled')
-    );
-    if (pendingInConv.length >= CHAT_MAX_QUEUE) {
-      alert(`队列已满（最多 ${CHAT_MAX_QUEUE} 条），请等待任务执行或删除队列中的任务后再发送`);
-      return;
-    }
+  if (_isChatQueueFull(activeConversationId)) {
+    alert(`队列已满（最多 ${CHAT_MAX_QUEUE} 条），请等待任务执行或删除队列中的任务后再发送`);
+    return;
   }
 
   const sendBtn = document.getElementById('chat-send-btn');
@@ -1551,8 +1525,7 @@ async function sendChatMessage() {
     }
     conversationName = promptText.substring(0, 20) + (promptText.length > 20 ? '...' : '');
 
-    sendBtn.disabled = true;
-    sendBtn.textContent = '建会话...';
+    _setChatSendBusy(sendBtn, '建会话...');
 
     try {
       // 提交第一个任务并直接创建会话
@@ -1589,8 +1562,7 @@ async function sendChatMessage() {
       toggleSchedTimeInput(false);
       if (schedTimeInput) schedTimeInput.value = '';
 
-      sendBtn.disabled = false;
-      sendBtn.textContent = '发送';
+      sendBtn.dataset.busy = '';
 
       // 把新任务加入本地缓存，让队列面板立即读到（无需等待 loadConversations 回调）
       if (!tasksCache.find(t => t.id === taskData.id)) tasksCache.push(taskData);
@@ -1599,7 +1571,7 @@ async function sendChatMessage() {
       // 清空占位文字，就地渲染用户气泡，避免整页重建导致的闪烁
       const chatContent = document.getElementById('chat-content');
       if (chatContent) chatContent.innerHTML = '';
-      if (!_appendOptimisticUserMessage(promptText, snapshotPaths, taskData.id, willPend1)) {
+      if (!_appendOptimisticUserMessage(promptText, snapshotPaths, taskData.id, willPend1, taskData.type)) {
         await selectConversation(activeConversationId);
       }
       loadConversations(false);
@@ -1608,8 +1580,8 @@ async function sendChatMessage() {
       return;
     } catch (e) {
       alert('开启会话失败: ' + e.message);
-      sendBtn.disabled = false;
-      sendBtn.textContent = '发送';
+      sendBtn.dataset.busy = '';
+      _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
       return;
     }
   }
@@ -1622,8 +1594,7 @@ async function sendChatMessage() {
       alert('未找到该一次性任务，无法升级会话！');
       return;
     }
-    sendBtn.disabled = true;
-    sendBtn.textContent = '升级会话...';
+    _setChatSendBusy(sendBtn, '升级会话...');
 
     try {
       const rConv = await fetch(`${API}/api/conversations`, {
@@ -1643,15 +1614,14 @@ async function sendChatMessage() {
       renderTopbarTabs();
     } catch (e) {
       alert('升级任务链失败: ' + e.message);
-      sendBtn.disabled = false;
-      sendBtn.textContent = '发送';
+      sendBtn.dataset.busy = '';
+      _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
       return;
     }
   }
 
   // 3. 正常发送追问消息
-  sendBtn.disabled = true;
-  sendBtn.textContent = '发送中...';
+  _setChatSendBusy(sendBtn, '发送中...');
 
   try {
     const r = await fetch(`${API}/api/tasks`, {
@@ -1679,15 +1649,14 @@ async function sendChatMessage() {
     toggleSchedTimeInput(false);
     if (schedTimeInput) schedTimeInput.value = '';
 
-    sendBtn.disabled = false;
-    sendBtn.textContent = '发送';
+    sendBtn.dataset.busy = '';
 
     // 把新任务加入本地缓存，让队列面板立即读到（无需等待 loadConversations 回调）
     if (!tasksCache.find(t => t.id === data.id)) tasksCache.push(data);
     // 用服务端返回的实际状态决定占位态（比 _isProjectAccountBusy 更准确）
     const willPend = data.status === 'pending' || data.status === 'scheduled';
     // 就地追加气泡，避免整页重建导致的闪烁；fallback 到完整重载
-    if (!_appendOptimisticUserMessage(promptText, snapshotPaths, data.id, willPend)) {
+    if (!_appendOptimisticUserMessage(promptText, snapshotPaths, data.id, willPend, data.type)) {
       await selectConversation(convId);
     }
     loadConversations(false);
@@ -1695,8 +1664,8 @@ async function sendChatMessage() {
     loadProjectsDashboard();
   } catch (e) {
     alert('发送消息失败: ' + e.message);
-    sendBtn.disabled = false;
-    sendBtn.textContent = '发送';
+    sendBtn.dataset.busy = '';
+    _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
   }
 }
 
@@ -1763,6 +1732,61 @@ async function deleteConversation(convId) {
     loadConversations();
   } catch (e) {
     alert('删除失败: ' + e.message);
+  }
+}
+
+// 输入框有文字或有待发送图片，即视为"有内容可发送"
+function _hasChatInputContent() {
+  const textarea = document.getElementById('chat-input');
+  return !!(textarea && textarea.value.trim()) || pendingImages.length > 0;
+}
+
+// 某会话排队中（pending/scheduled）的任务列表，按创建时间排序
+// 一次性任务（"task-" 开头的伪会话 id）没有任务链排队概念，恒返回空
+function _getQueuedChatTasks(convId) {
+  if (!convId || convId.startsWith('task-')) return [];
+  return (tasksCache || [])
+    .filter(t => t.conversation_id === convId && (t.status === 'pending' || t.status === 'scheduled'))
+    .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
+}
+
+function _isChatQueueFull(convId) {
+  return _getQueuedChatTasks(convId).length >= CHAT_MAX_QUEUE;
+}
+
+// 发送按钮进入"请求进行中"态（建会话.../升级会话.../发送中.../上传中...）
+function _setChatSendBusy(sendBtn, label) {
+  sendBtn.dataset.busy = '1';
+  sendBtn.disabled = true;
+  sendBtn.classList.remove('chat-send-btn-loading');
+  sendBtn.textContent = label;
+}
+
+// 发送/停止合并为同一个按钮：
+// - 无运行中任务：始终显示"发送"。
+// - 有运行中任务 + 输入框为空：显示加载中的转圈图标，点击即终止当前任务。
+// - 有运行中任务 + 输入框有内容（或有待发送图片）：显示"发送"，点击追加消息进入排队，
+//   而不会误触终止——用户既然在输入，多半是想接着说而非打断当前任务。
+// runningTaskId 由调用方传入（而非在点击时读取可能已被轮询改写的全局变量），避免按钮
+// 可见期间全局状态被其他任务/会话的同步覆盖，导致误终止。
+// isQueueFull 仅在"发送"外观下生效；加载态本质是停止按钮，不受排队上限影响。
+function _syncChatSendButton(runningTaskId, isQueueFull) {
+  const btn = document.getElementById('chat-send-btn');
+  if (!btn) return;
+  if (btn.dataset.busy === '1') return; // 发送请求本身正在进行中（发送中.../建会话.../上传中...），由调用方自行管理文案
+  const hasInput = _hasChatInputContent();
+  if (runningTaskId && !hasInput) {
+    btn.classList.add('chat-send-btn-loading');
+    btn.innerHTML = '<span class="chat-send-spinner"></span>';
+    btn.title = '点击终止当前任务';
+    btn.disabled = false;
+    btn.onclick = () => killChatTask(runningTaskId);
+  } else {
+    btn.classList.remove('chat-send-btn-loading');
+    btn.textContent = '发送';
+    btn.disabled = !!isQueueFull;
+    btn.title = isQueueFull ? '队列已满，请等待执行或删除队列中的任务后再发送' : '';
+    btn.onclick = () => sendChatMessage();
   }
 }
 
@@ -1958,23 +1982,18 @@ function _refreshQueuePanel() {
   if (!activeConversationId) return;
   if (_isEditingQueueItem) return;
   const convTasks = tasksCache.filter(t => t.conversation_id === activeConversationId);
-  const pendingTasks = convTasks
-    .filter(t => t.status === 'pending' || t.status === 'scheduled')
-    .sort((a, b) => new Date(a.created || 0) - new Date(b.created || 0));
+  const pendingTasks = _getQueuedChatTasks(activeConversationId);
   renderQueuePanel(pendingTasks);
 
-  // 同步发送按钮状态（始终更新，不受当前 disabled 值干扰）
-  const sendBtn = document.getElementById('chat-send-btn');
-  if (sendBtn && sendBtn.textContent !== '发送中...' && sendBtn.textContent !== '建会话...') {
-    const isFull = pendingTasks.length >= CHAT_MAX_QUEUE;
-    sendBtn.disabled = isFull;
-    sendBtn.title = isFull ? '队列已满，请等待执行或删除队列中的任务后再发送' : '';
-  }
+  // 同步发送/停止合并按钮（轮询期间任务状态可能在别处发生变化）
+  const runningTasks = convTasks.filter(t => t.status === 'running');
+  currentChatTaskId = runningTasks.length ? runningTasks[0].id : null;
+  _syncChatSendButton(currentChatTaskId, pendingTasks.length >= CHAT_MAX_QUEUE);
 
   // 同步状态文字
   const statusText = document.getElementById('chat-status-text');
   if (statusText) {
-    const runningCount = convTasks.filter(t => t.status === 'running').length;
+    const runningCount = runningTasks.length;
     if (runningCount > 0) {
       let s = `<span style="color: var(--green); animation: pulse 1.5s infinite;">● AI 正在执行任务...</span>`;
       if (pendingTasks.length > 0) {
@@ -2193,8 +2212,12 @@ function updateChatUploadState() {
   const sendBtn = document.getElementById('chat-send-btn');
   const status = document.getElementById('chat-upload-status');
   if (sendBtn) {
-    sendBtn.disabled = chatUploadingImages > 0;
-    sendBtn.textContent = chatUploadingImages > 0 ? '上传中...' : '发送';
+    if (chatUploadingImages > 0) {
+      _setChatSendBusy(sendBtn, '上传中...');
+    } else {
+      sendBtn.dataset.busy = '';
+      _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
+    }
   }
   if (status) {
     status.style.display = chatUploadingImages > 0 ? '' : 'none';
@@ -2209,7 +2232,7 @@ function renderImagePreviews() {
     getImages: () => pendingImages,
     removeImage: (index) => pendingImages.splice(index, 1),
     clearImages: () => { pendingImages = []; },
-    afterRender: () => {},
+    afterRender: () => { if (currentChatTaskId) _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId)); },
     getSseUrl: (u) => sseUrl(u),
     getApi: () => (typeof API !== 'undefined' ? API : ''),
     escFn: (s) => esc(s),

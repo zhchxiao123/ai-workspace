@@ -152,6 +152,8 @@ def _parse_grok_line(
 ) -> None:
     if t == "text_delta":
         chunks.append(d.get("text", ""))
+    elif t == "text":
+        chunks.append(d.get("data", d.get("text", "")))
     elif t == "end":
         usage = d.get("usage", {})
         if isinstance(usage, dict):

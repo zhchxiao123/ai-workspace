@@ -187,6 +187,57 @@ def test_build_cli_command_uses_headless_kimi_prompt() -> None:
     assert "--output-format stream-json" in resume_command
 
 
+def test_build_cli_command_uses_grok_without_forced_session_id() -> None:
+    command = Scheduler.build_cli_command(
+        AccountType.grok,
+        "fix tests",
+        auto=False,
+        task_id="task-grok",
+    )
+    auto_command = Scheduler.build_cli_command(
+        AccountType.grok,
+        "fix tests",
+        auto=True,
+        task_id="task-grok",
+    )
+
+    _assert_detached_command(command, "task-grok")
+    assert "grok -p" in command
+    assert "--output-format streaming-json" in command
+    assert "--session-id" not in command
+    assert " -s " not in command
+    assert "grok_session_id=" not in command
+    assert "--always-approve" in auto_command
+
+
+def test_build_cli_command_resumes_grok_session() -> None:
+    command = Scheduler.build_cli_command(
+        AccountType.grok,
+        "continue fixes",
+        auto=False,
+        task_id="task-grok-2",
+        native_session_id="00000000-0000-4000-8000-000000000001",
+    )
+
+    _assert_detached_command(command, "task-grok-2")
+    assert "grok_session_id=" in command
+    assert "--resume 00000000-0000-4000-8000-000000000001" in command
+    assert "--session-id" not in command
+    assert " -s " not in command
+
+
+def test_extract_native_session_id_from_grok_streaming_json() -> None:
+    text = '\n'.join([
+        '{"type":"message","content":"working"}',
+        '{"type":"end","sessionId":"00000000-0000-4000-8000-000000000001"}',
+    ])
+
+    assert Scheduler.extract_native_session_id(
+        AccountType.grok,
+        text,
+    ) == "00000000-0000-4000-8000-000000000001"
+
+
 def test_extract_native_session_id_from_kimi_resume_hint() -> None:
     text = '\n'.join([
         '{"role":"assistant","content":"done"}',

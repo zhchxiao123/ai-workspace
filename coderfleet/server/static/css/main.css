@@ -4215,6 +4215,33 @@
       flex-shrink: 0;
     }
 
+    /* 任务运行中且输入框为空时：发送按钮变为加载态，兼作"点击终止任务" */
+    .chat-send-btn.chat-send-btn-loading {
+      background: var(--surface-2);
+      border-color: var(--border-md);
+      color: var(--text-2);
+      padding: 0 14px;
+    }
+
+    .chat-send-btn.chat-send-btn-loading:hover {
+      border-color: var(--red);
+      color: var(--red);
+      background: var(--red-bg);
+    }
+
+    .chat-send-spinner,
+    .digest-ai-spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    .chat-send-spinner {
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+    }
+
     .chat-image-preview-row {
       display: flex;
       flex-wrap: wrap;
@@ -6368,15 +6395,10 @@
       color: var(--red);
     }
     .digest-ai-spinner {
-      width: 14px;
-      height: 14px;
       border: 2px solid var(--border-md);
       border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: digest-spin 0.8s linear infinite;
       flex-shrink: 0;
     }
-    @keyframes digest-spin { to { transform: rotate(360deg); } }
 
     /* ── 小屏日期导航条（< 640px 时替代日历侧边栏） ──────── */
     .digest-mobile-nav {
