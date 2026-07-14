@@ -915,16 +915,21 @@ async function openTemplate(id) {
   activeTemplateId = id;
   renderTemplateList(templatesCache);
   try {
-    const [tpl, projects, accounts] = await Promise.all([
-      fetch(`${API}/api/workflow-templates/${id}`).then(r => r.json()),
-      fetch(`${API}/api/projects`).then(r => r.json()).catch(() => projectsCache),
-      fetch(`${API}/api/accounts`).then(r => r.json()).catch(() => workflowAccountsCache),
-    ]);
-    projectsCache = projects;
-    workflowAccountsCache = accounts;
+    // DAG 渲染只需要模板数据本身，不等 projects/accounts——那两个只在打开节点详情面板
+    // 或"运行模板"弹窗时才用得上，等它们只会白白拖慢模板打开速度。
+    const tpl = await fetch(`${API}/api/workflow-templates/${id}`).then(r => r.json());
     _renderTemplateEditor(tpl);
   } catch (e) {
     alert('加载模板失败：' + e.message);
+    return;
+  }
+  // loadTemplates() 进入模板 tab 时通常已经拉过一份缓存；这里只在缓存为空时才
+  // 后台补一次，不阻塞上面的渲染。
+  if (!projectsCache.length) {
+    fetch(`${API}/api/projects`).then(r => r.json()).then(p => { projectsCache = p; }).catch(() => {});
+  }
+  if (!workflowAccountsCache.length) {
+    fetch(`${API}/api/accounts`).then(r => r.json()).then(a => { workflowAccountsCache = a; }).catch(() => {});
   }
 }
 

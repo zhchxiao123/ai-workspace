@@ -557,8 +557,12 @@ async def list_account_types():
 
 @app.get("/api/accounts", response_model=list[AccountResponse])
 async def list_accounts():
-    """列出所有账号，包含容器状态和忙碌状态"""
-    return scheduler.list_accounts()
+    """列出所有账号，包含容器状态和忙碌状态。
+
+    list_accounts() 内部按项目数逐个调用 docker inspect（同步子进程），丢进线程池执行，
+    避免卡住事件循环。
+    """
+    return await run_in_threadpool(scheduler.list_accounts)
 
 
 @app.post("/api/accounts/{name}/usage/refresh", response_model=AccountUsage)
@@ -858,8 +862,7 @@ async def delete_board_card(card_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.get("/api/projects", response_model=list[ProjectResponse])
-async def list_projects():
+def _list_projects_sync() -> list[ProjectResponse]:
     from coderfleet.server import docker_mgr as _dm
 
     accounts_by_name = {a.name: a for a in scheduler.get_accounts()}
@@ -871,6 +874,12 @@ async def list_projects():
             resp.container_running = _dm.is_container_running(p.container_name(acc.type))
         responses.append(resp)
     return responses
+
+
+@app.get("/api/projects", response_model=list[ProjectResponse])
+async def list_projects():
+    # 每个项目都要调一次 docker inspect（同步子进程），丢进线程池执行，避免卡住事件循环。
+    return await run_in_threadpool(_list_projects_sync)
 
 
 def _validate_secondary_accounts(secondary_accounts: list[str], primary_account: str) -> None:

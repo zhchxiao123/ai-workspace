@@ -139,3 +139,58 @@ def test_list_projects_exposes_container_running_per_project(
     assert len(projects) == 1
     assert projects[0].name == "repo"
     assert projects[0].container_running is True
+
+
+def test_list_projects_runs_in_threadpool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #41：/api/projects 对每个项目都做一次同步 docker inspect 子进程调用，
+    不该直接阻塞事件循环，得丢进线程池执行。"""
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    from coderfleet.server import docker_mgr
+
+    monkeypatch.setattr(docker_mgr, "is_container_running", lambda name: True)
+
+    calls: list[object] = []
+    orig = server_main.run_in_threadpool
+
+    async def _tracking(func, *a, **kw):
+        calls.append(func)
+        return await orig(func, *a, **kw)
+
+    monkeypatch.setattr(server_main, "run_in_threadpool", _tracking)
+
+    projects = asyncio.run(server_main.list_projects())
+
+    assert calls, "list_projects 应通过 run_in_threadpool 卸载阻塞 I/O"
+    assert len(projects) == 1
+
+
+def test_list_accounts_runs_in_threadpool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """issue #41：/api/accounts 对账号下每个项目都做一次同步 docker inspect 子进程调用，
+    不该直接阻塞事件循环，得丢进线程池执行。"""
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    from coderfleet.server import docker_mgr
+
+    monkeypatch.setattr(docker_mgr, "is_container_running", lambda name: True)
+
+    calls: list[object] = []
+    orig = server_main.run_in_threadpool
+
+    async def _tracking(func, *a, **kw):
+        calls.append(func)
+        return await orig(func, *a, **kw)
+
+    monkeypatch.setattr(server_main, "run_in_threadpool", _tracking)
+
+    accounts = asyncio.run(server_main.list_accounts())
+
+    assert calls, "list_accounts 应通过 run_in_threadpool 卸载阻塞 I/O"
+    assert len(accounts) == 1
+    assert accounts[0].name == "api-claude"

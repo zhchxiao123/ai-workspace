@@ -972,3 +972,26 @@ def test_open_pipeline_does_not_refetch_full_task_list() -> None:
     assert "api/workflow-runs/${id}" in body
     assert "renderPipelineList(pipelinesCache, workflowTasksCache)" in body
     assert "_renderActivePipeline(pipeline, pipeline.tasks" in body
+
+
+def test_open_template_renders_before_projects_and_accounts_resolve() -> None:
+    """issue #40：打开模板只需要 /api/workflow-templates/{id} 就能渲染 DAG；
+    projects/accounts 只在节点详情面板和"运行模板"弹窗里用得上，不该用 Promise.all
+    卡住模板渲染，且 loadTemplates() 已经拉过的缓存不该重新请求。"""
+    source = read_ui_source()
+
+    match = re.search(
+        r"async function openTemplate\(id\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+
+    assert "Promise.all" not in body
+    assert "_renderTemplateEditor(tpl)" in body
+    assert "if (!projectsCache.length)" in body
+    assert "if (!workflowAccountsCache.length)" in body
+
+    render_idx = body.index("_renderTemplateEditor(tpl)")
+    projects_idx = body.index("if (!projectsCache.length)")
+    assert render_idx < projects_idx, "模板渲染必须先于 projects 懒加载执行"
