@@ -191,8 +191,12 @@ class TelegramBridge:
         return self._cfg().get("TELEGRAM_ASR_MODEL", "").strip() or "whisper-1"
 
     def is_configured(self) -> bool:
-        """未配置时所有入口应优雅降级为 no-op，而不是抛错。"""
-        return bool(self.token and self.chat_ids)
+        """未配置时所有入口应优雅降级为 no-op，而不是抛错。
+
+        私聊白名单与话题群二者有其一即可用——只配话题群（群成员资格
+        即信任边界）不应要求再配一个用不上的私聊白名单。
+        """
+        return bool(self.token and (self.chat_ids or self.topic_group_id))
 
     def asr_configured(self) -> bool:
         return bool(self.asr_api_key)
@@ -353,19 +357,33 @@ class TelegramBridge:
                                    task.id, exc)
             label = TASK_STATUS_LABELS.get(task.status, "")
             text = self.format_task_message(task, excerpt)
-            for chat_id, thread_id in await self._broadcast_targets(task):
+
+            async def send_one(chat_id: str, thread_id: Optional[int]) -> dict:
                 extra = {"message_thread_id": thread_id} if thread_id else {}
                 if ogg is not None:
-                    result = await self._api(
+                    return await self._api(
                         "sendVoice",
                         {"chat_id": chat_id,
                          "caption": f"{label} · {task.project_name or task.project}",
                          **extra},
                         files={"voice": ("result.ogg", ogg, "audio/ogg")},
                     )
-                else:
-                    result = await self._api(
-                        "sendMessage", {"chat_id": chat_id, "text": text, **extra})
+                return await self._api(
+                    "sendMessage", {"chat_id": chat_id, "text": text, **extra})
+
+            for chat_id, thread_id in await self._broadcast_targets(task):
+                try:
+                    result = await send_one(chat_id, thread_id)
+                except TelegramError as exc:
+                    if not thread_id:
+                        raise
+                    # 话题可能已被手动删除：清坏注册、降级 General，播报绝不丢
+                    logger.warning(
+                        "话题发送失败，清除注册并降级 General [project=%s thread=%s]: %r",
+                        task.project_name, thread_id, exc)
+                    self._update_state(
+                        lambda s: s.get("topics", {}).pop(task.project_name, None))
+                    result = await send_one(chat_id, None)
                 message_id = result.get("message_id")
                 if message_id is not None:
                     self._record_broadcast(int(message_id), task)
@@ -400,17 +418,31 @@ class TelegramBridge:
                            project_name, exc)
             await self._hint_topic_permission_once()
             return None
-        self._update_state(
-            lambda s: s.setdefault("topics", {}).update({project_name: thread_id})
-        )
-        logger.info("已为项目创建话题 [project=%s thread=%s]", project_name, thread_id)
-        return thread_id
+        # createForumTopic 挂起期间另一个播报可能已注册同项目的话题——
+        # 注册表必须唯一，先注册者赢，避免播报散落在重复话题里
+        registered: dict[str, int] = {}
+
+        def mutate(state):
+            topics = state.setdefault("topics", {})
+            if project_name in topics:
+                registered["thread"] = int(topics[project_name])
+            else:
+                topics[project_name] = thread_id
+                registered["thread"] = thread_id
+
+        self._update_state(mutate)
+        if registered["thread"] != thread_id:
+            logger.info("话题并发创建：采用已注册 thread [project=%s keep=%s drop=%s]",
+                        project_name, registered["thread"], thread_id)
+        else:
+            logger.info("已为项目创建话题 [project=%s thread=%s]",
+                        project_name, thread_id)
+        return registered["thread"]
 
     async def _hint_topic_permission_once(self) -> None:
-        state = self._load_state()
-        if state.get("topic_hint_sent"):
+        """群权限缺失的一次性提示；发送成功后才消耗"一次性"资格。"""
+        if self._load_state().get("topic_hint_sent"):
             return
-        self._update_state(lambda s: s.update(topic_hint_sent=True))
         try:
             await self._api("sendMessage", {
                 "chat_id": self.topic_group_id,
@@ -418,7 +450,9 @@ class TelegramBridge:
                         "在此之前播报会发到 General。",
             })
         except Exception as exc:
-            logger.warning("话题权限提示发送失败: %r", exc)
+            logger.warning("话题权限提示发送失败，下次播报重试: %r", exc)
+            return
+        self._update_state(lambda s: s.update(topic_hint_sent=True))
 
     async def _summarize(self, task: Task, excerpt: str) -> str:
         """结果 → 口语化中文摘要。system_llm 未配置时抛错，由上层降级为文本。"""
@@ -516,9 +550,10 @@ class TelegramBridge:
         msg = update.get("message") or {}
         chat_id = self._chat_id_of(msg)
         text_raw = (msg.get("text") or "").strip()
-        if self._parse_command(text_raw) == ("id", ""):
+        parsed = self._parse_command(text_raw)
+        if parsed is not None and parsed[0] == "id":
             # /id 白名单豁免：绑定话题群前用户必须能先拿到群 id；只回显 id，不泄露其他信息
-            await self._send_text(self._msg_ctx(msg), f"当前 chat id：{chat_id}")
+            await self._cmd_id(self._msg_ctx(msg), parsed[1])
             return
         if not self._is_trusted_chat(chat_id):
             logger.info("丢弃非白名单消息 [chat=%s]", chat_id or "?")
@@ -665,7 +700,7 @@ class TelegramBridge:
         await self._send_text(ctx, _HELP_TEXT)
 
     async def _cmd_id(self, ctx: _MsgCtx, args: str) -> None:
-        # 白名单内带参数调用也走这里；豁免路径在 _handle_update 更早处理
+        # 实际入口在 _handle_update 的白名单豁免路径；留在命令表供 /help 与命令菜单展示
         await self._send_text(ctx, f"当前 chat id：{ctx.chat_id}")
 
     def _recent_conversations(self, project: str = "") -> list:

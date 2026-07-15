@@ -907,8 +907,12 @@ def _topic_handler(sent, created, create_status=200):
                     "ok": False, "description": "not enough rights"})
             return httpx.Response(200, json={
                 "ok": True, "result": {"message_thread_id": 500 + len(created)}})
-        if url.endswith("/sendMessage") or url.endswith("/sendVoice"):
+        if url.endswith("/sendMessage"):
             sent.append(json.loads(req.content))
+            return httpx.Response(200, json={
+                "ok": True, "result": {"message_id": 900 + len(sent)}})
+        if url.endswith("/sendVoice"):
+            sent.append({"voice_multipart": req.content})
             return httpx.Response(200, json={
                 "ok": True, "result": {"message_id": 900 + len(sent)}})
         return httpx.Response(404, json={"ok": False, "description": url})
@@ -1074,6 +1078,128 @@ def test_general_message_in_group_keeps_global_routing(tmp_path):
 
     _run(bridge.poll_once())
     assert ("全局指令", "c-global") in fake.submitted
+
+
+def test_group_only_config_is_sufficient(tmp_path):
+    """只配 token + 话题群（无私聊白名单）也必须能播报和收指令。"""
+    sent, created = [], []
+    ws = _ws(tmp_path, telegram_bot_token="TOK", telegram_notify_mode="text",
+             telegram_topic_group_id="-100999")
+    bridge = _bridge(ws, _topic_handler(sent, created))
+
+    assert bridge.is_configured()
+    _run(bridge.notify_task(_task(project_name="myproj")))
+    assert sent and sent[0]["chat_id"] == "-100999"
+
+
+def test_voice_broadcast_carries_topic_thread(tmp_path):
+    sent, created = [], []
+    ws = _ws(tmp_path, telegram_bot_token="TOK", telegram_chat_id="123",
+             telegram_notify_mode="voice", telegram_topic_group_id="-100999")
+
+    async def summarizer(text):
+        return "摘要"
+
+    async def synth(text):
+        return b"OGG"
+
+    bridge = _bridge(ws, _topic_handler(sent, created),
+                     summarizer=summarizer, voice_synth=synth)
+    _run(bridge.notify_task(_task(project_name="myproj")))
+
+    # sendVoice 走 multipart，thread id 在表单字段里
+    assert created and created[0]["name"] == "myproj"
+    body = sent[0]["voice_multipart"]
+    assert b'name="message_thread_id"' in body
+    assert b"501" in body
+
+
+def test_concurrent_topic_creation_keeps_single_registration(tmp_path):
+    """createForumTopic 挂起期间他人已注册话题时，采用已注册的 thread。"""
+    sent, created = [], []
+    holder = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if url.endswith("/createForumTopic"):
+            created.append(json.loads(req.content))
+            # 模拟并发：另一个 notify 在我们等待期间已注册了 thread 999
+            holder["bridge"]._update_state(
+                lambda s: s.setdefault("topics", {}).update({"myproj": 999}))
+            return httpx.Response(200, json={
+                "ok": True, "result": {"message_thread_id": 501}})
+        sent.append(json.loads(req.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    ws = _topic_ws(tmp_path)
+    bridge = _bridge(ws, handler)
+    holder["bridge"] = bridge
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+
+    state = json.loads((ws / "telegram_state.json").read_text())
+    assert state["topics"]["myproj"] == 999          # 先注册者赢，注册表唯一
+    assert sent[0]["message_thread_id"] == 999       # 播报进已注册话题
+
+
+def test_stale_topic_thread_falls_back_to_general_and_reregisters(tmp_path):
+    """注册表里的话题已被删除时：播报降级 General，坏条目清除。"""
+    sent = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        body = json.loads(req.content)
+        if url.endswith("/sendMessage"):
+            if body.get("message_thread_id"):
+                return httpx.Response(400, json={
+                    "ok": False, "description": "message thread not found"})
+            sent.append(body)
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        return httpx.Response(404, json={"ok": False, "description": url})
+
+    ws = _topic_ws(tmp_path)
+    (ws / "telegram_state.json").write_text(json.dumps(
+        {"offset": 0, "messages": {}, "topics": {"myproj": 55}}))
+    bridge = _bridge(ws, handler)
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+
+    assert sent, "播报不能因话题失效而丢失"
+    assert "message_thread_id" not in sent[0]
+    state = json.loads((ws / "telegram_state.json").read_text())
+    assert "myproj" not in state.get("topics", {})   # 坏条目清除，下次重建
+
+
+def test_permission_hint_not_lost_when_send_fails(tmp_path):
+    """提示发送失败不能消耗掉"一次性"资格。"""
+    attempts = {"hint": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if url.endswith("/createForumTopic"):
+            return httpx.Response(400, json={"ok": False, "description": "no rights"})
+        body = json.loads(req.content)
+        if "权限" in body.get("text", ""):
+            attempts["hint"] += 1
+            if attempts["hint"] == 1:
+                return httpx.Response(500, text="boom")   # 第一次提示发送失败
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    ws = _topic_ws(tmp_path)
+    bridge = _bridge(ws, handler)
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+    _run(bridge.notify_task(_task(id="t2", project_name="myproj")))
+
+    assert attempts["hint"] == 2      # 第一次失败后第二次重试，成功后才终止
+
+
+def test_id_with_args_still_exempt_off_whitelist(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/id please", chat_id=-100777)])
+
+    _run(bridge.poll_once())
+    assert "-100777" in sent[0]["text"]
 
 
 # ── /id 绑定引导（#54 切片③） ───────────────────────────────
