@@ -86,7 +86,7 @@ from coderfleet.server.auth import AuthMiddleware, load_api_key
 from coderfleet.server.image_builds import ImageBuildRegistry
 from coderfleet.server.image_build_runner import run_image_build
 from coderfleet.server.marketplace import MarketplaceManager
-from coderfleet.server.scheduler import Scheduler
+from coderfleet.server.scheduler import MAX_PENDING_PER_CONV, Scheduler
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
 from coderfleet.server.translate import translate_text
 from coderfleet.server.translation_cache import TranslationCache
@@ -254,6 +254,8 @@ async def reconcile_tasks_on_startup():
     scheduler._push_manager = push_manager  # 工作流审批等非任务消息
     scheduler.register_notifier(task_push_notifier(push_manager))
     scheduler.register_notifier(telegram_bridge.notify_task)
+    telegram_bridge.scheduler = scheduler
+    telegram_bridge.start_polling()
     await scheduler.reconcile_running_tasks()
     scheduler.start_scheduling_loop()
     scheduler.start_usage_polling_loop()
@@ -747,8 +749,6 @@ async def create_task(req: TaskCreateRequest):
       3. type 指定    → 找对应类型的空闲账号
       4. 都不指定     → 找第一个空闲账号
     """
-    # 每个会话最多允许 3 条 pending/scheduled 排队任务
-    MAX_PENDING_PER_CONV = 3
     if req.conversation_id:
         pending_count = sum(
             1 for t in scheduler.list_tasks()

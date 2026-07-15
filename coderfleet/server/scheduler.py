@@ -26,6 +26,9 @@ from typing import Optional
 from coderfleet.config import parse_conf
 
 logger = logging.getLogger(__name__)
+
+# 每个会话最多允许的 pending/scheduled 排队任务数（API 与 Telegram 入口共用）
+MAX_PENDING_PER_CONV = 3
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime

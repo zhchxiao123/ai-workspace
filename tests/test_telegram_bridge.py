@@ -128,6 +128,138 @@ def test_notify_task_survives_api_failure(tmp_path):
     _run(_bridge(ws, handler).notify_task(_task()))
 
 
+# ── 入向：回复续聊 ──────────────────────────────────────────
+
+class FakeScheduler:
+    def __init__(self, fail: Exception | None = None, tasks: list | None = None):
+        self.submitted: list[tuple[str, str]] = []
+        self._fail = fail
+        self._tasks = tasks or []
+
+    def list_tasks(self):
+        return self._tasks
+
+    async def submit(self, prompt, conversation_id=None, **kw):
+        if self._fail:
+            raise self._fail
+        self.submitted.append((prompt, conversation_id))
+        return _task(id="t-new", conversation_id=conversation_id)
+
+
+def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, voice=None):
+    msg = {"message_id": 900 + update_id, "chat": {"id": chat_id}}
+    if text is not None:
+        msg["text"] = text
+    if reply_to is not None:
+        msg["reply_to_message"] = {"message_id": reply_to}
+    if voice is not None:
+        msg["voice"] = voice
+    return {"update_id": update_id, "message": msg}
+
+
+def _poll_setup(tmp_path, updates, fake=None, extra_routes=None):
+    """返回 (bridge, sent, fake_scheduler)。handler 派发 getUpdates / sendMessage。"""
+    sent: list[dict] = []
+    seen = {"offset": None}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if url.endswith("/getUpdates"):
+            seen["offset"] = json.loads(req.content).get("offset")
+            return httpx.Response(200, json={"ok": True, "result": updates})
+        if url.endswith("/sendMessage"):
+            sent.append(json.loads(req.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        if extra_routes:
+            resp = extra_routes(req)
+            if resp is not None:
+                return resp
+        return httpx.Response(404, json={"ok": False, "description": url})
+
+    ws = _configured(tmp_path)
+    bridge = _bridge(ws, handler)
+    fake = fake or FakeScheduler()
+    bridge.scheduler = fake
+    return bridge, sent, fake, seen
+
+
+def _seed_broadcast(ws, message_id=42, conversation_id="c1"):
+    (ws / "telegram_state.json").write_text(json.dumps({
+        "offset": 5,
+        "messages": {str(message_id): {"conversation_id": conversation_id,
+                                       "project_name": "myproj"}},
+        "last_conversation_id": conversation_id,
+    }), encoding="utf-8")
+
+
+def test_reply_to_broadcast_continues_conversation(tmp_path):
+    bridge, sent, fake, seen = _poll_setup(
+        tmp_path, [_update(update_id=7, reply_to=42)])
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+
+    assert seen["offset"] == 5           # getUpdates 带上持久化 offset
+    assert fake.submitted == [("再跑一遍测试", "c1")]
+    assert len(sent) == 1                # 提交回执
+    assert "myproj" in sent[0]["text"]
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["offset"] == 8          # update_id+1 已持久化
+
+
+def test_bare_message_routes_to_last_conversation(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(tmp_path, [_update(update_id=9)])
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-last")
+
+    _run(bridge.poll_once())
+    assert fake.submitted == [("再跑一遍测试", "c-last")]
+
+
+def test_bare_message_without_history_gets_usage_hint(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(tmp_path, [_update(update_id=9)])
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert len(sent) == 1
+    assert "回复" in sent[0]["text"]     # 使用提示
+
+
+def test_non_whitelisted_chat_is_dropped(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=9, chat_id=666)])
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert sent == []
+    # offset 仍然前进，不会反复消费同一条消息
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["offset"] == 10
+
+
+def test_submit_failure_reported_to_user(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=9)],
+        fake=FakeScheduler(fail=RuntimeError("没有匹配的可用账号")))
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+    assert "没有匹配的可用账号" in sent[0]["text"]
+
+
+def test_conversation_queue_full_rejected(tmp_path):
+    pending = [_task(id=f"p{i}", status=TaskStatus.pending, conversation_id="c1")
+               for i in range(3)]
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=9, reply_to=42)],
+        fake=FakeScheduler(tasks=pending))
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "队列" in sent[0]["text"]
+
+
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────
 
 def test_endpoint_telegram_status_and_test(tmp_path, monkeypatch):

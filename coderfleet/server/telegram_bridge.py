@@ -16,6 +16,7 @@ send_test_message()；Bot API 的 wire 细节、代理、状态持久化全部�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -25,6 +26,7 @@ import httpx
 
 from coderfleet.config import load_config
 from coderfleet.server.models import Task, TaskStatus
+from coderfleet.server.scheduler import MAX_PENDING_PER_CONV
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,11 @@ class TelegramBridge:
     ) -> None:
         self.workspace_dir = workspace_dir
         self.state_path = workspace_dir / "telegram_state.json"
+        # 续聊提交入口，由 main.py 注入 Scheduler；测试注入 fake
+        self.scheduler = None
         # 仅供测试注入 httpx.MockTransport；真实路径永远为 None。
         self._transport = transport
+        self._poll_task: Optional[asyncio.Task] = None
 
     # ── 配置（每次惰性读取，改动即时生效） ─────────────────────
 
@@ -184,3 +189,108 @@ class TelegramBridge:
             "chat_id": self.chat_ids[0],
             "text": "🚀 CoderFleet Telegram 通知已连通",
         })
+
+    # ── 入向：长轮询 + 回复续聊 ──────────────────────────────
+
+    # 长轮询挂起秒数（Bot API 侧），客户端超时须大于它
+    poll_timeout = 50
+
+    async def poll_once(self) -> int:
+        """执行一轮 getUpdates 并处理全部消息，返回消费的 update 数。"""
+        if not self.is_configured():
+            return 0
+        state = self._load_state()
+        updates = await self._api("getUpdates", {
+            "offset": state.get("offset", 0),
+            "timeout": self.poll_timeout,
+            "allowed_updates": ["message"],
+        })
+        for update in updates:
+            # 无论处理成败都前进 offset——坏消息不能卡死队列
+            state["offset"] = max(state.get("offset", 0), update["update_id"] + 1)
+            try:
+                await self._handle_update(update, state)
+            except Exception as exc:
+                logger.warning("Telegram 消息处理失败 [update=%s]: %s",
+                               update.get("update_id"), exc)
+        self._save_state(state)
+        return len(updates)
+
+    async def _handle_update(self, update: dict, state: dict) -> None:
+        msg = update.get("message") or {}
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+        if chat_id not in self.chat_ids:
+            return  # 非白名单：静默丢弃
+        text = (msg.get("text") or "").strip()
+        if not text:
+            return
+        await self._submit_continuation(chat_id, text, msg, state)
+
+    def _route_conversation(self, msg: dict, state: dict) -> tuple[str, str]:
+        """按 reply 映射 → 最近播报 解析目标会话。返回 (conversation_id, project_name)。"""
+        reply = msg.get("reply_to_message") or {}
+        mapped = state.get("messages", {}).get(str(reply.get("message_id", "")))
+        if mapped:
+            return mapped["conversation_id"], mapped.get("project_name", "")
+        last = state.get("last_conversation_id", "")
+        if last:
+            for entry in reversed(list(state.get("messages", {}).values())):
+                if entry["conversation_id"] == last:
+                    return last, entry.get("project_name", "")
+            return last, ""
+        return "", ""
+
+    async def _submit_continuation(
+        self, chat_id: str, prompt: str, msg: dict, state: dict
+    ) -> None:
+        conv_id, project_name = self._route_conversation(msg, state)
+        if not conv_id or self.scheduler is None:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "还没有可续聊的会话。请先等一条任务播报，回复该播报即可续聊对应任务链。",
+            })
+            return
+        if self._conversation_queue_full(conv_id):
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": f"⚠️ 队列已满：该会话最多允许 {MAX_PENDING_PER_CONV} 条排队任务，请稍后再发。",
+            })
+            return
+        try:
+            task = await self.scheduler.submit(prompt=prompt, conversation_id=conv_id)
+        except Exception as exc:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": f"⚠️ 提交失败：{exc}",
+            })
+            return
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": f"📨 已提交到 {project_name or '会话'}，任务 {task.id} 开始排队执行。",
+        })
+
+    def start_polling(self) -> None:
+        """在后台启动长轮询循环。未配置时循环空转等待，配置写入后自动生效。"""
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(self._poll_loop())
+
+    async def _poll_loop(self) -> None:
+        while True:
+            try:
+                if not self.is_configured():
+                    await asyncio.sleep(5)
+                    continue
+                await self.poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Telegram 轮询失败，10 秒后重试: %s", exc)
+                await asyncio.sleep(10)
+
+    def _conversation_queue_full(self, conversation_id: str) -> bool:
+        pending = sum(
+            1 for t in self.scheduler.list_tasks()
+            if t.conversation_id == conversation_id
+            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
+        )
+        return pending >= MAX_PENDING_PER_CONV
