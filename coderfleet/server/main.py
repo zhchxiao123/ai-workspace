@@ -749,17 +749,11 @@ async def create_task(req: TaskCreateRequest):
       3. type 指定    → 找对应类型的空闲账号
       4. 都不指定     → 找第一个空闲账号
     """
-    if req.conversation_id:
-        pending_count = sum(
-            1 for t in scheduler.list_tasks()
-            if t.conversation_id == req.conversation_id
-            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
+    if req.conversation_id and scheduler.conversation_queue_full(req.conversation_id):
+        raise HTTPException(
+            status_code=429,
+            detail=f"队列已满，最多支持 {MAX_PENDING_PER_CONV} 条排队任务，请等待执行或删除队列中的任务后再发送",
         )
-        if pending_count >= MAX_PENDING_PER_CONV:
-            raise HTTPException(
-                status_code=429,
-                detail=f"队列已满，最多支持 {MAX_PENDING_PER_CONV} 条排队任务，请等待执行或删除队列中的任务后再发送",
-            )
 
     try:
         task = await scheduler.submit(

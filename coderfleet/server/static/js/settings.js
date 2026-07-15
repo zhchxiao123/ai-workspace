@@ -73,6 +73,7 @@ function loadRuntimeSettings() {
     .then(data => {
       settingsGroups = data.groups || [];
       wrap.innerHTML = settingsGroups.map(renderSettingsGroup).join('');
+      refreshTelegramStatus();
     })
     .catch(e => { wrap.innerHTML = `<div class="empty">加载失败：${esc(String(e.message || e))}</div>`; });
   if (typeof loadSharedImageBuildHistory === 'function') loadSharedImageBuildHistory();
@@ -130,9 +131,39 @@ function renderSettingsGroup(g) {
     </div>
     <div class="settings-card-foot">
       <button class="btn primary" onclick="saveSettingsGroup('${esc(g.id)}')">保存</button>
+      ${g.id === 'telegram' ? '<button class="btn" onclick="testTelegram()">发送测试消息</button>' : ''}
       <span class="settings-msg" id="settings-msg-${esc(g.id)}"></span>
     </div>
   </div>`;
+}
+
+// Telegram 连通性：与 CLI `coderfleet telegram test` 能力对等
+function testTelegram() {
+  const msg = document.getElementById('settings-msg-telegram');
+  if (!msg) return;
+  msg.textContent = '发送中...';
+  msg.className = 'settings-msg';
+  fetch('/api/telegram/test', { method: 'POST' })
+    .then(async r => {
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.detail || ('HTTP ' + r.status));
+      }
+      msg.textContent = '✓ 已发送，请在 Telegram 查收';
+      msg.className = 'settings-msg ok';
+    })
+    .catch(e => { msg.textContent = '✗ ' + String(e.message || e); msg.className = 'settings-msg err'; });
+}
+
+function refreshTelegramStatus() {
+  const msg = document.getElementById('settings-msg-telegram');
+  if (!msg || msg.textContent) return;
+  fetch('/api/telegram/status')
+    .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+    .then(s => {
+      msg.textContent = s.configured ? `已配置 · 播报模式 ${s.notify_mode}` : '未配置';
+    })
+    .catch(() => {});
 }
 
 function renderSettingsField(f) {

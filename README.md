@@ -33,6 +33,7 @@ CoderFleet 是一个面向 AI 编程重度用户的本地多账号开发工作�
 - Docker Desktop（macOS / Linux）或 Docker Engine + Compose V2
 - 宿主机已运行代理软件（Clash / v2ray 等），并开启 allow-lan
 - Python 3.10+（推荐用 uv 管理，见下方）
+- （可选）ffmpeg —— 仅 Telegram 语音播报需要（`brew install ffmpeg` / `apt install ffmpeg`）
 
 ---
 

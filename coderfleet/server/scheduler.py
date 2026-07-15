@@ -21,14 +21,9 @@ import subprocess
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from coderfleet.config import parse_conf
-
-logger = logging.getLogger(__name__)
-
-# 每个会话最多允许的 pending/scheduled 排队任务数（API 与 Telegram 入口共用）
-MAX_PENDING_PER_CONV = 3
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
@@ -56,6 +51,7 @@ from coderfleet.server.models import (
     Schedule,
     ScheduleType,
     Skill,
+    TASK_STATUS_LABELS,
     Task,
     TaskStatus,
     TemplateNode,
@@ -65,7 +61,10 @@ from coderfleet.server.models import (
     WorkflowTemplate,
 )
 
+logger = logging.getLogger(__name__)
 
+# 每个会话最多允许的 pending/scheduled 排队任务数（API 与 Telegram 入口共用）
+MAX_PENDING_PER_CONV = 3
 
 
 class Scheduler:
@@ -109,13 +108,13 @@ class Scheduler:
         self._usage_loop_task: Optional[asyncio.Task] = None
         self._load_cached_usage()
 
-    def register_notifier(self, notifier) -> None:
-        """注册一个通知渠道：async callable(task) -> None。"""
+    def register_notifier(self, notifier: "Callable[[Task], Awaitable[None]]") -> None:
+        """注册一个任务终态通知渠道。"""
         self._notifiers.append(notifier)
 
     async def _notify(self, task: Task) -> None:
         """任务到达终态时向所有已注册渠道扇出；单渠道失败不影响其余渠道。"""
-        if task.status not in (TaskStatus.done, TaskStatus.failed, TaskStatus.killed):
+        if task.status not in TASK_STATUS_LABELS:
             return
         for notifier in self._notifiers:
             try:
@@ -708,6 +707,15 @@ class Scheduler:
 
     def list_tasks(self) -> list[Task]:
         return Task.load_all(self.tasks_dir)
+
+    def conversation_queue_full(self, conversation_id: str) -> bool:
+        """会话链排队任务是否已达 MAX_PENDING_PER_CONV（API 与 Telegram 入口共用）。"""
+        pending = sum(
+            1 for t in self.list_tasks()
+            if t.conversation_id == conversation_id
+            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
+        )
+        return pending >= MAX_PENDING_PER_CONV
 
     def get_task(self, task_id: str) -> Optional[Task]:
         path = self.tasks_dir / f"{task_id}.json"

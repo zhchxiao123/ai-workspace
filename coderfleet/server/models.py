@@ -25,6 +25,15 @@ class TaskStatus(str, Enum):
     killed  = "killed"
 
 
+# 终态 → 通知标题，Web Push 与 Telegram 等所有通知渠道共用；
+# 同时充当"哪些状态需要播报"的判定集合。
+TASK_STATUS_LABELS = {
+    TaskStatus.done:   "✅ 任务完成",
+    TaskStatus.failed: "❌ 任务失败",
+    TaskStatus.killed: "⚠️ 任务已终止",
+}
+
+
 class ImageBuildStatus(str, Enum):
     running   = "running"
     succeeded = "succeeded"

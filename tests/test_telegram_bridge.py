@@ -239,6 +239,18 @@ class FakeScheduler:
     def list_tasks(self):
         return self._tasks
 
+    def conversation_queue_full(self, conversation_id):
+        pending = sum(
+            1 for t in self._tasks
+            if t.conversation_id == conversation_id
+            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
+        )
+        return pending >= 3
+
+    def get_conversation(self, conversation_id):
+        from types import SimpleNamespace
+        return SimpleNamespace(id=conversation_id, name="登录修复链")
+
     async def submit(self, prompt, conversation_id=None, **kw):
         if self._fail:
             raise self._fail
@@ -301,8 +313,9 @@ def test_reply_to_broadcast_continues_conversation(tmp_path):
 
     assert seen["offset"] == 5           # getUpdates 带上持久化 offset
     assert fake.submitted == [("再跑一遍测试", "c1")]
-    assert len(sent) == 1                # 提交回执
+    assert len(sent) == 1                # 提交回执，含项目名与会话名
     assert "myproj" in sent[0]["text"]
+    assert "登录修复链" in sent[0]["text"]
     state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
     assert state["offset"] == 8          # update_id+1 已持久化
 
@@ -358,6 +371,66 @@ def test_conversation_queue_full_rejected(tmp_path):
     _run(bridge.poll_once())
     assert fake.submitted == []
     assert "队列" in sent[0]["text"]
+
+
+def test_poll_does_not_clobber_mappings_written_during_long_poll(tmp_path):
+    """getUpdates 挂起期间 notify_task 落盘的映射，不能被轮询保存 offset 时覆盖。"""
+    bridge_holder = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if url.endswith("/getUpdates"):
+            # 模拟长轮询挂起期间有任务完成并落盘新映射
+            bridge_holder["bridge"]._record_broadcast(77, _task(conversation_id="c-new"))
+            return httpx.Response(200, json={"ok": True, "result": [
+                _update(update_id=9, chat_id=666),  # 非白名单，仅推动 offset 保存
+            ]})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    ws = _configured(tmp_path)
+    bridge = _bridge(ws, handler)
+    bridge.scheduler = FakeScheduler()
+    bridge_holder["bridge"] = bridge
+    _seed_broadcast(ws)
+
+    _run(bridge.poll_once())
+
+    state = json.loads((ws / "telegram_state.json").read_text())
+    assert state["offset"] == 10                     # offset 正常前进
+    assert "77" in state["messages"]                 # 长轮询期间写入的映射仍在
+    assert state["last_conversation_id"] == "c-new"
+
+
+def test_reply_to_unmapped_message_warns_instead_of_misrouting(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=9, reply_to=999)])  # 999 不在映射中
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-last")
+
+    _run(bridge.poll_once())
+    # 不能静默落到最近会话——用户以为自己定向了某条任务链
+    assert fake.submitted == []
+    assert len(sent) == 1
+    assert "无法关联" in sent[0]["text"]
+
+
+def test_broadcast_goes_to_all_whitelisted_chats(tmp_path):
+    sent = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        sent.append(body["chat_id"])
+        return httpx.Response(200, json={"ok": True,
+                                         "result": {"message_id": 100 + len(sent)}})
+
+    ws = _ws(tmp_path, telegram_bot_token="TOK", telegram_chat_id="123,456",
+             telegram_notify_mode="text")
+    _run(_bridge(ws, handler).notify_task(_task()))
+
+    assert sent == ["123", "456"]
+    state = json.loads((ws / "telegram_state.json").read_text())
+    # 两条播报消息都可被 reply 续聊
+    assert state["messages"]["101"]["conversation_id"] == "c1"
+    assert state["messages"]["102"]["conversation_id"] == "c1"
 
 
 # ── 语音输入（ASR 续聊） ────────────────────────────────────

@@ -20,23 +20,16 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
 from coderfleet.config import load_config
-from coderfleet.server.models import Task, TaskStatus
-from coderfleet.server.scheduler import MAX_PENDING_PER_CONV
+from coderfleet.server.models import TASK_STATUS_LABELS, Task
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
-
-_STATUS_LABELS = {
-    TaskStatus.done:   "✅ 任务完成",
-    TaskStatus.failed: "❌ 任务失败",
-    TaskStatus.killed: "⚠️ 任务已终止",
-}
 
 # 映射条目超过上限后按插入序淘汰——只需要覆盖"最近可回复"的窗口
 _MAX_MESSAGE_MAPPINGS = 200
@@ -52,7 +45,7 @@ def build_voice_summary_prompt(task, output_text: str) -> tuple[str, str]:
         "你是任务播报员。把编码任务的执行结果压缩成 2~3 句口语化中文，"
         "适合语音播报：不出现代码、路径、标点堆砌，先说结论再说要点。"
     )
-    label = _STATUS_LABELS.get(task.status, str(task.status))
+    label = TASK_STATUS_LABELS.get(task.status, str(task.status))
     user = (
         f"项目：{task.project_name or task.project}\n"
         f"状态：{label}\n"
@@ -77,8 +70,8 @@ class TelegramBridge:
         workspace_dir: Path,
         *,
         transport: Optional[httpx.BaseTransport] = None,
-        summarizer=None,
-        voice_synth=None,
+        summarizer: Optional[Callable[[str], Awaitable[str]]] = None,
+        voice_synth: Optional[Callable[[str], Awaitable[bytes]]] = None,
     ) -> None:
         self.workspace_dir = workspace_dir
         self.state_path = workspace_dir / "telegram_state.json"
@@ -166,6 +159,14 @@ class TelegramBridge:
 
     # ── Bot API 调用 ─────────────────────────────────────────
 
+    def _client_kwargs(self, timeout: float) -> dict[str, Any]:
+        kw: dict[str, Any] = {"timeout": timeout}
+        if self._transport is not None:
+            kw["transport"] = self._transport
+        elif self.proxy:
+            kw["proxy"] = self.proxy
+        return kw
+
     async def _api(
         self,
         method: str,
@@ -173,12 +174,7 @@ class TelegramBridge:
         files: Optional[dict] = None,
     ) -> dict:
         url = f"{_API_BASE}/bot{self.token}/{method}"
-        client_kw: dict[str, Any] = {"timeout": 90.0}
-        if self._transport is not None:
-            client_kw["transport"] = self._transport
-        elif self.proxy:
-            client_kw["proxy"] = self.proxy
-        async with httpx.AsyncClient(**client_kw) as client:
+        async with httpx.AsyncClient(**self._client_kwargs(90.0)) as client:
             if files:
                 resp = await client.post(url, data=payload or {}, files=files)
             else:
@@ -193,7 +189,7 @@ class TelegramBridge:
     # ── 出向：任务播报 ───────────────────────────────────────
 
     def format_task_message(self, task: Task, excerpt: str) -> str:
-        label = _STATUS_LABELS.get(task.status, str(task.status))
+        label = TASK_STATUS_LABELS.get(task.status, str(task.status))
         lines = [f"{label} · {task.project_name or task.project}"]
         prompt = task.prompt.strip()
         lines.append(f"📝 {prompt[:120]}{'…' if len(prompt) > 120 else ''}")
@@ -209,43 +205,40 @@ class TelegramBridge:
         )
 
     async def notify_task(self, task: Task) -> None:
-        """任务终态播报入口。任何失败只记日志——播报绝不能影响任务收尾。"""
+        """任务终态播报入口，发往全部白名单 chat。任何失败只记日志——播报绝不能影响任务收尾。"""
         if not self.is_configured() or self.notify_mode == "off":
             return
-        if task.status not in _STATUS_LABELS:
+        if task.status not in TASK_STATUS_LABELS:
             return
         try:
             excerpt = self._output_excerpt(task)
-            result = None
+            ogg: Optional[bytes] = None
             if self.notify_mode == "voice":
                 try:
-                    result = await self._send_voice_broadcast(task, excerpt)
+                    summary = await self._summarize(task, excerpt)
+                    ogg = await self._synthesize(summary)
                 except Exception as exc:
                     # 语音链路（摘要/TTS/ffmpeg）任一环节不可用 → 降级为文本
                     logger.warning("Telegram 语音播报失败，降级为文本 [task=%s]: %s",
                                    task.id, exc)
-            if result is None:
-                text = self.format_task_message(task, excerpt)
-                result = await self._api("sendMessage", {
-                    "chat_id": self.chat_ids[0],
-                    "text": text,
-                })
-            message_id = result.get("message_id")
-            if message_id is not None:
-                self._record_broadcast(int(message_id), task)
+            label = TASK_STATUS_LABELS.get(task.status, "")
+            text = self.format_task_message(task, excerpt)
+            for chat_id in self.chat_ids:
+                if ogg is not None:
+                    result = await self._api(
+                        "sendVoice",
+                        {"chat_id": chat_id,
+                         "caption": f"{label} · {task.project_name or task.project}"},
+                        files={"voice": ("result.ogg", ogg, "audio/ogg")},
+                    )
+                else:
+                    result = await self._api("sendMessage",
+                                             {"chat_id": chat_id, "text": text})
+                message_id = result.get("message_id")
+                if message_id is not None:
+                    self._record_broadcast(int(message_id), task)
         except Exception as exc:
             logger.warning("Telegram 播报失败 [task=%s]: %s", task.id, exc)
-
-    async def _send_voice_broadcast(self, task: Task, excerpt: str) -> dict:
-        summary = await self._summarize(task, excerpt)
-        ogg = await self._synthesize(summary)
-        label = _STATUS_LABELS.get(task.status, "")
-        return await self._api(
-            "sendVoice",
-            {"chat_id": self.chat_ids[0],
-             "caption": f"{label} · {task.project_name or task.project}"},
-            files={"voice": ("result.ogg", ogg, "audio/ogg")},
-        )
 
     async def _summarize(self, task: Task, excerpt: str) -> str:
         """结果 → 口语化中文摘要。system_llm 未配置时抛错，由上层降级为文本。"""
@@ -297,39 +290,46 @@ class TelegramBridge:
         """执行一轮 getUpdates 并处理全部消息，返回消费的 update 数。"""
         if not self.is_configured():
             return 0
-        state = self._load_state()
+        offset = self._load_state().get("offset", 0)
         updates = await self._api("getUpdates", {
-            "offset": state.get("offset", 0),
+            "offset": offset,
             "timeout": self.poll_timeout,
             "allowed_updates": ["message"],
         })
         for update in updates:
             # 无论处理成败都前进 offset——坏消息不能卡死队列
-            state["offset"] = max(state.get("offset", 0), update["update_id"] + 1)
+            self._advance_offset(update["update_id"] + 1)
             try:
-                await self._handle_update(update, state)
+                await self._handle_update(update)
             except Exception as exc:
                 logger.warning("Telegram 消息处理失败 [update=%s]: %s",
                                update.get("update_id"), exc)
-        self._save_state(state)
         return len(updates)
 
-    async def _handle_update(self, update: dict, state: dict) -> None:
+    def _advance_offset(self, new_offset: int) -> None:
+        # 同步读改写：长轮询挂起期间 notify_task 可能已落盘新映射，
+        # 不能拿轮询开始时的快照回写覆盖它
+        state = self._load_state()
+        if new_offset > state.get("offset", 0):
+            state["offset"] = new_offset
+            self._save_state(state)
+
+    async def _handle_update(self, update: dict) -> None:
         msg = update.get("message") or {}
         chat_id = str(msg.get("chat", {}).get("id", ""))
         if chat_id not in self.chat_ids:
             return  # 非白名单：静默丢弃
         voice = msg.get("voice")
         if voice:
-            await self._handle_voice_message(chat_id, voice, msg, state)
+            await self._handle_voice_message(chat_id, voice, msg)
             return
         text = (msg.get("text") or "").strip()
         if not text:
             return
-        await self._submit_continuation(chat_id, text, msg, state)
+        await self._submit_continuation(chat_id, text, msg)
 
     async def _handle_voice_message(
-        self, chat_id: str, voice: dict, msg: dict, state: dict
+        self, chat_id: str, voice: dict, msg: dict
     ) -> None:
         if not self.asr_configured():
             await self._api("sendMessage", {
@@ -356,7 +356,7 @@ class TelegramBridge:
             "chat_id": chat_id,
             "text": f"🎧 已收到：{text}",
         })
-        await self._submit_continuation(chat_id, text, msg, state)
+        await self._submit_continuation(chat_id, text, msg)
 
     async def _transcribe_voice(self, file_id: str) -> str:
         """Telegram 语音文件 → OpenAI 兼容 /audio/transcriptions → 文本。"""
@@ -364,12 +364,7 @@ class TelegramBridge:
         file_path = info.get("file_path", "")
         if not file_path:
             raise TelegramError("getFile 未返回文件路径")
-        client_kw: dict[str, Any] = {"timeout": 120.0}
-        if self._transport is not None:
-            client_kw["transport"] = self._transport
-        elif self.proxy:
-            client_kw["proxy"] = self.proxy
-        async with httpx.AsyncClient(**client_kw) as client:
+        async with httpx.AsyncClient(**self._client_kwargs(120.0)) as client:
             audio = await client.get(f"{_API_BASE}/file/bot{self.token}/{file_path}")
             if audio.status_code != 200:
                 raise TelegramError(f"下载语音失败 HTTP {audio.status_code}")
@@ -383,34 +378,47 @@ class TelegramBridge:
             raise TelegramError(f"转写接口 HTTP {resp.status_code}: {resp.text[:200]}")
         return str(resp.json().get("text", "")).strip()
 
-    def _route_conversation(self, msg: dict, state: dict) -> tuple[str, str]:
-        """按 reply 映射 → 最近播报 解析目标会话。返回 (conversation_id, project_name)。"""
+    def _route_conversation(self, msg: dict) -> tuple[str, str, bool]:
+        """按 reply 映射 → 最近播报 解析目标会话。
+
+        返回 (conversation_id, project_name, reply_unmapped)：
+        reply 指向未知消息时不回退到最近会话——用户以为自己定向了
+        某条任务链，静默误路由比拒绝更糟。
+        """
+        state = self._load_state()
         reply = msg.get("reply_to_message") or {}
-        mapped = state.get("messages", {}).get(str(reply.get("message_id", "")))
-        if mapped:
-            return mapped["conversation_id"], mapped.get("project_name", "")
+        reply_id = str(reply.get("message_id", ""))
+        if reply_id:
+            mapped = state.get("messages", {}).get(reply_id)
+            if mapped:
+                return mapped["conversation_id"], mapped.get("project_name", ""), False
+            return "", "", True
         last = state.get("last_conversation_id", "")
         if last:
             for entry in reversed(list(state.get("messages", {}).values())):
                 if entry["conversation_id"] == last:
-                    return last, entry.get("project_name", "")
-            return last, ""
-        return "", ""
+                    return last, entry.get("project_name", ""), False
+            return last, "", False
+        return "", "", False
 
-    async def _submit_continuation(
-        self, chat_id: str, prompt: str, msg: dict, state: dict
-    ) -> None:
-        conv_id, project_name = self._route_conversation(msg, state)
+    async def _submit_continuation(self, chat_id: str, prompt: str, msg: dict) -> None:
+        conv_id, project_name, reply_unmapped = self._route_conversation(msg)
+        if reply_unmapped:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "⚠️ 这条消息已无法关联会话（映射可能已过期），请回复最新一条任务播报。",
+            })
+            return
         if not conv_id or self.scheduler is None:
             await self._api("sendMessage", {
                 "chat_id": chat_id,
                 "text": "还没有可续聊的会话。请先等一条任务播报，回复该播报即可续聊对应任务链。",
             })
             return
-        if self._conversation_queue_full(conv_id):
+        if self.scheduler.conversation_queue_full(conv_id):
             await self._api("sendMessage", {
                 "chat_id": chat_id,
-                "text": f"⚠️ 队列已满：该会话最多允许 {MAX_PENDING_PER_CONV} 条排队任务，请稍后再发。",
+                "text": "⚠️ 队列已满：该会话排队任务已达上限，请等待执行完成后再发。",
             })
             return
         try:
@@ -421,9 +429,18 @@ class TelegramBridge:
                 "text": f"⚠️ 提交失败：{exc}",
             })
             return
+        conv = None
+        try:
+            conv = self.scheduler.get_conversation(conv_id)
+        except Exception:
+            pass
+        conv_name = getattr(conv, "name", "")
+        target = project_name or "会话"
+        if conv_name:
+            target += f"「{conv_name}」"
         await self._api("sendMessage", {
             "chat_id": chat_id,
-            "text": f"📨 已提交到 {project_name or '会话'}，任务 {task.id} 开始排队执行。",
+            "text": f"📨 已提交到 {target}，任务 {task.id} 开始排队执行。",
         })
 
     def start_polling(self) -> None:
@@ -443,11 +460,3 @@ class TelegramBridge:
             except Exception as exc:
                 logger.warning("Telegram 轮询失败，10 秒后重试: %s", exc)
                 await asyncio.sleep(10)
-
-    def _conversation_queue_full(self, conversation_id: str) -> bool:
-        pending = sum(
-            1 for t in self.scheduler.list_tasks()
-            if t.conversation_id == conversation_id
-            and t.status in (TaskStatus.pending, TaskStatus.scheduled)
-        )
-        return pending >= MAX_PENDING_PER_CONV

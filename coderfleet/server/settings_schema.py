@@ -58,7 +58,7 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
                          help="向 @BotFather 申请"),
             SettingField("TELEGRAM_CHAT_ID", "Chat ID 白名单",
                          placeholder="123456789",
-                         help="逗号分隔；播报发往第一个，其余仅允许下发指令"),
+                         help="逗号分隔；所有白名单 chat 都会收到播报并可回复续聊"),
             SettingField("TELEGRAM_PROXY", "出站代理（可选）",
                          placeholder="http://127.0.0.1:10808",
                          help="api.telegram.org 无法直连时必填"),

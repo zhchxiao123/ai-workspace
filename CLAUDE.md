@@ -57,6 +57,7 @@ Run the Python test suite with `uv run --with pytest pytest -q`.
 - `tasks/*.log` — task execution logs.
 - `conversations/*.json` — conversation (task chain) records.
 - `builds/*.json`, `builds/*.log` — image build records (shared and per-project; CLI- and Web-triggered builds share this store).
+- `telegram_state.json` — Telegram bridge state: getUpdates offset + broadcast message_id → conversation mappings for reply routing.
 
 ### Task / Conversation model
 
