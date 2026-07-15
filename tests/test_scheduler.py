@@ -1422,6 +1422,58 @@ def test_start_pending_ephemeral_task_uses_ephemeral_runner(
     assert saved.execution_mode == "ephemeral"
 
 
+def test_start_pending_task_skips_when_cancelled_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A queued task cancelled after schedule_next_tasks() snapshots it but
+    before _start_pending_task actually dispatches it must not be sent to
+    the CLI, and must not have its 'killed' status clobbered back to
+    'running'."""
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="task-pending-cancelled",
+        status=TaskStatus.pending,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project="ephemeral",
+        project_name="",
+        ephemeral=True,
+        execution_mode="ephemeral",
+    )
+    task.save(sched.tasks_dir)
+    monkeypatch.setattr(
+        sched,
+        "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude)],
+    )
+
+    called = asyncio.Event()
+
+    async def fake_ephemeral_runner(*_args, **_kwargs):
+        called.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(sched, "_run_ephemeral_task", fake_ephemeral_runner)
+
+    async def run_start() -> None:
+        # Simulate the race: the task is cancelled (queued -> killed) after
+        # schedule_next_tasks() already snapshotted it as pending, but
+        # before _start_pending_task gets to actually dispatch it.
+        await sched.kill_task(task.id)
+        await sched._start_pending_task(task)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(called.wait(), timeout=0.2)
+
+    asyncio.run(run_start())
+
+    assert task.id not in sched._running
+    saved = sched.get_task(task.id)
+    assert saved is not None
+    assert saved.status == TaskStatus.killed
+
+
 def test_submit_ephemeral_conversation_records_retention_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1913,3 +1965,66 @@ def test_ephemeral_task_passes_configured_proxy_to_entrypoint(
     assert "CODERFLEET_RELAY_IP=10.8.0.2" in captured_args
     assert "CODERFLEET_RELAY_PORT=18080" in captured_args
     assert "coderfleet_intnet" in captured_args
+
+
+# ── / skill 命令展开 ──────────────────────────────────────────
+
+def _write_skill(tmp_path: Path, account: str, slug: str, frontmatter: str, body: str) -> None:
+    skill_dir = tmp_path / "accounts" / account / "skills" / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n\n{body}\n", encoding="utf-8")
+
+
+def test_expand_skill_command_substitutes_arguments(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    _write_skill(
+        tmp_path, "alice", "review",
+        "name: review\ndescription: Review a PR",
+        "Review the following target: $ARGUMENTS",
+    )
+    out = sched._expand_skill_command("/review PR #42", "alice")
+    assert out == "Review the following target: PR #42"
+
+
+def test_expand_skill_command_appends_rest_without_placeholder(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    _write_skill(tmp_path, "alice", "standup", "name: standup\ndescription: x", "Write a standup update.")
+    out = sched._expand_skill_command("/standup yesterday I shipped X", "alice")
+    assert out == "Write a standup update.\n\nyesterday I shipped X"
+
+
+def test_expand_skill_command_no_args_returns_content_only(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    _write_skill(tmp_path, "alice", "standup", "name: standup\ndescription: x", "Write a standup update.")
+    out = sched._expand_skill_command("/standup", "alice")
+    assert out == "Write a standup update."
+
+
+def test_expand_skill_command_leaves_plain_prompt_untouched(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    out = sched._expand_skill_command("just a normal message, not a command", "alice")
+    assert out == "just a normal message, not a command"
+
+
+def test_expand_skill_command_unknown_slug_passes_through(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    out = sched._expand_skill_command("/does-not-exist foo", "alice")
+    assert out == "/does-not-exist foo"
+
+
+def test_expand_skill_command_respects_user_invocable_false(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    _write_skill(
+        tmp_path, "alice", "internal",
+        "name: internal\ndescription: x\nuser-invocable: false",
+        "Should not run from chat.",
+    )
+    out = sched._expand_skill_command("/internal foo", "alice")
+    assert out == "/internal foo"
+
+
+def test_expand_skill_command_is_account_scoped(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    _write_skill(tmp_path, "alice", "standup", "name: standup\ndescription: x", "Alice's template.")
+    out = sched._expand_skill_command("/standup today", "bob")
+    assert out == "/standup today"

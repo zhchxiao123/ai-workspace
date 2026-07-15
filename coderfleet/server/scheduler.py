@@ -49,6 +49,7 @@ from coderfleet.server.models import (
     Project,
     Schedule,
     ScheduleType,
+    Skill,
     Task,
     TaskStatus,
     TemplateNode,
@@ -117,6 +118,32 @@ class Scheduler:
     @staticmethod
     def task_process_marker(task_id: str) -> str:
         return f"coderfleet-task-{task_id}"
+
+    # 匹配 prompt 开头的 "/skill-slug 其余参数"（其余参数可跨行）
+    _SLASH_COMMAND_RE = re.compile(r"^/([a-zA-Z0-9_-]+)(?:[ \t]+(.*))?$", re.DOTALL)
+
+    def _expand_skill_command(self, prompt: str, account_name: str) -> str:
+        """
+        把 Web UI "/" 自动补全选中的 skill 展开成完整 prompt 再喂给 CLI。
+        只在此处（提交给容器执行前）展开，task.prompt 本身保留用户原始输入，
+        用于会话历史 / 日志展示。
+        """
+        m = self._SLASH_COMMAND_RE.match(prompt.strip())
+        if not m or not account_name:
+            return prompt
+        slug, rest = m.group(1), (m.group(2) or "").strip()
+        skill_path = self.workspace_dir / "accounts" / account_name / "skills" / slug / "SKILL.md"
+        if not skill_path.exists():
+            return prompt
+        try:
+            skill = Skill.from_file(slug, skill_path)
+        except Exception:
+            return prompt
+        if not skill.user_invocable:
+            return prompt
+        if "$ARGUMENTS" in skill.content:
+            return skill.content.replace("$ARGUMENTS", rest)
+        return f"{skill.content}\n\n{rest}" if rest else skill.content
 
     @staticmethod
     def build_cli_command(
@@ -1338,6 +1365,14 @@ class Scheduler:
 
     async def _start_pending_task(self, task: Task) -> None:
         try:
+            # 派发前重新读取磁盘状态：调度循环基于本轮开始时的快照，
+            # 如果任务在快照之后、真正派发之前被取消（如排队中被用户删除/终止），
+            # 需要在这里跳过，避免把已取消的任务仍旧发给 CLI。
+            fresh = self.get_task(task.id)
+            if fresh is None or fresh.status != TaskStatus.pending:
+                return
+            task = fresh
+
             acc = next((a for a in self.get_accounts() if a.name == task.account), None)
             if acc is None:
                 task.update_status(TaskStatus.failed, self.tasks_dir)
@@ -2157,7 +2192,7 @@ class Scheduler:
             cfg  = load_config(self.workspace_dir)
 
             inner_cmd = spec.build_inner_cmd(
-                task.prompt, auto, task.id,
+                self._expand_skill_command(task.prompt, acc.name), auto, task.id,
                 shlex.quote(Scheduler.task_process_marker(task.id)),
                 shlex.quote(task.id),
                 conversation.native_session_id if conversation else "",
@@ -2405,9 +2440,10 @@ class Scheduler:
     ) -> None:
         """后台协程：以 detached 方式启动容器任务，再轮询宿主机日志文件跟踪进度。"""
         try:
+            cli_prompt = self._expand_skill_command(task.prompt, acc.name)
             cmd = self.build_cli_command(
                 acc.type,
-                task.prompt,
+                cli_prompt,
                 auto,
                 task.id,
                 native_session_id=conversation.native_session_id if conversation else "",

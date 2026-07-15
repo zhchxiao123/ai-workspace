@@ -933,6 +933,7 @@ function _renderChatMentionDropdown() {
       ${icon}<span class="chat-mention-path">${esc(entry.path)}</span>
     </div>`;
   }).join('');
+  _scrollActiveDropdownItemIntoView(el);
 }
 
 function _confirmChatMentionSelection(idx) {
@@ -987,23 +988,187 @@ function _initChatMentionOutsideClick() {
   });
 }
 
+// ── / Skill 命令自动补全 ──────────────────────────────────
+// 只在输入框最开头触发（与后端 Scheduler._expand_skill_command 的匹配规则一致，
+// 后端只把"整段 prompt 以 /slug 开头"这种情况当作命令展开，其余一律原样透传）。
+function _detectChatSlashToken(textarea) {
+  const value = textarea.value;
+  const cursor = textarea.selectionStart;
+  if (cursor !== textarea.selectionEnd) return null;
+  if (value[0] !== '/') return null;
+  const m = /^\/(\S*)/.exec(value);
+  if (!m) return null;
+  const tokenEnd = 1 + m[1].length;
+  if (cursor > tokenEnd) return null; // 命令词已经打完（后面出现空格/参数），收起下拉
+  return { start: 0, query: value.slice(1, cursor) };
+}
+
+function _currentChatAccountName() {
+  const proj = projectsCache.find(p => p.name === currentChatProjectName);
+  return proj ? proj.account : '';
+}
+
+async function _loadChatSlashSkills(account) {
+  if (chatSlashSkillsCache.account === account) return chatSlashSkillsCache.skills;
+  try {
+    const r = await fetch(`${API}/api/accounts/${encodeURIComponent(account)}/skills`);
+    const data = await r.json().catch(() => []);
+    const skills = (r.ok && Array.isArray(data)) ? data.filter(s => s.user_invocable !== false) : [];
+    chatSlashSkillsCache = { account, skills };
+    return skills;
+  } catch (e) {
+    return [];
+  }
+}
+
+async function _handleChatSlashInput(textarea) {
+  const account = _currentChatAccountName();
+  const token = _detectChatSlashToken(textarea);
+  if (!account || !token) {
+    _closeChatSlashDropdown();
+    return;
+  }
+  // 同一时刻只能有一个下拉框，@ 提及优先级更低
+  _closeChatMentionDropdown();
+  chatSlashOpen = true;
+  chatSlashStart = token.start;
+  chatSlashActiveIndex = 0;
+  const requestSeq = ++chatSlashRequestSeq;
+  const skills = await _loadChatSlashSkills(account);
+  if (requestSeq !== chatSlashRequestSeq || !chatSlashOpen) return;
+  const q = token.query.toLowerCase();
+  chatSlashResults = skills.filter(s =>
+    s.slug.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q)
+  );
+  chatSlashActiveIndex = 0;
+  _renderChatSlashDropdown();
+}
+
+// 键盘上下选中后，把 active 项滚动到可视区域内（下拉框本身带 overflow-y: auto）
+function _scrollActiveDropdownItemIntoView(el) {
+  const active = el.querySelector('.chat-mention-item.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+
+function _renderChatSlashDropdown() {
+  const el = document.getElementById('chat-slash-dropdown');
+  if (!el) return;
+  if (!chatSlashOpen) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  if (!chatSlashResults.length) {
+    el.innerHTML = `<div class="chat-mention-empty">没有匹配的技能</div>`;
+    return;
+  }
+  el.innerHTML = chatSlashResults.map((entry, idx) => {
+    const active = idx === chatSlashActiveIndex ? ' active' : '';
+    return `<div class="chat-mention-item${active}" onmousedown="event.preventDefault(); _confirmChatSlashSelection(${idx})">
+      <span class="chat-mention-path">/${esc(entry.slug)}</span>${entry.description ? `<span class="chat-slash-desc">${esc(entry.description)}</span>` : ''}
+    </div>`;
+  }).join('');
+  _scrollActiveDropdownItemIntoView(el);
+}
+
+function _confirmChatSlashSelection(idx) {
+  const entry = chatSlashResults[idx];
+  const textarea = document.getElementById('chat-input');
+  if (!entry || !textarea) {
+    _closeChatSlashDropdown();
+    return;
+  }
+  const value = textarea.value;
+  const cursor = textarea.selectionStart;
+  const after = value.slice(cursor);
+  const insertion = `/${entry.slug} `;
+  textarea.value = insertion + after;
+  const newCursor = insertion.length;
+  textarea.selectionStart = textarea.selectionEnd = newCursor;
+  _closeChatSlashDropdown();
+  textarea.focus();
+  textarea.dispatchEvent(new Event('input'));
+}
+
+function _closeChatSlashDropdown() {
+  chatSlashOpen = false;
+  chatSlashStart = -1;
+  chatSlashResults = [];
+  chatSlashActiveIndex = 0;
+  _renderChatSlashDropdown();
+}
+
+function _validateChatSlashCursor(textarea) {
+  if (!chatSlashOpen) return;
+  const token = _detectChatSlashToken(textarea);
+  if (!token) _closeChatSlashDropdown();
+}
+
+let _chatSlashOutsideClickBound = false;
+function _initChatSlashOutsideClick() {
+  if (_chatSlashOutsideClickBound) return;
+  _chatSlashOutsideClickBound = true;
+  document.addEventListener('mousedown', e => {
+    if (!chatSlashOpen) return;
+    const dropdown = document.getElementById('chat-slash-dropdown');
+    const textarea = document.getElementById('chat-input');
+    if (dropdown && dropdown.contains(e.target)) return;
+    if (textarea && e.target === textarea) return;
+    _closeChatSlashDropdown();
+  });
+}
+
 // 自适应高度及快捷键发送绑定
 function bindChatTextareaEvents(textarea) {
   if (!textarea) return;
   _initChatMentionOutsideClick();
+  _initChatSlashOutsideClick();
   textarea.addEventListener('input', () => {
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+    _handleChatSlashInput(textarea);
     _handleChatMentionInput(textarea);
     // 任务运行中时，输入框内容的有无决定发送/停止合并按钮的外观
     if (currentChatTaskId) _syncChatSendButton(currentChatTaskId, _isChatQueueFull(activeConversationId));
   });
-  textarea.addEventListener('click', () => _validateChatMentionCursor(textarea));
+  textarea.addEventListener('click', () => {
+    _validateChatSlashCursor(textarea);
+    _validateChatMentionCursor(textarea);
+  });
   textarea.addEventListener('keyup', e => {
-    if (CHAT_MENTION_NAV_KEYS.includes(e.key)) _validateChatMentionCursor(textarea);
+    if (CHAT_MENTION_NAV_KEYS.includes(e.key)) {
+      _validateChatSlashCursor(textarea);
+      _validateChatMentionCursor(textarea);
+    }
   });
   textarea.addEventListener('keydown', e => {
-    if (chatMentionOpen) {
+    if (chatSlashOpen) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (chatSlashResults.length) {
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          chatSlashActiveIndex = (chatSlashActiveIndex + dir + chatSlashResults.length) % chatSlashResults.length;
+          _renderChatSlashDropdown();
+        }
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        if (e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        if (chatSlashResults.length) {
+          _confirmChatSlashSelection(chatSlashActiveIndex);
+        } else {
+          _closeChatSlashDropdown();
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        _closeChatSlashDropdown();
+        return;
+      }
+    } else if (chatMentionOpen) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (chatMentionResults.length) {
@@ -1328,50 +1493,43 @@ async function renderChatWorkspace(conv) {
       return;
     }
 
-    // 并行获取所有的日志；done/failed/killed 任务的日志内容不会再变，
-    // 命中缓存就直接复用，避免会话因为其它任务状态变化整体重渲染时全部重新拉取。
-    const logs = await Promise.all(convTasks.map(t => {
-      if (t.status !== 'running' && _finishedLogCache.has(t.id)) {
-        return Promise.resolve(_finishedLogCache.get(t.id));
-      }
-      return fetch(`${API}/api/tasks/${t.id}/logs`).then(r => r.text()).catch(() => '');
-    }));
-    convTasks.forEach((t, idx) => {
-      if (t.status !== 'running') _finishedLogCache.set(t.id, logs[idx]);
-    });
+    // 只有 done/failed/killed/running 的任务才会渲染消息气泡（排队/定时中的任务跳过，由队列面板管理）
+    const renderableTasks = convTasks.filter(t => t.status !== 'pending' && t.status !== 'scheduled');
+
+    // 会话历史越长，日志越大，一次性把全部任务日志都拉下来渲染就越慢（issue #42）。
+    // 只 eager 拉取渲染最近 CHAT_EAGER_LOG_COUNT 条，更早的任务先显示折叠占位，
+    // 点开才按需拉取渲染，命中的话同样写入 _finishedLogCache 复用。
+    const eagerStartIdx = Math.max(0, renderableTasks.length - CHAT_EAGER_LOG_COUNT);
+    const collapsedTasks = renderableTasks.slice(0, eagerStartIdx);
+    const eagerTasks = renderableTasks.slice(eagerStartIdx);
+
+    // 之前手动点开过的历史任务：重渲染（比如心跳触发的整体重渲染）时保持展开状态，
+    // 不要把用户已经展开的记录又折叠回去。
+    const manuallyExpanded = collapsedTasks.filter(t => chatExpandedTaskIds.has(t.id));
+    const expandedLogsById = new Map();
+
+    // 并行获取最近这几条任务的日志，以及手动展开过的历史任务的日志；done/failed/killed
+    // 任务的日志内容不会再变，命中缓存就直接复用，避免会话因为其它任务状态变化整体
+    // 重渲染时全部重新拉取。
+    const [logs, expandedLogs] = await Promise.all([
+      Promise.all(eagerTasks.map(t => _fetchTaskLogCached(t))),
+      Promise.all(manuallyExpanded.map(t => _fetchTaskLogCached(t))),
+    ]);
+    manuallyExpanded.forEach((t, idx) => expandedLogsById.set(t.id, expandedLogs[idx]));
     chatContent.innerHTML = '';
 
-    // 循环独立渲染每一个任务的提问和日志（排队/定时中的任务跳过，由队列面板管理）
+    collapsedTasks.forEach(task => {
+      if (expandedLogsById.has(task.id)) {
+        _renderChatTaskTurn(chatContent, task, expandedLogsById.get(task.id));
+      } else {
+        chatContent.appendChild(_renderCollapsedTaskPlaceholder(task));
+      }
+    });
+
+    // 循环独立渲染最近几个任务的提问和日志
     let _lastLocalRenderer = null;
-    convTasks.forEach((task, idx) => {
-      if (task.status === 'pending' || task.status === 'scheduled') return;
-
-      const logText = logs[idx];
-
-      // 1. 渲染用户提问蓝气泡
-      const userWrap = document.createElement('div');
-      userWrap.className = 'timeline-node-wrapper user-wrapper';
-      userWrap.innerHTML = `
-    <div class="user-bubble">
-      <div class="user-bubble-title-row">
-        <div class="user-bubble-title">你:</div>
-        <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
-      </div>
-      <div class="user-bubble-content">${esc(task.prompt)}</div>
-      ${renderTaskFileAttachments(task, currentChatProjectName)}
-    </div>`;
-      chatContent.appendChild(userWrap);
-
-      // 2. 渲染日志输出的容器
-      const logWrap = document.createElement('div');
-      logWrap.style.marginBottom = '24px';
-      chatContent.appendChild(logWrap);
-
-      // 3. 构建局部的 ChatLogRenderer 并进行渲染
-      // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
-      const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null);
-      localRenderer.render(logText, task.type);
-      _lastLocalRenderer = localRenderer;
+    eagerTasks.forEach((task, idx) => {
+      _lastLocalRenderer = _renderChatTaskTurn(chatContent, task, logs[idx]);
     });
     if (_lastLocalRenderer) chatRenderer = _lastLocalRenderer;
 
@@ -1383,18 +1541,94 @@ async function renderChatWorkspace(conv) {
       || convTasks.find(t => t.status === 'pending')
       || convTasks.find(t => t.status === 'scheduled');
     if (activeTask) {
-      // chatRenderer 始终对应最后一个任务的渲染器。
+      // chatRenderer 始终对应最后一个任务的渲染器，而最后一个任务必然落在 eagerTasks 里。
       // 若 activeTask 就是最后一个任务（最常见情况），把其日志字节数告知服务端，
       // 服务端从该偏移量开始推送，避免重新打开会话时内容重复。
-      const lastIdx = convTasks.length - 1;
-      const activeIdx = convTasks.indexOf(activeTask);
-      const alreadyRenderedLog = activeIdx === lastIdx ? (logs[lastIdx] || '') : '';
+      const lastRenderable = renderableTasks[renderableTasks.length - 1];
+      const alreadyRenderedLog = (lastRenderable && activeTask.id === lastRenderable.id)
+        ? (logs[logs.length - 1] || '') : '';
       const skipBytes = new TextEncoder().encode(alreadyRenderedLog).byteLength;
       startChatFollow(activeTask.id, skipBytes);
     }
   } catch (e) {
     chatContent.innerHTML = `<div style="color:var(--red);padding:16px">加载会话历史失败: ${esc(e.message)}<br><pre style="font-size:11px;color:var(--text-3);margin-top:8px">${esc(e.stack)}</pre></div>`;
   }
+}
+
+// 打开会话时 eager 拉取渲染的最近任务条数，更早的任务折叠懒加载（issue #42）
+const CHAT_EAGER_LOG_COUNT = 8;
+
+// 拉取单条任务日志；done/failed/killed 任务的日志内容不会再变，命中缓存直接复用。
+// 缓存分两层：内存 Map（当前会话页面内最快）+ IndexedDB（跨页面刷新持久化，issue #43）。
+async function _fetchTaskLogCached(task) {
+  if (task.status !== 'running') {
+    if (_finishedLogCache.has(task.id)) return _finishedLogCache.get(task.id);
+    const persisted = await logCacheGet(task.id);
+    if (persisted !== null) {
+      _finishedLogCache.set(task.id, persisted);
+      return persisted;
+    }
+  }
+  const text = await fetch(`${API}/api/tasks/${task.id}/logs`).then(r => r.text()).catch(() => '');
+  if (task.status !== 'running') {
+    _finishedLogCache.set(task.id, text);
+    logCacheSet(task.id, text);
+  }
+  return text;
+}
+
+// 渲染单个任务的完整问答回合（用户气泡 + 日志渲染），返回对应的 ChatLogRenderer
+function _renderChatTaskTurn(container, task, logText) {
+  // 1. 渲染用户提问蓝气泡
+  const userWrap = document.createElement('div');
+  userWrap.className = 'timeline-node-wrapper user-wrapper';
+  userWrap.innerHTML = `
+    <div class="user-bubble">
+      <div class="user-bubble-title-row">
+        <div class="user-bubble-title">你:</div>
+        <button class="user-copy-btn" onclick="copyUserBubble(this)" title="复制">${copyBtnSVG()}</button>
+      </div>
+      <div class="user-bubble-content">${esc(task.prompt)}</div>
+      ${renderTaskFileAttachments(task, currentChatProjectName)}
+    </div>`;
+  container.appendChild(userWrap);
+
+  // 2. 渲染日志输出的容器
+  const logWrap = document.createElement('div');
+  logWrap.style.marginBottom = '24px';
+  container.appendChild(logWrap);
+
+  // 3. 构建局部的 ChatLogRenderer 并进行渲染
+  // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
+  const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null);
+  localRenderer.render(logText, task.type);
+  return localRenderer;
+}
+
+// 更早历史任务的折叠占位：只显示时间 + prompt 摘要，不请求日志正文；
+// 点开才按需拉取渲染，原地替换掉占位节点。
+function _renderCollapsedTaskPlaceholder(task) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-collapsed-task';
+  const promptPreview = (task.prompt || '').replace(/\s+/g, ' ').trim();
+  wrap.innerHTML = `
+    <span class="chat-collapsed-task-caret">▸</span>
+    <span class="chat-collapsed-task-time">${esc(fmtTime(task.created))}</span>
+    <span class="chat-collapsed-task-prompt">${esc(promptPreview)}</span>`;
+  wrap.title = '点击展开完整记录';
+  wrap.addEventListener('click', async () => {
+    if (wrap.dataset.expanding) return;
+    wrap.dataset.expanding = '1';
+    wrap.style.opacity = '0.6';
+    // 记录展开状态：会话因心跳等原因整体重渲染时，renderChatWorkspace 会读取这个
+    // 集合，让这条历史任务直接以展开态渲染，而不是又变回折叠占位。
+    chatExpandedTaskIds.add(task.id);
+    const logText = await _fetchTaskLogCached(task);
+    const expanded = document.createElement('div');
+    _renderChatTaskTurn(expanded, task, logText);
+    wrap.replaceWith(expanded);
+  });
+  return wrap;
 }
 
 // 发送前判断项目绑定账号是否已有任务在跑，决定占位态（排队 or 执行中）
@@ -2017,6 +2251,7 @@ function buildChatInputHTML(placeholder, hint) {
   <div id="chat-queue-panel" class="chat-queue-panel" style="display:none;"></div>
   <div class="chat-input-composer">
     <div id="chat-mention-dropdown" class="chat-mention-dropdown" style="display:none;"></div>
+    <div id="chat-slash-dropdown" class="chat-mention-dropdown" style="display:none;"></div>
     <div id="chat-image-previews" class="chat-image-preview-row" style="display:none;"></div>
     <textarea class="chat-input-textarea" id="chat-input" placeholder="${placeholder}" rows="1"></textarea>
     <div id="chat-upload-status" class="chat-upload-status" style="display:none;"></div>

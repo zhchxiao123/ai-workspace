@@ -57,8 +57,17 @@ let chatMentionResults = [];
 let chatMentionActiveIndex = 0;
 let chatMentionTimer = null;
 let chatMentionRequestSeq = 0;
+let chatSlashOpen = false;
+let chatSlashStart = -1;
+let chatSlashResults = [];
+let chatSlashActiveIndex = 0;
+let chatSlashRequestSeq = 0;
+let chatSlashSkillsCache = { account: null, skills: [] };
 let tasksCache = [];
 const _finishedLogCache = new Map(); // task.id -> 已完成任务的日志文本，内容不会再变，避免整体重渲染时重新拉取
+// 用户手动展开过的折叠历史任务 id 集合；renderChatWorkspace 每次重渲染（如心跳触发）都会
+// 从头重建 DOM，若不记录这个集合，展开过的历史任务会在下一次重渲染时又变回折叠占位。
+const chatExpandedTaskIds = new Set();
 let submitContext = { surface: 'task', projectName: '', boardCardId: '' };
 let taskRowsCache = [];
 let taskPage = 1;

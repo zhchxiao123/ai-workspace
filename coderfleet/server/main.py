@@ -2047,7 +2047,9 @@ async def get_logs(task_id: str):
     log_path = scheduler.get_log_path(task_id)
     if not log_path.exists():
         raise HTTPException(status_code=404, detail=f"日志文件不存在：{task_id}")
-    return log_path.read_text(encoding="utf-8")
+    # 日志文件可达数 MB，同步读取会独占单进程事件循环，挤占同一时刻的其它请求
+    # （SSE 日志流、心跳轮询等）——丢进线程池执行。
+    return await run_in_threadpool(log_path.read_text, encoding="utf-8")
 
 
 @app.get("/api/tasks/{task_id}/output")
@@ -2060,7 +2062,7 @@ async def get_task_output(task_id: str):
     log_path = scheduler.get_log_path(task_id)
     if not log_path.exists():
         return {"text": ""}
-    log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+    log_text = await run_in_threadpool(log_path.read_text, encoding="utf-8", errors="ignore")
     text = extract_task_output(log_text, task.type.value)
     return {"text": text}
 

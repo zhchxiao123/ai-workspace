@@ -947,12 +947,99 @@ def test_chat_poll_uses_heartbeat_instead_of_full_reload() -> None:
 
 def test_chat_reuses_cached_log_for_finished_tasks_instead_of_refetching() -> None:
     """done/failed/killed 任务的日志内容不会再变；会话因为其它任务状态变化整体
-    重渲染时，不该把这些历史日志重新拉一遍。"""
+    重渲染时，不该把这些历史日志重新拉一遍（issue #42 里抽成了 _fetchTaskLogCached，
+    eager 加载和折叠占位点开懒加载两条路径共用同一份缓存逻辑）。"""
     source = read_ui_source()
 
     assert "_finishedLogCache" in source
-    assert "t.status !== 'running' && _finishedLogCache.has(t.id)" in source
-    assert "_finishedLogCache.set(t.id, logs[idx])" in source
+    assert "_finishedLogCache.has(task.id)" in source
+    assert "_finishedLogCache.set(task.id, text)" in source
+    assert "async function _fetchTaskLogCached(task)" in source
+
+
+def test_render_chat_workspace_only_eager_fetches_recent_task_logs() -> None:
+    """issue #42：打开/刷新一个会话不该把全部历史任务的日志一次性拉下来渲染——
+    历史越长（比如 /loop 跑出来几十轮），日志累计能到几 MB，一次性全部请求+渲染
+    会把首屏卡住。只应该 eager 拉取渲染最近 CHAT_EAGER_LOG_COUNT 条，更早的任务
+    显示折叠占位，点开才按需拉取。"""
+    source = read_ui_source()
+
+    assert re.search(r"const\s+CHAT_EAGER_LOG_COUNT\s*=\s*\d+", source)
+
+    match = re.search(
+        r"async function renderChatWorkspace\(conv\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+
+    assert "collapsedTasks" in body
+    assert "eagerTasks" in body
+    assert "CHAT_EAGER_LOG_COUNT" in body
+    assert "_renderCollapsedTaskPlaceholder(task)" in body
+    assert "_fetchTaskLogCached(t)" in body
+    # 折叠占位不该在打开会话时就去拉日志正文——只有 eagerTasks 才在 Promise.all 里请求
+    assert "eagerTasks.map(t => _fetchTaskLogCached(t))" in body
+
+    assert "function _renderCollapsedTaskPlaceholder(task)" in source
+    # 点开折叠占位才按需拉取渲染，复用同一份 _fetchTaskLogCached 缓存逻辑
+    collapsed_match = re.search(
+        r"function _renderCollapsedTaskPlaceholder\(task\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert collapsed_match is not None
+    assert "_fetchTaskLogCached(task)" in collapsed_match.group("body")
+
+
+def test_manually_expanded_historical_task_survives_workspace_rerender() -> None:
+    """issue #42 code-review 补充：renderChatWorkspace 每次重渲染（比如心跳触发的整体
+    重渲染）都会把 chatContent 从 collapsedTasks/eagerTasks 重新整个建一遍。如果不记录
+    "用户手动点开过哪些折叠任务"，展开过的历史任务会在下一次重渲染时又变回折叠占位。"""
+    source = read_ui_source()
+
+    assert "chatExpandedTaskIds" in source
+    assert re.search(r"const\s+chatExpandedTaskIds\s*=\s*new Set\(\)", source)
+
+    # 点开折叠占位时要记进这个集合
+    collapsed_match = re.search(
+        r"function _renderCollapsedTaskPlaceholder\(task\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert collapsed_match is not None
+    assert "chatExpandedTaskIds.add(task.id)" in collapsed_match.group("body")
+
+    # renderChatWorkspace 要读取这个集合，把命中的历史任务当作展开态渲染，而不是折叠占位
+    match = re.search(
+        r"async function renderChatWorkspace\(conv\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "manuallyExpanded" in body
+    assert "chatExpandedTaskIds.has(t.id)" in body
+    assert "expandedLogsById" in body
+
+
+def test_finished_task_logs_persist_across_page_reloads_via_indexeddb() -> None:
+    """issue #43：_finishedLogCache 只是内存 Map，刷新页面就清空，已完成任务的日志
+    每次刷新都要重新整份下载。_fetchTaskLogCached 应该在内存缓存未命中时，
+    先查 IndexedDB 持久层，命中就不必发网络请求；拉取到新内容后两层缓存都要写。"""
+    source = read_ui_source()
+
+    assert '<script src="/static/js/log-cache.js' in INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "async function logCacheGet(taskId)" in source
+    assert "async function logCacheSet(taskId, text)" in source
+    # 有淘汰策略，避免无限占用本地存储
+    assert re.search(r"LOG_CACHE_MAX_ENTRIES\s*=\s*\d+", source)
+    assert "_evictOldLogCacheEntries" in source
+
+    match = re.search(
+        r"async function _fetchTaskLogCached\(task\) \{(?P<body>.*?)\n\}\n\n", source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+
+    assert "logCacheGet(task.id)" in body
+    assert "logCacheSet(task.id, text)" in body
+    # running 任务的日志还在变化，不该走持久缓存
+    assert "task.status !== 'running'" in body
 
 
 def test_open_pipeline_does_not_refetch_full_task_list() -> None:
