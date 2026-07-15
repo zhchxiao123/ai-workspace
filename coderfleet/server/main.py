@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -204,6 +205,17 @@ class BoardCardUpdateRequest(BaseModel):
 
 
 # ── 初始化 ────────────────────────────────────────────────
+
+# 应用日志：uvicorn 只配置自己的 logger，coderfleet.* 默认只有 WARNING
+# 能经 lastResort 冒出来；这里补一个 INFO 级 handler（带时间戳），
+# 否则通知/轮询的全链路日志在 server.log 里不可见。
+_app_logger = logging.getLogger("coderfleet")
+if not _app_logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _app_logger.addHandler(_h)
+    _app_logger.setLevel(logging.INFO)
+    _app_logger.propagate = False
 
 WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
 scheduler        = Scheduler(WORKSPACE_DIR)

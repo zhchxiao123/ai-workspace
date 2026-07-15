@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -174,16 +175,26 @@ class TelegramBridge:
         files: Optional[dict] = None,
     ) -> dict:
         url = f"{_API_BASE}/bot{self.token}/{method}"
-        async with httpx.AsyncClient(**self._client_kwargs(90.0)) as client:
-            if files:
-                resp = await client.post(url, data=payload or {}, files=files)
-            else:
-                resp = await client.post(url, json=payload or {})
+        # getUpdates 每 25s 一轮，INFO 会刷屏，降为 DEBUG；其余调用全量记录
+        level = logging.DEBUG if method == "getUpdates" else logging.INFO
+        logger.log(level, "Bot API %s 开始 (proxy=%s)", method, self.proxy or "直连")
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(**self._client_kwargs(90.0)) as client:
+                if files:
+                    resp = await client.post(url, data=payload or {}, files=files)
+                else:
+                    resp = await client.post(url, json=payload or {})
+        except Exception as exc:
+            logger.warning("Bot API %s 网络失败 (%.1fs, proxy=%s): %r",
+                           method, time.monotonic() - t0, self.proxy or "直连", exc)
+            raise
         if resp.status_code != 200:
             raise TelegramError(f"{method} 返回 HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
         if not data.get("ok"):
             raise TelegramError(f"{method} 失败: {data.get('description', '')}")
+        logger.log(level, "Bot API %s 完成 (%.1fs)", method, time.monotonic() - t0)
         return data.get("result", {})
 
     # ── 出向：任务播报 ───────────────────────────────────────
@@ -206,10 +217,17 @@ class TelegramBridge:
 
     async def notify_task(self, task: Task) -> None:
         """任务终态播报入口，发往全部白名单 chat。任何失败只记日志——播报绝不能影响任务收尾。"""
-        if not self.is_configured() or self.notify_mode == "off":
+        if not self.is_configured():
+            logger.info("跳过 Telegram 播报 [task=%s]：未配置 token/chat_id (workspace=%s)",
+                        task.id, self.workspace_dir)
+            return
+        if self.notify_mode == "off":
+            logger.info("跳过 Telegram 播报 [task=%s]：TELEGRAM_NOTIFY_MODE=off", task.id)
             return
         if task.status not in TASK_STATUS_LABELS:
             return
+        logger.info("Telegram 播报开始 [task=%s status=%s mode=%s chats=%d]",
+                    task.id, task.status.value, self.notify_mode, len(self.chat_ids))
         try:
             excerpt = self._output_excerpt(task)
             ogg: Optional[bytes] = None
@@ -237,8 +255,10 @@ class TelegramBridge:
                 message_id = result.get("message_id")
                 if message_id is not None:
                     self._record_broadcast(int(message_id), task)
+                logger.info("Telegram 播报已送达 [task=%s chat=%s message_id=%s voice=%s]",
+                            task.id, chat_id, message_id, ogg is not None)
         except Exception as exc:
-            logger.warning("Telegram 播报失败 [task=%s]: %s", task.id, exc)
+            logger.warning("Telegram 播报失败 [task=%s]: %r", task.id, exc)
 
     async def _summarize(self, task: Task, excerpt: str) -> str:
         """结果 → 口语化中文摘要。system_llm 未配置时抛错，由上层降级为文本。"""
@@ -320,8 +340,12 @@ class TelegramBridge:
         msg = update.get("message") or {}
         chat_id = str(msg.get("chat", {}).get("id", ""))
         if chat_id not in self.chat_ids:
-            return  # 非白名单：静默丢弃
+            logger.info("丢弃非白名单消息 [chat=%s]", chat_id or "?")
+            return
         voice = msg.get("voice")
+        reply_to = (msg.get("reply_to_message") or {}).get("message_id")
+        logger.info("收到 Telegram 消息 [chat=%s reply_to=%s voice=%s]",
+                    chat_id, reply_to, bool(voice))
         if voice:
             await self._handle_voice_message(chat_id, voice, msg)
             return
@@ -405,6 +429,8 @@ class TelegramBridge:
 
     async def _submit_continuation(self, chat_id: str, prompt: str, msg: dict) -> None:
         conv_id, project_name, reply_unmapped = self._route_conversation(msg)
+        logger.info("续聊路由 [chat=%s] → conversation=%s%s",
+                    chat_id, conv_id or "无", "（reply 映射失效）" if reply_unmapped else "")
         if reply_unmapped:
             await self._api("sendMessage", {
                 "chat_id": chat_id,
@@ -425,7 +451,9 @@ class TelegramBridge:
             return
         try:
             task = await self.scheduler.submit(prompt=prompt, conversation_id=conv_id)
+            logger.info("续聊任务已提交 [conversation=%s task=%s]", conv_id, task.id)
         except Exception as exc:
+            logger.warning("续聊提交失败 [conversation=%s]: %r", conv_id, exc)
             await self._api("sendMessage", {
                 "chat_id": chat_id,
                 "text": f"⚠️ 提交失败：{exc}",
@@ -451,9 +479,22 @@ class TelegramBridge:
             self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def _poll_loop(self) -> None:
+        logger.info("Telegram 轮询循环启动 (workspace=%s)", self.workspace_dir)
+        was_configured: Optional[bool] = None
         while True:
             try:
-                if not self.is_configured():
+                configured = self.is_configured()
+                if configured != was_configured:
+                    # 只在配置状态翻转时打快照，避免每轮刷屏
+                    if configured:
+                        logger.info(
+                            "Telegram 已配置：proxy=%s chats=%s mode=%s",
+                            self.proxy or "直连", len(self.chat_ids), self.notify_mode,
+                        )
+                    else:
+                        logger.info("Telegram 未配置（缺 token/chat_id），轮询待命")
+                    was_configured = configured
+                if not configured:
                     await asyncio.sleep(5)
                     continue
                 await self.poll_once()
