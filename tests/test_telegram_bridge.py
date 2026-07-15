@@ -1076,6 +1076,37 @@ def test_general_message_in_group_keeps_global_routing(tmp_path):
     assert ("全局指令", "c-global") in fake.submitted
 
 
+# ── /id 绑定引导（#54 切片③） ───────────────────────────────
+
+def test_id_command_replies_chat_id_even_off_whitelist(tmp_path):
+    """建群后要先拿群 id 才能进白名单/配置——/id 必须在授信之前可用。"""
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/id", chat_id=-100777)])
+
+    _run(bridge.poll_once())
+
+    assert fake.submitted == []
+    assert sent[0]["chat_id"] == "-100777"
+    assert "-100777" in sent[0]["text"]
+
+
+def test_id_command_in_whitelisted_chat_also_works(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/id")])
+
+    _run(bridge.poll_once())
+    assert "123" in sent[0]["text"]
+
+
+def test_non_whitelisted_non_id_message_still_dropped(tmp_path):
+    """/id 豁免不能放宽其他消息的白名单。"""
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/chats", chat_id=666)])
+
+    _run(bridge.poll_once())
+    assert sent == [] and fake.submitted == []
+
+
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────
 
 def test_endpoint_telegram_status_and_test(tmp_path, monkeypatch):

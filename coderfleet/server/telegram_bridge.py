@@ -49,6 +49,7 @@ _BOT_COMMANDS = [
     {"command": "projects", "description": "项目列表"},
     {"command": "new",      "description": "在项目上开新会话链"},
     {"command": "status",   "description": "运行中与排队的任务"},
+    {"command": "id",       "description": "显示当前 chat id（绑定话题群用）"},
     {"command": "help",     "description": "命令帮助"},
 ]
 
@@ -63,6 +64,7 @@ _HELP_TEXT = (
     "/projects — 项目列表\n"
     "/new <项目> <指令> — 在指定项目开新会话链\n"
     "/status — 运行中与排队的任务\n"
+    "/id — 显示当前 chat id（绑定话题群用）\n"
     "/help — 本帮助\n"
     "\n"
     "回复任一任务播报可直接续聊对应任务链（优先级高于默认路由）。"
@@ -143,6 +145,7 @@ class TelegramBridge:
             "projects": self._cmd_projects,
             "new":      self._cmd_new,
             "status":   self._cmd_status,
+            "id":       self._cmd_id,
             "help":     self._cmd_help,
         }
 
@@ -512,6 +515,11 @@ class TelegramBridge:
             return
         msg = update.get("message") or {}
         chat_id = self._chat_id_of(msg)
+        text_raw = (msg.get("text") or "").strip()
+        if self._parse_command(text_raw) == ("id", ""):
+            # /id 白名单豁免：绑定话题群前用户必须能先拿到群 id；只回显 id，不泄露其他信息
+            await self._send_text(self._msg_ctx(msg), f"当前 chat id：{chat_id}")
+            return
         if not self._is_trusted_chat(chat_id):
             logger.info("丢弃非白名单消息 [chat=%s]", chat_id or "?")
             return
@@ -655,6 +663,10 @@ class TelegramBridge:
 
     async def _cmd_help(self, ctx: _MsgCtx, args: str) -> None:
         await self._send_text(ctx, _HELP_TEXT)
+
+    async def _cmd_id(self, ctx: _MsgCtx, args: str) -> None:
+        # 白名单内带参数调用也走这里；豁免路径在 _handle_update 更早处理
+        await self._send_text(ctx, f"当前 chat id：{ctx.chat_id}")
 
     def _recent_conversations(self, project: str = "") -> list:
         convs = list(self.scheduler.list_conversations()) if self.scheduler else []

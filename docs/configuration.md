@@ -78,6 +78,19 @@ coderfleet telegram test    # 发送测试消息验证连通性
 （OpenAI 兼容 `/audio/transcriptions` 接口，如 OpenAI whisper-1）后，
 还可以直接在 Telegram 里发语音下发指令。
 
+**Topics 分频道（多项目推荐）**：想让每个项目有独立的消息频道，可绑定一个
+论坛型群组——每个项目自动对应一个话题（topic），播报进项目话题、话题内
+说话自动路由到该项目，且每个话题可独立静音：
+
+1. 新建 Telegram 群 → 群设置开启「话题（Topics）」；
+2. 把 bot 拉进群并设为管理员，勾选「管理话题」权限；
+3. 在群里发送 `/id` 获取群 id（形如 `-100…`）；
+4. `coderfleet config set TELEGRAM_TOPIC_GROUP_ID <群id>`。
+
+配置后播报只发话题群（不再发私聊白名单）；项目话题在首次播报时自动创建。
+在项目话题里 `/new <指令>` 免项目参数、`/chats` 只列本项目会话；General
+和私聊保持全局语义。不配置该项则一切保持私聊模式。
+
 ## accounts.conf
 
 ```conf
