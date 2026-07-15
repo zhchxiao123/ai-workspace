@@ -230,14 +230,33 @@ def test_ffmpeg_opus_args():
 
 # ── 入向：回复续聊 ──────────────────────────────────────────
 
+def _conv(id, name, project_name="myproj", updated="2026-07-15T10:00:00", last_task_id=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(id=id, name=name, project_name=project_name,
+                           updated=updated, last_task_id=last_task_id)
+
+
 class FakeScheduler:
-    def __init__(self, fail: Exception | None = None, tasks: list | None = None):
+    def __init__(self, fail: Exception | None = None, tasks: list | None = None,
+                 conversations: list | None = None, projects: list | None = None):
         self.submitted: list[tuple[str, str]] = []
+        self.submitted_kwargs: list[dict] = []
         self._fail = fail
         self._tasks = tasks or []
+        self._convs = conversations or []
+        self._projects = projects or []
 
     def list_tasks(self):
         return self._tasks
+
+    def list_conversations(self, include_archived=False):
+        return self._convs
+
+    def get_projects(self):
+        return self._projects
+
+    def find_project_by_name(self, name):
+        return next((p for p in self._projects if p.name == name), None)
 
     def conversation_queue_full(self, conversation_id):
         pending = sum(
@@ -249,13 +268,24 @@ class FakeScheduler:
 
     def get_conversation(self, conversation_id):
         from types import SimpleNamespace
-        return SimpleNamespace(id=conversation_id, name="登录修复链")
+        for c in self._convs:
+            if c.id == conversation_id:
+                return c
+        return SimpleNamespace(id=conversation_id, name="登录修复链",
+                               project_name="myproj")
+
+    def get_task(self, task_id):
+        return next((t for t in self._tasks if t.id == task_id), None)
 
     async def submit(self, prompt, conversation_id=None, **kw):
         if self._fail:
             raise self._fail
         self.submitted.append((prompt, conversation_id))
-        return _task(id="t-new", conversation_id=conversation_id)
+        self.submitted_kwargs.append({"prompt": prompt,
+                                      "conversation_id": conversation_id, **kw})
+        new_conv = conversation_id or "conv-created"
+        return _task(id="t-new", conversation_id=new_conv,
+                     project_name=kw.get("project_name") or "myproj")
 
 
 def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, voice=None):
@@ -270,15 +300,22 @@ def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, 
 
 
 def _poll_setup(tmp_path, updates, fake=None, extra_routes=None):
-    """返回 (bridge, sent, fake_scheduler)。handler 派发 getUpdates / sendMessage。"""
+    """返回 (bridge, sent, fake_scheduler, seen)。handler 派发 getUpdates / sendMessage。
+
+    updates 为一批 update（list[dict]），或多轮批次（list[list[dict]]）——
+    后者每次 getUpdates 消费一批，耗尽后返回空。
+    """
     sent: list[dict] = []
-    seen = {"offset": None}
+    seen = {"offset": None, "api": []}
+    batches = list(updates) if updates and isinstance(updates[0], list) else [list(updates)]
 
     def handler(req: httpx.Request) -> httpx.Response:
         url = str(req.url)
+        seen["api"].append(url.rsplit("/", 1)[-1])
         if url.endswith("/getUpdates"):
             seen["offset"] = json.loads(req.content).get("offset")
-            return httpx.Response(200, json={"ok": True, "result": updates})
+            batch = batches.pop(0) if batches else []
+            return httpx.Response(200, json={"ok": True, "result": batch})
         if url.endswith("/sendMessage"):
             sent.append(json.loads(req.content))
             return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
@@ -293,6 +330,12 @@ def _poll_setup(tmp_path, updates, fake=None, extra_routes=None):
     fake = fake or FakeScheduler()
     bridge.scheduler = fake
     return bridge, sent, fake, seen
+
+
+def _poll_all(bridge):
+    """连续 poll 直到一轮没有 update 为止。"""
+    while _run(bridge.poll_once()):
+        pass
 
 
 def _seed_broadcast(ws, message_id=42, conversation_id="c1"):
@@ -491,6 +534,115 @@ def test_voice_transcription_failure_reported(tmp_path):
     _run(bridge.poll_once())
     assert fake.submitted == []
     assert "转写失败" in sent[0]["text"]
+
+
+# ── Bot 命令：/chats + /use（#51） ──────────────────────────
+
+_CONVS = [
+    _conv("c-old", "旧任务链", updated="2026-07-14T09:00:00", last_task_id="t-a"),
+    _conv("c-hot", "登录修复", project_name="webapp",
+          updated="2026-07-15T12:00:00", last_task_id="t-b"),
+]
+_CONV_TASKS = [
+    _task(id="t-a", status=TaskStatus.done, conversation_id="c-old"),
+    _task(id="t-b", status=TaskStatus.running, conversation_id="c-hot"),
+]
+
+
+def test_chats_lists_conversations_by_recency(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/chats")],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+
+    _run(bridge.poll_once())
+
+    assert fake.submitted == []          # 命令不产生任务
+    text = sent[0]["text"]
+    # 最近活动的排前面，条目含项目名、会话名、最后任务状态
+    assert text.index("登录修复") < text.index("旧任务链")
+    assert "webapp" in text and "running" in text
+    assert "/use" in text                # 带用法提示
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["chat_lists"]["123"]["1"] == "c-hot"
+    assert state["chat_lists"]["123"]["2"] == "c-old"
+
+
+def test_use_switches_default_route_for_bare_messages(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/chats")],
+         [_update(update_id=2, text="/use 2")],
+         [_update(update_id=3, text="继续優化")]],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+    # 全局最近播报指向另一条会话——/use 之后不应再走它
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-elsewhere")
+
+    _poll_all(bridge)
+
+    assert ("继续優化", "c-old") in fake.submitted
+    assert any("旧任务链" in m["text"] for m in sent)   # /use 回执含会话名
+
+
+def test_use_default_is_per_chat(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/chats", chat_id=123)],
+         [_update(update_id=2, text="/use 1", chat_id=123)],
+         [_update(update_id=3, text="来自另一台设备", chat_id=456)]],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+    _ws(tmp_path, telegram_chat_id="123,456")   # 覆盖 _poll_setup 的单 chat 白名单
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-global")
+
+    _poll_all(bridge)
+
+    # chat 456 未 /use，仍走全局最近播报，不受 chat 123 影响
+    assert ("来自另一台设备", "c-global") in fake.submitted
+
+
+def test_reply_routing_beats_use_default(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/chats")],
+         [_update(update_id=2, text="/use 1")],
+         [_update(update_id=3, text="定向指令", reply_to=42)]],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+    _seed_broadcast(bridge.workspace_dir, message_id=42, conversation_id="c-reply-target")
+
+    _poll_all(bridge)
+
+    assert ("定向指令", "c-reply-target") in fake.submitted
+
+
+def test_unknown_slash_message_passes_through_as_prompt(tmp_path):
+    """skill 调用（如 /matt-code-review）不能被当成 bot 命令吞掉。"""
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/matt-code-review high")])
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+    assert fake.submitted == [("/matt-code-review high", "c1")]
+
+
+def test_use_without_chats_list_gets_guidance(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/use 3")],
+        fake=FakeScheduler(conversations=_CONVS))
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "/chats" in sent[0]["text"]
+
+
+def test_help_and_cold_start_hint_mention_commands(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/help")],
+         [_update(update_id=2, text="裸消息但没有任何会话")]])
+
+    _poll_all(bridge)
+
+    assert "/chats" in sent[0]["text"] and "/use" in sent[0]["text"]
+    assert "/chats" in sent[1]["text"]   # 冷启动引导也指向命令
 
 
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────

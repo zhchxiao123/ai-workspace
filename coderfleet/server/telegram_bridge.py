@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -34,6 +35,27 @@ _API_BASE = "https://api.telegram.org"
 
 # 映射条目超过上限后按插入序淘汰——只需要覆盖"最近可回复"的窗口
 _MAX_MESSAGE_MAPPINGS = 200
+
+# /chats 列表长度上限——Telegram 消息要一眼能读完
+_MAX_CHAT_LIST = 10
+
+# bot 命令集。未命中的 "/xxx" 一律按任务指令放行（slash-skill 调用不受影响）。
+# 匹配 "/cmd" 或群聊里的 "/cmd@botname"，参数可跨行。
+_COMMAND_RE = re.compile(r"^/([a-z]+)(?:@\w+)?(?:\s+(.*))?$", re.DOTALL)
+
+_HELP_TEXT = (
+    "CoderFleet bot 命令：\n"
+    "/chats — 最近会话列表\n"
+    "/use <编号> — 把普通消息的默认路由切到某条会话\n"
+    "/help — 本帮助\n"
+    "\n"
+    "回复任一任务播报可直接续聊对应任务链（优先级高于默认路由）。"
+)
+
+_COLD_START_HINT = (
+    "还没有可续聊的会话。回复任一任务播报即可续聊；"
+    "或发送 /chats 查看会话列表后用 /use 选择。"
+)
 
 
 class TelegramError(RuntimeError):
@@ -147,16 +169,25 @@ class TelegramBridge:
             json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+    def _update_state(self, mutate) -> dict[str, Any]:
+        """同步读改写：块内无 await，事件循环下天然原子，不会互相覆盖。"""
+        state = self._load_state()
+        mutate(state)
+        self._save_state(state)
+        return state
+
     def _record_broadcast(self, message_id: int, task: Task) -> None:
         if not task.conversation_id:
             return
-        state = self._load_state()
-        state.setdefault("messages", {})[str(message_id)] = {
-            "conversation_id": task.conversation_id,
-            "project_name": task.project_name,
-        }
-        state["last_conversation_id"] = task.conversation_id
-        self._save_state(state)
+
+        def mutate(state):
+            state.setdefault("messages", {})[str(message_id)] = {
+                "conversation_id": task.conversation_id,
+                "project_name": task.project_name,
+            }
+            state["last_conversation_id"] = task.conversation_id
+
+        self._update_state(mutate)
 
     # ── Bot API 调用 ─────────────────────────────────────────
 
@@ -352,7 +383,95 @@ class TelegramBridge:
         text = (msg.get("text") or "").strip()
         if not text:
             return
+        command = self._parse_command(text)
+        if command is not None:
+            cmd, args = command
+            logger.info("执行 bot 命令 [chat=%s cmd=/%s]", chat_id, cmd)
+            await self._handle_command(chat_id, cmd, args)
+            return
         await self._submit_continuation(chat_id, text, msg)
+
+    # ── Bot 命令 ─────────────────────────────────────────────
+
+    def _parse_command(self, text: str) -> Optional[tuple[str, str]]:
+        """命中命令集返回 (命令, 参数)；否则 None（按任务指令放行）。"""
+        m = _COMMAND_RE.match(text)
+        if not m:
+            return None
+        name = m.group(1).lower()
+        if name not in self._command_handlers():
+            return None
+        return name, (m.group(2) or "").strip()
+
+    def _command_handlers(self) -> dict:
+        return {
+            "chats": self._cmd_chats,
+            "use":   self._cmd_use,
+            "help":  self._cmd_help,
+        }
+
+    async def _handle_command(self, chat_id: str, cmd: str, args: str) -> None:
+        await self._command_handlers()[cmd](chat_id, args)
+
+    async def _cmd_help(self, chat_id: str, args: str) -> None:
+        await self._api("sendMessage", {"chat_id": chat_id, "text": _HELP_TEXT})
+
+    def _recent_conversations(self) -> list:
+        convs = list(self.scheduler.list_conversations()) if self.scheduler else []
+        convs.sort(key=lambda c: getattr(c, "updated", ""), reverse=True)
+        return convs[:_MAX_CHAT_LIST]
+
+    def _last_task_status(self, conversation) -> str:
+        task_id = getattr(conversation, "last_task_id", "")
+        if not task_id or self.scheduler is None:
+            return ""
+        task = self.scheduler.get_task(task_id)
+        return task.status.value if task else ""
+
+    async def _cmd_chats(self, chat_id: str, args: str) -> None:
+        convs = self._recent_conversations()
+        if not convs:
+            await self._api("sendMessage", {
+                "chat_id": chat_id, "text": "还没有任何会话。",
+            })
+            return
+        lines = ["最近会话："]
+        numbering: dict[str, str] = {}
+        for i, c in enumerate(convs, start=1):
+            numbering[str(i)] = c.id
+            status = self._last_task_status(c)
+            lines.append(
+                f"{i}. {getattr(c, 'project_name', '') or '?'} · {c.name}"
+                + (f" [{status}]" if status else "")
+            )
+        lines.append("")
+        lines.append("发送 /use <编号> 把普通消息切到对应会话。")
+        self._update_state(
+            lambda s: s.setdefault("chat_lists", {}).__setitem__(chat_id, numbering)
+        )
+        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
+
+    async def _cmd_use(self, chat_id: str, args: str) -> None:
+        state = self._load_state()
+        numbering = state.get("chat_lists", {}).get(chat_id, {})
+        conv_id = numbering.get(args.strip())
+        if not conv_id:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "编号无效。先发送 /chats 获取最新会话列表，再 /use <编号>。",
+            })
+            return
+        self._update_state(
+            lambda s: s.setdefault("defaults", {}).__setitem__(chat_id, conv_id)
+        )
+        conv = self.scheduler.get_conversation(conv_id) if self.scheduler else None
+        label = ""
+        if conv is not None:
+            label = f"{getattr(conv, 'project_name', '') or ''}「{conv.name}」"
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": f"✅ 默认会话已切到 {label or conv_id}，之后的普通消息都会续聊这里。",
+        })
 
     async def _handle_voice_message(
         self, chat_id: str, voice: dict, msg: dict
@@ -404,12 +523,12 @@ class TelegramBridge:
             raise TelegramError(f"转写接口 HTTP {resp.status_code}: {resp.text[:200]}")
         return str(resp.json().get("text", "")).strip()
 
-    def _route_conversation(self, msg: dict) -> tuple[str, str, bool]:
-        """按 reply 映射 → 最近播报 解析目标会话。
+    def _route_conversation(self, msg: dict, chat_id: str) -> tuple[str, str, bool]:
+        """按 reply 映射 → 本 chat 的 /use 默认 → 全局最近播报 解析目标会话。
 
         返回 (conversation_id, project_name, reply_unmapped)：
-        reply 指向未知消息时不回退到最近会话——用户以为自己定向了
-        某条任务链，静默误路由比拒绝更糟。
+        reply 指向未知消息时不回退——用户以为自己定向了某条任务链，
+        静默误路由比拒绝更糟。
         """
         state = self._load_state()
         reply = msg.get("reply_to_message") or {}
@@ -419,6 +538,9 @@ class TelegramBridge:
             if mapped:
                 return mapped["conversation_id"], mapped.get("project_name", ""), False
             return "", "", True
+        default = state.get("defaults", {}).get(chat_id, "")
+        if default:
+            return default, self._conversation_project_name(default), False
         last = state.get("last_conversation_id", "")
         if last:
             for entry in reversed(list(state.get("messages", {}).values())):
@@ -427,8 +549,17 @@ class TelegramBridge:
             return last, "", False
         return "", "", False
 
+    def _conversation_project_name(self, conversation_id: str) -> str:
+        if self.scheduler is None:
+            return ""
+        try:
+            conv = self.scheduler.get_conversation(conversation_id)
+        except Exception:
+            return ""
+        return getattr(conv, "project_name", "") or ""
+
     async def _submit_continuation(self, chat_id: str, prompt: str, msg: dict) -> None:
-        conv_id, project_name, reply_unmapped = self._route_conversation(msg)
+        conv_id, project_name, reply_unmapped = self._route_conversation(msg, chat_id)
         logger.info("续聊路由 [chat=%s] → conversation=%s%s",
                     chat_id, conv_id or "无", "（reply 映射失效）" if reply_unmapped else "")
         if reply_unmapped:
@@ -440,7 +571,7 @@ class TelegramBridge:
         if not conv_id or self.scheduler is None:
             await self._api("sendMessage", {
                 "chat_id": chat_id,
-                "text": "还没有可续聊的会话。请先等一条任务播报，回复该播报即可续聊对应任务链。",
+                "text": _COLD_START_HINT,
             })
             return
         if self.scheduler.conversation_queue_full(conv_id):
