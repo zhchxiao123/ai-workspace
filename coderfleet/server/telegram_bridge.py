@@ -39,6 +39,9 @@ _MAX_MESSAGE_MAPPINGS = 200
 # /chats 列表长度上限——Telegram 消息要一眼能读完
 _MAX_CHAT_LIST = 10
 
+# Telegram 单条消息字符硬上限
+_TELEGRAM_MESSAGE_LIMIT = 4096
+
 # 两步式 /new（按钮选项目 → 下一条消息作开场指令）的等待窗口（秒）
 _PENDING_NEW_TTL = 600
 
@@ -319,17 +322,31 @@ class TelegramBridge:
         label = TASK_STATUS_LABELS.get(task.status, str(task.status))
         lines = [f"{label} · {task.project_name or task.project}"]
         prompt = task.prompt.strip()
-        lines.append(f"📝 {prompt[:120]}{'…' if len(prompt) > 120 else ''}")
+        lines.append(f"📝 {prompt[:200]}{'…' if len(prompt) > 200 else ''}")
         if excerpt:
             lines.append("")
             lines.append(excerpt)
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        # Telegram 单条消息硬上限 4096
+        return text[:_TELEGRAM_MESSAGE_LIMIT - 1] + "…" \
+            if len(text) > _TELEGRAM_MESSAGE_LIMIT else text
 
-    def _output_excerpt(self, task: Task, max_chars: int = 600) -> str:
-        from coderfleet.server.digest import _read_output_excerpt
-        return _read_output_excerpt(
-            self.workspace_dir / "tasks", task.id, task.type, max_chars=max_chars
-        )
+    def _output_excerpt(self, task: Task, max_chars: int = 3000) -> str:
+        """任务日志 → 播报正文。与 Digest 的摘录不同：保留代码块——
+        编码任务的产出经常大半是代码，剥掉等于没播报。"""
+        log_path = self.workspace_dir / "tasks" / f"{task.id}.log"
+        if not log_path.exists():
+            return ""
+        try:
+            from coderfleet.server.log_parser import parse_log
+            raw = log_path.read_text(encoding="utf-8", errors="replace")
+            text = parse_log(raw, task.type).text.strip()
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            if len(text) > max_chars:
+                text = text[:max_chars] + "…"
+            return text
+        except Exception:
+            return ""
 
     async def notify_task(self, task: Task) -> None:
         """任务终态播报入口，发往全部白名单 chat。任何失败只记日志——播报绝不能影响任务收尾。"""

@@ -104,6 +104,47 @@ def test_notify_task_includes_output_excerpt(tmp_path):
     assert "全部 12 个测试通过" in seen["body"]["text"]
 
 
+def _write_claude_log(ws, task_id, text):
+    (ws / "tasks").mkdir(exist_ok=True)
+    line = json.dumps({"type": "assistant",
+                       "message": {"content": [{"type": "text", "text": text}]}})
+    (ws / "tasks" / f"{task_id}.log").write_text(line + "\n", encoding="utf-8")
+
+
+def test_notify_keeps_code_blocks_and_long_output(tmp_path):
+    """编码任务的输出大半是代码——播报不能把代码剥掉，也不该 600 字就截断。"""
+    ws = _configured(tmp_path)
+    body = "修复完成。\n```python\ndef login(user):\n    return ok\n```\n" + "详细说明。" * 150
+    _write_claude_log(ws, "t1", body)
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    _run(_bridge(ws, handler).notify_task(_task()))
+
+    text = seen["body"]["text"]
+    assert "def login(user):" in text          # 代码块保留
+    assert "[代码略]" not in text
+    assert len(text) > 700                     # 不再 600 截断
+
+
+def test_notify_message_never_exceeds_telegram_limit(tmp_path):
+    ws = _configured(tmp_path)
+    _write_claude_log(ws, "t1", "长" * 6000)
+
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    _run(_bridge(ws, handler).notify_task(_task()))
+    assert len(seen["body"]["text"]) <= 4096
+
+
 def test_notify_task_noop_when_unconfigured_or_off(tmp_path):
     def handler(req: httpx.Request) -> httpx.Response:  # pragma: no cover
         pytest.fail("未配置时不应发起任何 HTTP 请求")
