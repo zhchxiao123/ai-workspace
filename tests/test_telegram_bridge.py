@@ -360,6 +360,66 @@ def test_conversation_queue_full_rejected(tmp_path):
     assert "队列" in sent[0]["text"]
 
 
+# ── 语音输入（ASR 续聊） ────────────────────────────────────
+
+def _asr_routes(audio=b"OGG_IN", transcription="把日志发我看看", status=200):
+    def routes(req: httpx.Request):
+        url = str(req.url)
+        if url.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True,
+                                             "result": {"file_path": "voice/file_1.oga"}})
+        if "/file/botTOK/" in url:
+            return httpx.Response(200, content=audio)
+        if url.endswith("/audio/transcriptions"):
+            if status != 200:
+                return httpx.Response(status, text="asr down")
+            return httpx.Response(200, json={"text": transcription})
+        return None
+    return routes
+
+
+def test_voice_reply_transcribed_and_submitted(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [_update(update_id=9, text=None, reply_to=42, voice={"file_id": "F1"})],
+        extra_routes=_asr_routes())
+    _seed_broadcast(bridge.workspace_dir)
+    _ws(tmp_path, telegram_asr_api_key="AK", telegram_asr_model="whisper-1")
+
+    _run(bridge.poll_once())
+
+    assert fake.submitted == [("把日志发我看看", "c1")]
+    # 先回转写回执，再回提交回执
+    assert "🎧" in sent[0]["text"] and "把日志发我看看" in sent[0]["text"]
+    assert len(sent) == 2
+
+
+def test_voice_message_without_asr_config_gets_hint(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [_update(update_id=9, text=None, reply_to=42, voice={"file_id": "F1"})],
+        extra_routes=_asr_routes())
+    _seed_broadcast(bridge.workspace_dir)
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert len(sent) == 1
+    assert "TELEGRAM_ASR" in sent[0]["text"]     # 提示改用文本/配置 ASR
+
+
+def test_voice_transcription_failure_reported(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [_update(update_id=9, text=None, reply_to=42, voice={"file_id": "F1"})],
+        extra_routes=_asr_routes(status=500))
+    _seed_broadcast(bridge.workspace_dir)
+    _ws(tmp_path, telegram_asr_api_key="AK")
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "转写失败" in sent[0]["text"]
+
+
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────
 
 def test_endpoint_telegram_status_and_test(tmp_path, monkeypatch):

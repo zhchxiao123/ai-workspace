@@ -114,9 +114,25 @@ class TelegramBridge:
         mode = self._cfg().get("TELEGRAM_NOTIFY_MODE", "off").strip().lower()
         return mode if mode in ("off", "text", "voice") else "off"
 
+    @property
+    def asr_api_key(self) -> str:
+        return self._cfg().get("TELEGRAM_ASR_API_KEY", "").strip()
+
+    @property
+    def asr_base_url(self) -> str:
+        url = self._cfg().get("TELEGRAM_ASR_BASE_URL", "").strip()
+        return (url or "https://api.openai.com/v1").rstrip("/")
+
+    @property
+    def asr_model(self) -> str:
+        return self._cfg().get("TELEGRAM_ASR_MODEL", "").strip() or "whisper-1"
+
     def is_configured(self) -> bool:
         """未配置时所有入口应优雅降级为 no-op，而不是抛错。"""
         return bool(self.token and self.chat_ids)
+
+    def asr_configured(self) -> bool:
+        return bool(self.asr_api_key)
 
     # ── 状态持久化（offset + message→conversation 映射） ──────
 
@@ -303,10 +319,69 @@ class TelegramBridge:
         chat_id = str(msg.get("chat", {}).get("id", ""))
         if chat_id not in self.chat_ids:
             return  # 非白名单：静默丢弃
+        voice = msg.get("voice")
+        if voice:
+            await self._handle_voice_message(chat_id, voice, msg, state)
+            return
         text = (msg.get("text") or "").strip()
         if not text:
             return
         await self._submit_continuation(chat_id, text, msg, state)
+
+    async def _handle_voice_message(
+        self, chat_id: str, voice: dict, msg: dict, state: dict
+    ) -> None:
+        if not self.asr_configured():
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "语音转写未启用：请配置 TELEGRAM_ASR_API_KEY，或改用文本消息。",
+            })
+            return
+        try:
+            text = await self._transcribe_voice(voice.get("file_id", ""))
+        except Exception as exc:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": f"⚠️ 语音转写失败：{exc}。请重试或改用文本消息。",
+            })
+            return
+        if not text:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "⚠️ 没有识别到语音内容，请重试或改用文本消息。",
+            })
+            return
+        # 先回转写文本让用户确认识别结果，再走常规续聊路由
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": f"🎧 已收到：{text}",
+        })
+        await self._submit_continuation(chat_id, text, msg, state)
+
+    async def _transcribe_voice(self, file_id: str) -> str:
+        """Telegram 语音文件 → OpenAI 兼容 /audio/transcriptions → 文本。"""
+        info = await self._api("getFile", {"file_id": file_id})
+        file_path = info.get("file_path", "")
+        if not file_path:
+            raise TelegramError("getFile 未返回文件路径")
+        client_kw: dict[str, Any] = {"timeout": 120.0}
+        if self._transport is not None:
+            client_kw["transport"] = self._transport
+        elif self.proxy:
+            client_kw["proxy"] = self.proxy
+        async with httpx.AsyncClient(**client_kw) as client:
+            audio = await client.get(f"{_API_BASE}/file/bot{self.token}/{file_path}")
+            if audio.status_code != 200:
+                raise TelegramError(f"下载语音失败 HTTP {audio.status_code}")
+            resp = await client.post(
+                f"{self.asr_base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {self.asr_api_key}"},
+                data={"model": self.asr_model},
+                files={"file": ("voice.oga", audio.content, "audio/ogg")},
+            )
+        if resp.status_code != 200:
+            raise TelegramError(f"转写接口 HTTP {resp.status_code}: {resp.text[:200]}")
+        return str(resp.json().get("text", "")).strip()
 
     def _route_conversation(self, msg: dict, state: dict) -> tuple[str, str]:
         """按 reply 映射 → 最近播报 解析目标会话。返回 (conversation_id, project_name)。"""
