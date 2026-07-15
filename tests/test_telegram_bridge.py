@@ -319,6 +319,14 @@ def _poll_setup(tmp_path, updates, fake=None, extra_routes=None):
         if url.endswith("/sendMessage"):
             sent.append(json.loads(req.content))
             return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        if url.endswith("/answerCallbackQuery"):
+            seen.setdefault("answered", []).append(json.loads(req.content))
+            return httpx.Response(200, json={"ok": True, "result": True})
+        if url.endswith("/editMessageText"):
+            seen.setdefault("edited", []).append(json.loads(req.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        if url.endswith("/setMyCommands"):
+            return httpx.Response(200, json={"ok": True, "result": True})
         if extra_routes:
             resp = extra_routes(req)
             if resp is not None:
@@ -732,6 +740,98 @@ def test_status_lists_active_tasks_only(tmp_path):
     text = sent[0]["text"]
     assert "t-run" in text and "t-wait" in text
     assert "t-done" not in text
+
+
+# ── 内联按钮与命令菜单（#53） ────────────────────────────────
+
+def _callback_update(update_id, data, chat_id=123, message_id=77):
+    return {"update_id": update_id, "callback_query": {
+        "id": f"cb{update_id}", "data": data,
+        "message": {"message_id": message_id, "chat": {"id": chat_id}},
+    }}
+
+
+def test_new_without_args_offers_project_buttons(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/new")],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _run(bridge.poll_once())
+
+    keyboard = sent[0]["reply_markup"]["inline_keyboard"]
+    datas = [btn["callback_data"] for row in keyboard for btn in row]
+    assert "newp:webapp" in datas and "newp:data-pipeline" in datas
+
+
+def test_project_button_then_message_creates_conversation(tmp_path):
+    bridge, sent, fake, seen = _poll_setup(
+        tmp_path,
+        [[_callback_update(1, "newp:webapp")],
+         [_update(update_id=2, text="修复登录超时")]],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _poll_all(bridge)
+
+    assert seen["answered"][0]["callback_query_id"] == "cb1"   # 客户端不转圈
+    assert seen["edited"]                                       # 原按钮消息被编辑
+    kw = fake.submitted_kwargs[0]
+    assert kw["project_name"] == "webapp"
+    assert kw["prompt"] == "修复登录超时"
+    assert kw["conversation_name"]
+
+
+def test_pending_new_expires_and_falls_back_to_normal_routing(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=2, text="这是普通续聊")],
+        fake=FakeScheduler(projects=_PROJECTS))
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-normal")
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    state["pending_new"] = {"123": {"project": "webapp", "expires_at": 1.0}}  # 早已过期
+    (bridge.workspace_dir / "telegram_state.json").write_text(json.dumps(state))
+
+    _run(bridge.poll_once())
+
+    assert ("这是普通续聊", "c-normal") in fake.submitted   # 不再当作开场指令
+    assert fake.submitted_kwargs[0].get("project_name") in (None, "")
+
+
+def test_chats_buttons_switch_default(tmp_path):
+    bridge, sent, fake, seen = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/chats")],
+         [_callback_update(2, "use:c-hot")],
+         [_update(update_id=3, text="切过来之后的指令")]],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+
+    _poll_all(bridge)
+
+    keyboard = sent[0]["reply_markup"]["inline_keyboard"]
+    datas = [btn["callback_data"] for row in keyboard for btn in row]
+    assert "use:c-hot" in datas
+    assert ("切过来之后的指令", "c-hot") in fake.submitted
+    assert any("登录修复" in e.get("text", "") for e in seen["edited"])
+
+
+def test_callback_from_non_whitelisted_chat_ignored(tmp_path):
+    bridge, sent, fake, seen = _poll_setup(
+        tmp_path,
+        [[_callback_update(1, "use:c-hot", chat_id=666)],
+         [_update(update_id=2, text="后续消息")]],
+        fake=FakeScheduler(conversations=_CONVS))
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-global")
+
+    _poll_all(bridge)
+
+    assert ("后续消息", "c-global") in fake.submitted   # 默认路由未被陌生人改掉
+
+
+def test_my_commands_registered_once(tmp_path):
+    bridge, sent, fake, seen = _poll_setup(tmp_path, [[], []])
+
+    _run(bridge.poll_once())
+    _run(bridge.poll_once())
+
+    assert seen["api"].count("setMyCommands") == 1
 
 
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────

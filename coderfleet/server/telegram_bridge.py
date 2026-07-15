@@ -39,6 +39,19 @@ _MAX_MESSAGE_MAPPINGS = 200
 # /chats 列表长度上限——Telegram 消息要一眼能读完
 _MAX_CHAT_LIST = 10
 
+# 两步式 /new（按钮选项目 → 下一条消息作开场指令）的等待窗口（秒）
+_PENDING_NEW_TTL = 600
+
+# setMyCommands 注册的命令菜单（客户端打 / 弹出）
+_BOT_COMMANDS = [
+    {"command": "chats",    "description": "最近会话列表"},
+    {"command": "use",      "description": "切换普通消息的默认会话"},
+    {"command": "projects", "description": "项目列表"},
+    {"command": "new",      "description": "在项目上开新会话链"},
+    {"command": "status",   "description": "运行中与排队的任务"},
+    {"command": "help",     "description": "命令帮助"},
+]
+
 # bot 命令集。未命中的 "/xxx" 一律按任务指令放行（slash-skill 调用不受影响）。
 # 匹配 "/cmd" 或群聊里的 "/cmd@botname"，参数可跨行。
 _COMMAND_RE = re.compile(r"^/([a-z]+)(?:@\w+)?(?:\s+(.*))?$", re.DOTALL)
@@ -110,6 +123,7 @@ class TelegramBridge:
         self._summarizer = summarizer
         self._voice_synth = voice_synth
         self._poll_task: Optional[asyncio.Task] = None
+        self._commands_registered = False
 
     # ── 配置（每次惰性读取，改动即时生效） ─────────────────────
 
@@ -347,11 +361,12 @@ class TelegramBridge:
         """执行一轮 getUpdates 并处理全部消息，返回消费的 update 数。"""
         if not self.is_configured():
             return 0
+        await self._ensure_commands_registered()
         offset = self._load_state().get("offset", 0)
         updates = await self._api("getUpdates", {
             "offset": offset,
             "timeout": self.poll_timeout,
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
         })
         for update in updates:
             # 无论处理成败都前进 offset——坏消息不能卡死队列
@@ -371,7 +386,22 @@ class TelegramBridge:
             state["offset"] = new_offset
             self._save_state(state)
 
+    async def _ensure_commands_registered(self) -> None:
+        """向 Telegram 注册命令菜单，进程内成功一次即可。失败下轮重试。"""
+        if self._commands_registered:
+            return
+        try:
+            await self._api("setMyCommands", {"commands": _BOT_COMMANDS})
+            self._commands_registered = True
+            logger.info("Telegram 命令菜单已注册（%d 个命令）", len(_BOT_COMMANDS))
+        except Exception as exc:
+            logger.warning("命令菜单注册失败，下轮重试: %r", exc)
+
     async def _handle_update(self, update: dict) -> None:
+        callback = update.get("callback_query")
+        if callback:
+            await self._handle_callback(callback)
+            return
         msg = update.get("message") or {}
         chat_id = str(msg.get("chat", {}).get("id", ""))
         if chat_id not in self.chat_ids:
@@ -393,7 +423,79 @@ class TelegramBridge:
             logger.info("执行 bot 命令 [chat=%s cmd=/%s]", chat_id, cmd)
             await self._handle_command(chat_id, cmd, args)
             return
+        pending_project = self._take_pending_new(chat_id)
+        if pending_project:
+            # 两步式 /new：这条消息是新会话的开场指令
+            await self._create_new_session(chat_id, pending_project, text)
+            return
         await self._submit_continuation(chat_id, text, msg)
+
+    # ── 内联按钮回调 ─────────────────────────────────────────
+
+    async def _handle_callback(self, callback: dict) -> None:
+        chat_id = str((callback.get("message") or {}).get("chat", {}).get("id", ""))
+        if chat_id not in self.chat_ids:
+            logger.info("丢弃非白名单按钮回调 [chat=%s]", chat_id or "?")
+            return
+        data = callback.get("data", "")
+        message_id = (callback.get("message") or {}).get("message_id")
+        logger.info("收到按钮回调 [chat=%s data=%s]", chat_id, data)
+        try:
+            await self._api("answerCallbackQuery",
+                            {"callback_query_id": callback.get("id", "")})
+        except Exception as exc:
+            logger.warning("answerCallbackQuery 失败: %r", exc)
+        action, _, ident = data.partition(":")
+        if action == "use" and ident:
+            await self._callback_use(chat_id, ident, message_id)
+        elif action == "newp" and ident:
+            await self._callback_new_project(chat_id, ident, message_id)
+
+    async def _edit_message(self, chat_id: str, message_id, text: str) -> None:
+        """把按钮消息改写为选择结果——按钮随之消失，防止过期误触。"""
+        if message_id is None:
+            return
+        try:
+            await self._api("editMessageText", {
+                "chat_id": chat_id, "message_id": message_id, "text": text,
+            })
+        except Exception as exc:
+            logger.warning("editMessageText 失败: %r", exc)
+
+    async def _callback_use(self, chat_id: str, conv_id: str, message_id) -> None:
+        self._update_state(
+            lambda s: s.setdefault("defaults", {}).__setitem__(chat_id, conv_id)
+        )
+        conv = self.scheduler.get_conversation(conv_id) if self.scheduler else None
+        name = getattr(conv, "name", "") if conv else ""
+        await self._edit_message(
+            chat_id, message_id,
+            f"✅ 默认会话已切到「{name or conv_id}」，之后的普通消息都会续聊这里。",
+        )
+
+    async def _callback_new_project(self, chat_id: str, project: str, message_id) -> None:
+        expires = time.time() + _PENDING_NEW_TTL
+        self._update_state(
+            lambda s: s.setdefault("pending_new", {})
+                      .__setitem__(chat_id, {"project": project, "expires_at": expires})
+        )
+        await self._edit_message(
+            chat_id, message_id,
+            f"已选择项目 {project}。请发送新会话的首条指令（{_PENDING_NEW_TTL // 60} 分钟内有效）。",
+        )
+
+    def _take_pending_new(self, chat_id: str) -> str:
+        """取出并清除该 chat 的两步式 /new 待办；过期返回空。"""
+        state = self._load_state()
+        entry = state.get("pending_new", {}).get(chat_id)
+        if not entry:
+            return ""
+        self._update_state(lambda s: s.get("pending_new", {}).pop(chat_id, None))
+        if float(entry.get("expires_at", 0)) < time.time():
+            logger.info("两步式 /new 已过期 [chat=%s project=%s]",
+                        chat_id, entry.get("project"))
+            return ""
+        return entry.get("project", "")
 
     # ── Bot 命令 ─────────────────────────────────────────────
 
@@ -444,6 +546,7 @@ class TelegramBridge:
             return
         lines = ["最近会话："]
         numbering: dict[str, str] = {}
+        keyboard: list[list[dict]] = []
         for i, c in enumerate(convs, start=1):
             numbering[str(i)] = c.id
             status = self._last_task_status(c)
@@ -451,12 +554,18 @@ class TelegramBridge:
                 f"{i}. {getattr(c, 'project_name', '') or '?'} · {c.name}"
                 + (f" [{status}]" if status else "")
             )
+            keyboard.append([{"text": f"切到 {i}·{c.name[:12]}",
+                              "callback_data": f"use:{c.id}"}])
         lines.append("")
-        lines.append("发送 /use <编号> 把普通消息切到对应会话。")
+        lines.append("点按钮或发送 /use <编号> 把普通消息切到对应会话。")
         self._update_state(
             lambda s: s.setdefault("chat_lists", {}).__setitem__(chat_id, numbering)
         )
-        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": "\n".join(lines),
+            "reply_markup": {"inline_keyboard": keyboard},
+        })
 
     async def _cmd_use(self, chat_id: str, args: str) -> None:
         state = self._load_state()
@@ -500,11 +609,14 @@ class TelegramBridge:
         await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
 
     async def _cmd_new(self, chat_id: str, args: str) -> None:
+        if not args.strip():
+            await self._offer_project_buttons(chat_id)
+            return
         parts = args.split(None, 1)
         if len(parts) < 2:
             await self._api("sendMessage", {
                 "chat_id": chat_id,
-                "text": "用法：/new <项目名或编号> <指令>。项目列表见 /projects。",
+                "text": "用法：/new <项目名或编号> <指令>；或直接发 /new 用按钮选项目。",
             })
             return
         project_ref, prompt = parts[0], parts[1].strip()
@@ -517,6 +629,24 @@ class TelegramBridge:
                 "text": f"项目「{project_ref}」不存在。现有项目：{names or '（无）'}",
             })
             return
+        await self._create_new_session(chat_id, project_name, prompt)
+
+    async def _offer_project_buttons(self, chat_id: str) -> None:
+        projects = list(self.scheduler.get_projects()) if self.scheduler else []
+        if not projects:
+            await self._api("sendMessage", {
+                "chat_id": chat_id, "text": "还没有配置任何项目。",
+            })
+            return
+        keyboard = [[{"text": p.name, "callback_data": f"newp:{p.name}"}]
+                    for p in projects]
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": "选择要开新会话的项目：",
+            "reply_markup": {"inline_keyboard": keyboard},
+        })
+
+    async def _create_new_session(self, chat_id: str, project_name: str, prompt: str) -> None:
         try:
             task = await self.scheduler.submit(
                 prompt=prompt,
