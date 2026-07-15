@@ -283,8 +283,10 @@ class TelegramBridge:
 
     # ── 入向：长轮询 + 回复续聊 ──────────────────────────────
 
-    # 长轮询挂起秒数（Bot API 侧），客户端超时须大于它
-    poll_timeout = 50
+    # 长轮询挂起秒数（Bot API 侧），客户端超时须大于它。
+    # 不用 Telegram 允许的上限 50s：长轮询挂起期间无字节流动，
+    # 常见代理链会把 30s+ 的空闲隧道掐断，导致每轮都 ReadTimeout。
+    poll_timeout = 25
 
     async def poll_once(self) -> int:
         """执行一轮 getUpdates 并处理全部消息，返回消费的 update 数。"""
@@ -458,5 +460,6 @@ class TelegramBridge:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Telegram 轮询失败，10 秒后重试: %s", exc)
+                # %r：httpx 超时类异常 str() 为空，必须带类型才有诊断价值
+                logger.warning("Telegram 轮询失败，10 秒后重试: %r", exc)
                 await asyncio.sleep(10)
