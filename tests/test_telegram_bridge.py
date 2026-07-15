@@ -271,6 +271,8 @@ class FakeScheduler:
         for c in self._convs:
             if c.id == conversation_id:
                 return c
+        if self._convs:
+            return None   # 提供了会话清单时，未知 id 与真调度器一致返回 None
         return SimpleNamespace(id=conversation_id, name="登录修复链",
                                project_name="myproj")
 
@@ -728,18 +730,67 @@ def test_new_without_prompt_gets_usage(tmp_path):
 
 def test_status_lists_active_tasks_only(tmp_path):
     tasks = [
-        _task(id="t-run", status=TaskStatus.running, project_name="webapp"),
+        _task(id="t-run", status=TaskStatus.running, project_name="webapp",
+              conversation_id="c-hot"),
         _task(id="t-wait", status=TaskStatus.pending, project_name="data-pipeline"),
         _task(id="t-done", status=TaskStatus.done),
     ]
     bridge, sent, fake, _ = _poll_setup(
         tmp_path, [_update(update_id=1, text="/status")],
-        fake=FakeScheduler(tasks=tasks))
+        fake=FakeScheduler(tasks=tasks, conversations=_CONVS))
 
     _run(bridge.poll_once())
     text = sent[0]["text"]
     assert "t-run" in text and "t-wait" in text
     assert "t-done" not in text
+    assert "登录修复" in text          # 含所属会话名
+
+
+def test_stale_use_button_rejected(tmp_path):
+    """过期按钮指向已不存在的会话时不能装入死默认。"""
+    bridge, sent, fake, seen = _poll_setup(
+        tmp_path,
+        [[_callback_update(1, "use:c-deleted")],
+         [_update(update_id=2, text="后续指令")]],
+        fake=FakeScheduler(conversations=_CONVS))
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-global")
+
+    _poll_all(bridge)
+
+    assert any("不存在" in e.get("text", "") for e in seen["edited"])
+    assert ("后续指令", "c-global") in fake.submitted   # 默认未被污染
+
+
+def test_mistyped_command_without_target_gets_help(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/hcats")])
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "/help" in sent[0]["text"] or "/chats" in sent[0]["text"]
+    assert "命令" in sent[0]["text"]    # 明确指出这可能是打错的命令
+
+
+def test_old_state_file_upgrades_seamlessly(tmp_path):
+    """一期（#46-49）格式的状态文件：offset 与 reply 映射不丢，新键按需出现。"""
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=9, text="/chats")],
+         [_update(update_id=10, text="回旧播报", reply_to=42)]],
+        fake=FakeScheduler(tasks=_CONV_TASKS, conversations=_CONVS))
+    (bridge.workspace_dir / "telegram_state.json").write_text(json.dumps({
+        "offset": 5,
+        "messages": {"42": {"conversation_id": "c-legacy", "project_name": "old"}},
+        "last_conversation_id": "c-legacy",
+    }), encoding="utf-8")
+
+    _poll_all(bridge)
+
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["offset"] == 11
+    assert state["messages"]["42"]["conversation_id"] == "c-legacy"   # 旧映射保留
+    assert state["chat_lists"]["123"]                                  # 新键正常写入
+    assert ("回旧播报", "c-legacy") in fake.submitted                   # 旧映射仍可路由
 
 
 # ── 内联按钮与命令菜单（#53） ────────────────────────────────
