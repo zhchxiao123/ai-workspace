@@ -290,7 +290,8 @@ class FakeScheduler:
                      project_name=kw.get("project_name") or "myproj")
 
 
-def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, voice=None):
+def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, voice=None,
+            thread=None):
     msg = {"message_id": 900 + update_id, "chat": {"id": chat_id}}
     if text is not None:
         msg["text"] = text
@@ -298,6 +299,9 @@ def _update(update_id=1, text="再跑一遍测试", chat_id=123, reply_to=None, 
         msg["reply_to_message"] = {"message_id": reply_to}
     if voice is not None:
         msg["voice"] = voice
+    if thread is not None:
+        msg["message_thread_id"] = thread
+        msg["is_topic_message"] = True
     return {"update_id": update_id, "message": msg}
 
 
@@ -964,6 +968,112 @@ def test_broadcast_without_project_goes_to_general(tmp_path):
 
     assert created == []
     assert "message_thread_id" not in sent[0]
+
+
+# ── Topics 群组：入向话题上下文（#54 切片②） ────────────────
+
+_TOPIC_CONVS = [
+    _conv("c-web-old", "接口重构", project_name="webapp",
+          updated="2026-07-14T08:00:00"),
+    _conv("c-web-hot", "登录修复", project_name="webapp",
+          updated="2026-07-15T12:00:00"),
+    _conv("c-data", "清洗任务", project_name="data-pipeline",
+          updated="2026-07-15T13:00:00"),
+]
+
+
+def _topic_inbound(tmp_path, batches, fake=None):
+    """话题群入向测试装置：群 -100999，thread 55=webapp。"""
+    bridge, sent, fake, seen = _poll_setup(tmp_path, batches, fake=fake)
+    _ws(tmp_path, telegram_topic_group_id="-100999")
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text()) \
+        if (bridge.workspace_dir / "telegram_state.json").exists() else {"offset": 0, "messages": {}}
+    state["topics"] = {"webapp": 55, "data-pipeline": 66}
+    (bridge.workspace_dir / "telegram_state.json").write_text(json.dumps(state))
+    return bridge, sent, fake, seen
+
+
+def test_topic_bare_message_routes_to_project_recent_conversation(tmp_path):
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="继续修", chat_id=-100999, thread=55)],
+        fake=FakeScheduler(conversations=_TOPIC_CONVS))
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-elsewhere")
+    # _seed_broadcast 覆盖了状态文件，重新种上话题注册表
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    state["topics"] = {"webapp": 55}
+    (bridge.workspace_dir / "telegram_state.json").write_text(json.dumps(state))
+
+    _run(bridge.poll_once())
+
+    # 群不在私聊白名单里也被信任；路由到 webapp 项目最近会话而非全局最近播报
+    assert ("继续修", "c-web-hot") in fake.submitted
+    assert sent[0]["message_thread_id"] == 55     # 回执落在同一话题
+
+
+def test_topic_implicit_reply_treated_as_bare(tmp_path):
+    """话题内所有消息技术上都 reply 话题首条消息，不能误判为映射失效。"""
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="继续修", chat_id=-100999, thread=55, reply_to=55)],
+        fake=FakeScheduler(conversations=_TOPIC_CONVS))
+
+    _run(bridge.poll_once())
+
+    assert ("继续修", "c-web-hot") in fake.submitted
+    assert not any("无法关联" in m.get("text", "") for m in sent)
+
+
+def test_topic_genuine_reply_uses_mapping(tmp_path):
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="定向", chat_id=-100999, thread=55, reply_to=42)],
+        fake=FakeScheduler(conversations=_TOPIC_CONVS))
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    state["messages"] = {"42": {"conversation_id": "c-target", "project_name": "webapp"}}
+    (bridge.workspace_dir / "telegram_state.json").write_text(json.dumps(state))
+
+    _run(bridge.poll_once())
+    assert ("定向", "c-target") in fake.submitted
+
+
+def test_new_in_topic_uses_topic_project(tmp_path):
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="/new 修复登录", chat_id=-100999, thread=55)],
+        fake=FakeScheduler(projects=_PROJECTS, conversations=_TOPIC_CONVS))
+
+    _run(bridge.poll_once())
+
+    kw = fake.submitted_kwargs[0]
+    assert kw["project_name"] == "webapp"
+    assert kw["prompt"] == "修复登录"
+
+
+def test_chats_in_topic_scoped_to_project(tmp_path):
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="/chats", chat_id=-100999, thread=55)],
+        fake=FakeScheduler(conversations=_TOPIC_CONVS))
+
+    _run(bridge.poll_once())
+
+    text = sent[0]["text"]
+    assert "登录修复" in text and "接口重构" in text
+    assert "清洗任务" not in text                  # 其他项目的会话不出现
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["chat_lists"]["-100999:55"]       # 复合键隔离
+
+
+def test_general_message_in_group_keeps_global_routing(tmp_path):
+    bridge, sent, fake, _ = _topic_inbound(
+        tmp_path,
+        [_update(update_id=1, text="全局指令", chat_id=-100999)],   # 无 thread
+        fake=FakeScheduler(conversations=_TOPIC_CONVS))
+    _seed_broadcast(bridge.workspace_dir, conversation_id="c-global")
+
+    _run(bridge.poll_once())
+    assert ("全局指令", "c-global") in fake.submitted
 
 
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────

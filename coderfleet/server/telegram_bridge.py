@@ -22,7 +22,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, NamedTuple, Optional
 
 import httpx
 
@@ -77,6 +77,19 @@ _COLD_START_HINT = (
 
 class TelegramError(RuntimeError):
     """Telegram Bot API 调用失败（未配置、网络错误、上游返回非 ok 等）。"""
+
+
+class _MsgCtx(NamedTuple):
+    """一条入向消息的路由上下文：chat + 话题 + 话题所属项目。"""
+    chat_id: str
+    thread_id: Optional[int] = None
+    project: str = ""  # 话题所属项目；私聊 / General / 未知话题为 ""
+
+    @property
+    def key(self) -> str:
+        """per-chat 状态键：话题内为 chat:thread 复合键，各话题上下文互不串扰；
+        私聊 / General 保持纯 chat_id（与旧状态文件兼容）。"""
+        return f"{self.chat_id}:{self.thread_id}" if self.thread_id else self.chat_id
 
 
 def build_voice_summary_prompt(task, output_text: str) -> tuple[str, str]:
@@ -215,6 +228,31 @@ class TelegramBridge:
     def _chat_id_of(container: dict) -> str:
         """从 message / callback_query.message 中取 chat id。"""
         return str((container or {}).get("chat", {}).get("id", ""))
+
+    def _is_trusted_chat(self, chat_id: str) -> bool:
+        """私聊走白名单；配置了话题群则群成员资格即信任边界。"""
+        if chat_id in self.chat_ids:
+            return True
+        group = self.topic_group_id
+        return bool(group) and chat_id == group
+
+    def _msg_ctx(self, msg: dict) -> _MsgCtx:
+        """从消息构造路由上下文；话题 thread → 项目由话题注册表反查。"""
+        chat_id = self._chat_id_of(msg)
+        thread_id = msg.get("message_thread_id")
+        project = ""
+        if thread_id and self.topic_group_id and chat_id == self.topic_group_id:
+            topics = self._load_state().get("topics", {})
+            project = next(
+                (p for p, t in topics.items() if int(t) == int(thread_id)), "")
+        return _MsgCtx(chat_id, thread_id, project)
+
+    async def _send_text(self, ctx: _MsgCtx, text: str, **extra: Any) -> dict:
+        """向消息来源处回话；话题消息的回执落在同一话题。"""
+        payload: dict[str, Any] = {"chat_id": ctx.chat_id, "text": text, **extra}
+        if ctx.thread_id:
+            payload["message_thread_id"] = ctx.thread_id
+        return await self._api("sendMessage", payload)
 
     def _record_broadcast(self, message_id: int, task: Task) -> None:
         if not task.conversation_id:
@@ -474,15 +512,22 @@ class TelegramBridge:
             return
         msg = update.get("message") or {}
         chat_id = self._chat_id_of(msg)
-        if chat_id not in self.chat_ids:
+        if not self._is_trusted_chat(chat_id):
             logger.info("丢弃非白名单消息 [chat=%s]", chat_id or "?")
             return
+        ctx = self._msg_ctx(msg)
+        # Telegram 话题内所有消息技术上都 reply 话题首条消息（message_id == thread_id），
+        # 剥掉这种隐式 reply，只保留真正指向播报的
+        reply = msg.get("reply_to_message") or {}
+        if ctx.thread_id and reply.get("message_id") == ctx.thread_id:
+            msg = {k: v for k, v in msg.items() if k != "reply_to_message"}
+            reply = {}
         voice = msg.get("voice")
-        reply_to = (msg.get("reply_to_message") or {}).get("message_id")
-        logger.info("收到 Telegram 消息 [chat=%s reply_to=%s voice=%s]",
-                    chat_id, reply_to, bool(voice))
+        logger.info("收到 Telegram 消息 [chat=%s thread=%s project=%s reply_to=%s voice=%s]",
+                    ctx.chat_id, ctx.thread_id, ctx.project or "-",
+                    reply.get("message_id"), bool(voice))
         if voice:
-            await self._handle_voice_message(chat_id, voice, msg)
+            await self._handle_voice_message(ctx, voice, msg)
             return
         text = (msg.get("text") or "").strip()
         if not text:
@@ -490,26 +535,29 @@ class TelegramBridge:
         command = self._parse_command(text)
         if command is not None:
             cmd, args = command
-            logger.info("执行 bot 命令 [chat=%s cmd=/%s]", chat_id, cmd)
-            await self._handle_command(chat_id, cmd, args)
+            logger.info("执行 bot 命令 [chat=%s cmd=/%s]", ctx.chat_id, cmd)
+            await self._handle_command(ctx, cmd, args)
             return
-        pending_project = self._take_pending_new(chat_id)
+        pending_project = self._take_pending_new(ctx.key)
         if pending_project:
             # 两步式 /new：这条消息是新会话的开场指令
-            await self._create_new_session(chat_id, pending_project, text)
+            await self._create_new_session(ctx, pending_project, text)
             return
-        await self._submit_continuation(chat_id, text, msg)
+        await self._submit_continuation(ctx, text, msg)
 
     # ── 内联按钮回调 ─────────────────────────────────────────
 
     async def _handle_callback(self, callback: dict) -> None:
-        chat_id = self._chat_id_of(callback.get("message") or {})
-        if chat_id not in self.chat_ids:
+        msg = callback.get("message") or {}
+        chat_id = self._chat_id_of(msg)
+        if not self._is_trusted_chat(chat_id):
             logger.info("丢弃非白名单按钮回调 [chat=%s]", chat_id or "?")
             return
+        ctx = self._msg_ctx(msg)
         data = callback.get("data", "")
-        message_id = (callback.get("message") or {}).get("message_id")
-        logger.info("收到按钮回调 [chat=%s data=%s]", chat_id, data)
+        message_id = msg.get("message_id")
+        logger.info("收到按钮回调 [chat=%s thread=%s data=%s]",
+                    ctx.chat_id, ctx.thread_id, data)
         try:
             await self._api("answerCallbackQuery",
                             {"callback_query_id": callback.get("id", "")})
@@ -517,9 +565,9 @@ class TelegramBridge:
             logger.warning("answerCallbackQuery 失败: %r", exc)
         action, _, ident = data.partition(":")
         if action == "use" and ident:
-            await self._callback_use(chat_id, ident, message_id)
+            await self._callback_use(ctx, ident, message_id)
         elif action == "newp" and ident:
-            await self._callback_new_project(chat_id, ident, message_id)
+            await self._callback_new_project(ctx, ident, message_id)
 
     async def _edit_message(self, chat_id: str, message_id, text: str) -> None:
         """把按钮消息改写为选择结果——按钮随之消失，防止过期误触。"""
@@ -532,7 +580,7 @@ class TelegramBridge:
         except Exception as exc:
             logger.warning("editMessageText 失败: %r", exc)
 
-    async def _switch_default(self, chat_id: str, conv_id: str) -> Optional[str]:
+    async def _switch_default(self, ctx: _MsgCtx, conv_id: str) -> Optional[str]:
         """校验会话仍存在后切默认路由。返回展示标签；会话不存在返回 None。
 
         过期按钮/编号可能指向已删除的会话——不校验就切，会装入一个
@@ -546,38 +594,38 @@ class TelegramBridge:
                 conv = None
         if conv is None:
             return None
-        self._set_chat_entry("defaults", chat_id, conv_id)
+        self._set_chat_entry("defaults", ctx.key, conv_id)
         project = getattr(conv, "project_name", "") or ""
         return f"{project}「{conv.name}」" if project else f"「{conv.name}」"
 
-    async def _callback_use(self, chat_id: str, conv_id: str, message_id) -> None:
-        label = await self._switch_default(chat_id, conv_id)
+    async def _callback_use(self, ctx: _MsgCtx, conv_id: str, message_id) -> None:
+        label = await self._switch_default(ctx, conv_id)
         if label is None:
             await self._edit_message(
-                chat_id, message_id,
+                ctx.chat_id, message_id,
                 "该会话已不存在，请重新发送 /chats 获取最新列表。",
             )
             return
         await self._edit_message(
-            chat_id, message_id,
+            ctx.chat_id, message_id,
             f"✅ 默认会话已切到 {label}，之后的普通消息都会续聊这里。",
         )
 
-    async def _callback_new_project(self, chat_id: str, project: str, message_id) -> None:
+    async def _callback_new_project(self, ctx: _MsgCtx, project: str, message_id) -> None:
         expires = time.time() + _PENDING_NEW_TTL
-        self._set_chat_entry("pending_new", chat_id,
+        self._set_chat_entry("pending_new", ctx.key,
                              {"project": project, "expires_at": expires})
         await self._edit_message(
-            chat_id, message_id,
+            ctx.chat_id, message_id,
             f"已选择项目 {project}。请发送新会话的首条指令（{_PENDING_NEW_TTL // 60} 分钟内有效）。",
         )
 
-    def _take_pending_new(self, chat_id: str) -> str:
-        """取出并清除该 chat 的两步式 /new 待办；过期返回空。"""
+    def _take_pending_new(self, ctx_key: str) -> str:
+        """取出并清除该上下文的两步式 /new 待办；过期返回空。"""
         taken: dict = {}
 
         def mutate(state):
-            entry = state.get("pending_new", {}).pop(chat_id, None)
+            entry = state.get("pending_new", {}).pop(ctx_key, None)
             if entry:
                 taken.update(entry)
 
@@ -585,8 +633,8 @@ class TelegramBridge:
         if not taken:
             return ""
         if float(taken.get("expires_at", 0)) < time.time():
-            logger.info("两步式 /new 已过期 [chat=%s project=%s]",
-                        chat_id, taken.get("project"))
+            logger.info("两步式 /new 已过期 [ctx=%s project=%s]",
+                        ctx_key, taken.get("project"))
             return ""
         return taken.get("project", "")
 
@@ -602,14 +650,17 @@ class TelegramBridge:
             return None
         return name, (m.group(2) or "").strip()
 
-    async def _handle_command(self, chat_id: str, cmd: str, args: str) -> None:
-        await self._commands[cmd](chat_id, args)
+    async def _handle_command(self, ctx: _MsgCtx, cmd: str, args: str) -> None:
+        await self._commands[cmd](ctx, args)
 
-    async def _cmd_help(self, chat_id: str, args: str) -> None:
-        await self._api("sendMessage", {"chat_id": chat_id, "text": _HELP_TEXT})
+    async def _cmd_help(self, ctx: _MsgCtx, args: str) -> None:
+        await self._send_text(ctx, _HELP_TEXT)
 
-    def _recent_conversations(self) -> list:
+    def _recent_conversations(self, project: str = "") -> list:
         convs = list(self.scheduler.list_conversations()) if self.scheduler else []
+        if project:
+            convs = [c for c in convs
+                     if (getattr(c, "project_name", "") or "") == project]
         convs.sort(key=lambda c: getattr(c, "updated", ""), reverse=True)
         return convs[:_MAX_CHAT_LIST]
 
@@ -620,12 +671,11 @@ class TelegramBridge:
         task = self.scheduler.get_task(task_id)
         return task.status.value if task else ""
 
-    async def _cmd_chats(self, chat_id: str, args: str) -> None:
-        convs = self._recent_conversations()
+    async def _cmd_chats(self, ctx: _MsgCtx, args: str) -> None:
+        convs = self._recent_conversations(project=ctx.project)
         if not convs:
-            await self._api("sendMessage", {
-                "chat_id": chat_id, "text": "还没有任何会话。",
-            })
+            await self._send_text(
+                ctx, f"{ctx.project} 还没有任何会话。" if ctx.project else "还没有任何会话。")
             return
         lines = ["最近会话："]
         numbering: dict[str, str] = {}
@@ -641,45 +691,34 @@ class TelegramBridge:
                               "callback_data": f"use:{c.id}"}])
         lines.append("")
         lines.append("点按钮或发送 /use <编号> 把普通消息切到对应会话。")
-        self._set_chat_entry("chat_lists", chat_id, numbering)
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": "\n".join(lines),
-            "reply_markup": {"inline_keyboard": keyboard},
-        })
+        self._set_chat_entry("chat_lists", ctx.key, numbering)
+        await self._send_text(ctx, "\n".join(lines),
+                              reply_markup={"inline_keyboard": keyboard})
 
-    async def _cmd_use(self, chat_id: str, args: str) -> None:
-        numbering = self._load_state().get("chat_lists", {}).get(chat_id, {})
+    async def _cmd_use(self, ctx: _MsgCtx, args: str) -> None:
+        numbering = self._load_state().get("chat_lists", {}).get(ctx.key, {})
         conv_id = numbering.get(args.strip())
         if not conv_id:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "编号无效。先发送 /chats 获取最新会话列表，再 /use <编号>。",
-            })
+            await self._send_text(
+                ctx, "编号无效。先发送 /chats 获取最新会话列表，再 /use <编号>。")
             return
-        label = await self._switch_default(chat_id, conv_id)
+        label = await self._switch_default(ctx, conv_id)
         if label is None:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "该会话已不存在，请重新发送 /chats 获取最新列表。",
-            })
+            await self._send_text(
+                ctx, "该会话已不存在，请重新发送 /chats 获取最新列表。")
             return
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": f"✅ 默认会话已切到 {label}，之后的普通消息都会续聊这里。",
-        })
+        await self._send_text(
+            ctx, f"✅ 默认会话已切到 {label}，之后的普通消息都会续聊这里。")
 
-    async def _projects_or_hint(self, chat_id: str) -> list:
+    async def _projects_or_hint(self, ctx: _MsgCtx) -> list:
         """项目列表；为空时直接回提示并返回 []。"""
         projects = list(self.scheduler.get_projects()) if self.scheduler else []
         if not projects:
-            await self._api("sendMessage", {
-                "chat_id": chat_id, "text": "还没有配置任何项目。",
-            })
+            await self._send_text(ctx, "还没有配置任何项目。")
         return projects
 
-    async def _cmd_projects(self, chat_id: str, args: str) -> None:
-        projects = await self._projects_or_hint(chat_id)
+    async def _cmd_projects(self, ctx: _MsgCtx, args: str) -> None:
+        projects = await self._projects_or_hint(ctx)
         if not projects:
             return
         lines = ["项目列表："]
@@ -689,45 +728,46 @@ class TelegramBridge:
             lines.append(f"{i}. {p.name} · {p.account}")
         lines.append("")
         lines.append("发送 /new <项目名或编号> <指令> 开新会话链。")
-        self._set_chat_entry("project_lists", chat_id, numbering)
-        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
+        self._set_chat_entry("project_lists", ctx.key, numbering)
+        await self._send_text(ctx, "\n".join(lines))
 
-    async def _cmd_new(self, chat_id: str, args: str) -> None:
-        if not args.strip():
-            await self._offer_project_buttons(chat_id)
+    async def _cmd_new(self, ctx: _MsgCtx, args: str) -> None:
+        args = args.strip()
+        if ctx.project:
+            # 项目话题内：话题即项目上下文，整个参数就是指令
+            if not args:
+                await self._send_text(ctx, f"用法：/new <指令>（在 {ctx.project} 上开新会话链）。")
+                return
+            await self._create_new_session(ctx, ctx.project, args)
+            return
+        if not args:
+            await self._offer_project_buttons(ctx)
             return
         parts = args.split(None, 1)
         if len(parts) < 2:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "用法：/new <项目名或编号> <指令>；或直接发 /new 用按钮选项目。",
-            })
+            await self._send_text(
+                ctx, "用法：/new <项目名或编号> <指令>；或直接发 /new 用按钮选项目。")
             return
         project_ref, prompt = parts[0], parts[1].strip()
-        project_name = self._resolve_project(chat_id, project_ref)
+        project_name = self._resolve_project(ctx, project_ref)
         if project_name is None:
             names = "、".join(p.name for p in self.scheduler.get_projects()) \
                 if self.scheduler else ""
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"项目「{project_ref}」不存在。现有项目：{names or '（无）'}",
-            })
+            await self._send_text(
+                ctx, f"项目「{project_ref}」不存在。现有项目：{names or '（无）'}")
             return
-        await self._create_new_session(chat_id, project_name, prompt)
+        await self._create_new_session(ctx, project_name, prompt)
 
-    async def _offer_project_buttons(self, chat_id: str) -> None:
-        projects = await self._projects_or_hint(chat_id)
+    async def _offer_project_buttons(self, ctx: _MsgCtx) -> None:
+        projects = await self._projects_or_hint(ctx)
         if not projects:
             return
         keyboard = [[{"text": p.name, "callback_data": f"newp:{p.name}"}]
                     for p in projects]
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": "选择要开新会话的项目：",
-            "reply_markup": {"inline_keyboard": keyboard},
-        })
+        await self._send_text(ctx, "选择要开新会话的项目：",
+                              reply_markup={"inline_keyboard": keyboard})
 
-    async def _create_new_session(self, chat_id: str, project_name: str, prompt: str) -> None:
+    async def _create_new_session(self, ctx: _MsgCtx, project_name: str, prompt: str) -> None:
         try:
             task = await self.scheduler.submit(
                 prompt=prompt,
@@ -738,36 +778,34 @@ class TelegramBridge:
                         project_name, task.conversation_id, task.id)
         except Exception as exc:
             logger.warning("新会话创建失败 [project=%s]: %r", project_name, exc)
-            await self._api("sendMessage", {
-                "chat_id": chat_id, "text": f"⚠️ 创建失败：{exc}",
-            })
+            await self._send_text(ctx, f"⚠️ 创建失败：{exc}")
             return
         if task.conversation_id:
-            self._set_chat_entry("defaults", chat_id, task.conversation_id)
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": f"🆕 已在 {project_name} 创建会话「{prompt[:32]}」，"
-                    f"任务 {task.id} 开始排队执行。之后的普通消息默认续聊这里。",
-        })
+            self._set_chat_entry("defaults", ctx.key, task.conversation_id)
+        await self._send_text(
+            ctx,
+            f"🆕 已在 {project_name} 创建会话「{prompt[:32]}」，"
+            f"任务 {task.id} 开始排队执行。之后的普通消息默认续聊这里。",
+        )
 
-    def _resolve_project(self, chat_id: str, ref: str) -> Optional[str]:
+    def _resolve_project(self, ctx: _MsgCtx, ref: str) -> Optional[str]:
         """项目引用 → 项目名。接受 /projects 列表编号或项目名本身。"""
         if self.scheduler is None:
             return None
-        numbering = self._load_state().get("project_lists", {}).get(chat_id, {})
+        numbering = self._load_state().get("project_lists", {}).get(ctx.key, {})
         name = numbering.get(ref, ref)
         project = self.scheduler.find_project_by_name(name)
         return project.name if project else None
 
-    async def _cmd_status(self, chat_id: str, args: str) -> None:
+    async def _cmd_status(self, ctx: _MsgCtx, args: str) -> None:
         active = [
             t for t in (self.scheduler.list_tasks() if self.scheduler else [])
             if t.status in (TaskStatus.running, TaskStatus.pending, TaskStatus.scheduled)
         ]
+        if ctx.project:
+            active = [t for t in active if t.project_name == ctx.project]
         if not active:
-            await self._api("sendMessage", {
-                "chat_id": chat_id, "text": "当前没有运行或排队中的任务。",
-            })
+            await self._send_text(ctx, "当前没有运行或排队中的任务。")
             return
         lines = ["进行中的任务："]
         for t in active:
@@ -778,42 +816,31 @@ class TelegramBridge:
                 conv_name = f"「{conv.name}」" if conv else ""
             lines.append(f"· {t.project_name or '?'}{conv_name} · {t.id} "
                          f"[{t.status.value}] {prompt}")
-        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
+        await self._send_text(ctx, "\n".join(lines))
 
     async def _handle_voice_message(
-        self, chat_id: str, voice: dict, msg: dict
+        self, ctx: _MsgCtx, voice: dict, msg: dict
     ) -> None:
         if not self.asr_configured():
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "语音转写未启用：请配置 TELEGRAM_ASR_API_KEY，或改用文本消息。",
-            })
+            await self._send_text(
+                ctx, "语音转写未启用：请配置 TELEGRAM_ASR_API_KEY，或改用文本消息。")
             return
         try:
             text = await self._transcribe_voice(voice.get("file_id", ""))
         except Exception as exc:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"⚠️ 语音转写失败：{exc}。请重试或改用文本消息。",
-            })
+            await self._send_text(ctx, f"⚠️ 语音转写失败：{exc}。请重试或改用文本消息。")
             return
         if not text:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "⚠️ 没有识别到语音内容，请重试或改用文本消息。",
-            })
+            await self._send_text(ctx, "⚠️ 没有识别到语音内容，请重试或改用文本消息。")
             return
         # 先回转写文本让用户确认识别结果，再走常规续聊路由；
         # 两步式 /new 等待中的语音同样算"下一条消息"
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": f"🎧 已收到：{text}",
-        })
-        pending_project = self._take_pending_new(chat_id)
+        await self._send_text(ctx, f"🎧 已收到：{text}")
+        pending_project = self._take_pending_new(ctx.key)
         if pending_project:
-            await self._create_new_session(chat_id, pending_project, text)
+            await self._create_new_session(ctx, pending_project, text)
             return
-        await self._submit_continuation(chat_id, text, msg)
+        await self._submit_continuation(ctx, text, msg)
 
     async def _transcribe_voice(self, file_id: str) -> str:
         """Telegram 语音文件 → OpenAI 兼容 /audio/transcriptions → 文本。"""
@@ -835,8 +862,9 @@ class TelegramBridge:
             raise TelegramError(f"转写接口 HTTP {resp.status_code}: {resp.text[:200]}")
         return str(resp.json().get("text", "")).strip()
 
-    def _route_conversation(self, msg: dict, chat_id: str) -> tuple[str, str, bool]:
-        """按 reply 映射 → 本 chat 的 /use 默认 → 全局最近播报 解析目标会话。
+    def _route_conversation(self, msg: dict, ctx: _MsgCtx) -> tuple[str, str, bool]:
+        """解析目标会话，优先级：reply 映射 → 本上下文 /use 默认 →
+        项目话题内取该项目最近活跃会话 / 私聊与 General 取全局最近播报。
 
         返回 (conversation_id, project_name, reply_unmapped)：
         reply 指向未知消息时不回退——用户以为自己定向了某条任务链，
@@ -850,9 +878,15 @@ class TelegramBridge:
             if mapped:
                 return mapped["conversation_id"], mapped.get("project_name", ""), False
             return "", "", True
-        default = state.get("defaults", {}).get(chat_id, "")
+        default = state.get("defaults", {}).get(ctx.key, "")
         if default:
             return default, self._conversation_project_name(default), False
+        if ctx.project:
+            # 项目话题：只在本项目内路由，绝不落到其他项目的"最近播报"
+            recent = self._recent_conversations(project=ctx.project)
+            if recent:
+                return recent[0].id, ctx.project, False
+            return "", "", False
         last = state.get("last_conversation_id", "")
         if last:
             for entry in reversed(list(state.get("messages", {}).values())):
@@ -870,37 +904,35 @@ class TelegramBridge:
             return ""
         return getattr(conv, "project_name", "") or ""
 
-    async def _submit_continuation(self, chat_id: str, prompt: str, msg: dict) -> None:
-        conv_id, project_name, reply_unmapped = self._route_conversation(msg, chat_id)
-        logger.info("续聊路由 [chat=%s] → conversation=%s%s",
-                    chat_id, conv_id or "无", "（reply 映射失效）" if reply_unmapped else "")
+    async def _submit_continuation(self, ctx: _MsgCtx, prompt: str, msg: dict) -> None:
+        conv_id, project_name, reply_unmapped = self._route_conversation(msg, ctx)
+        logger.info("续聊路由 [ctx=%s] → conversation=%s%s",
+                    ctx.key, conv_id or "无", "（reply 映射失效）" if reply_unmapped else "")
         if reply_unmapped:
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "⚠️ 这条消息已无法关联会话（映射可能已过期），请回复最新一条任务播报。",
-            })
+            await self._send_text(
+                ctx, "⚠️ 这条消息已无法关联会话（映射可能已过期），请回复最新一条任务播报。")
             return
         if not conv_id or self.scheduler is None:
             # 无路由目标的 "/xxx" 大概率是敲错的命令，回帮助比冷启动提示更有用
-            hint = (f"未识别的命令。\n\n{_HELP_TEXT}"
-                    if prompt.startswith("/") else _COLD_START_HINT)
-            await self._api("sendMessage", {"chat_id": chat_id, "text": hint})
+            if prompt.startswith("/"):
+                hint = f"未识别的命令。\n\n{_HELP_TEXT}"
+            elif ctx.project:
+                hint = (f"{ctx.project} 还没有任何会话。"
+                        f"发送 /new <指令> 即可在本项目开一条新会话链。")
+            else:
+                hint = _COLD_START_HINT
+            await self._send_text(ctx, hint)
             return
         if self.scheduler.conversation_queue_full(conv_id):
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "⚠️ 队列已满：该会话排队任务已达上限，请等待执行完成后再发。",
-            })
+            await self._send_text(
+                ctx, "⚠️ 队列已满：该会话排队任务已达上限，请等待执行完成后再发。")
             return
         try:
             task = await self.scheduler.submit(prompt=prompt, conversation_id=conv_id)
             logger.info("续聊任务已提交 [conversation=%s task=%s]", conv_id, task.id)
         except Exception as exc:
             logger.warning("续聊提交失败 [conversation=%s]: %r", conv_id, exc)
-            await self._api("sendMessage", {
-                "chat_id": chat_id,
-                "text": f"⚠️ 提交失败：{exc}",
-            })
+            await self._send_text(ctx, f"⚠️ 提交失败：{exc}")
             return
         conv = None
         try:
@@ -911,10 +943,7 @@ class TelegramBridge:
         target = project_name or "会话"
         if conv_name:
             target += f"「{conv_name}」"
-        await self._api("sendMessage", {
-            "chat_id": chat_id,
-            "text": f"📨 已提交到 {target}，任务 {task.id} 开始排队执行。",
-        })
+        await self._send_text(ctx, f"📨 已提交到 {target}，任务 {task.id} 开始排队执行。")
 
     def start_polling(self) -> None:
         """在后台启动长轮询循环。未配置时循环空转等待，配置写入后自动生效。"""
