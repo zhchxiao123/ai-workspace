@@ -645,6 +645,95 @@ def test_help_and_cold_start_hint_mention_commands(tmp_path):
     assert "/chats" in sent[1]["text"]   # 冷启动引导也指向命令
 
 
+# ── Bot 命令：/projects + /new + /status（#52） ─────────────
+
+def _project(name, account="acc-claude"):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, account=account)
+
+
+_PROJECTS = [_project("webapp"), _project("data-pipeline", account="acc-codex")]
+
+
+def test_projects_lists_all(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/projects")],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _run(bridge.poll_once())
+
+    text = sent[0]["text"]
+    assert "webapp" in text and "data-pipeline" in text
+    assert "acc-codex" in text
+    state = json.loads((bridge.workspace_dir / "telegram_state.json").read_text())
+    assert state["project_lists"]["123"]["1"] == "webapp"
+
+
+def test_new_creates_conversation_and_switches_default(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/new webapp 修复登录超时问题")],
+         [_update(update_id=2, text="补充：优先看 session 过期逻辑")]],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _poll_all(bridge)
+
+    kw = fake.submitted_kwargs[0]
+    assert kw["prompt"] == "修复登录超时问题"
+    assert kw["project_name"] == "webapp"
+    assert kw["conversation_name"]                    # 新会话链有名字
+    assert "t-new" in sent[0]["text"]                 # 回执含任务 id
+    # 默认路由已切到新会话：后续裸消息续聊 conv-created
+    assert ("补充：优先看 session 过期逻辑", "conv-created") in fake.submitted
+
+
+def test_new_accepts_project_number(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path,
+        [[_update(update_id=1, text="/projects")],
+         [_update(update_id=2, text="/new 2 清洗数据")]],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _poll_all(bridge)
+    assert fake.submitted_kwargs[-1]["project_name"] == "data-pipeline"
+
+
+def test_new_unknown_project_errors_with_list(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/new nope 干点啥")],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "webapp" in sent[0]["text"]     # 报错附现有项目列表
+
+
+def test_new_without_prompt_gets_usage(tmp_path):
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/new webapp")],
+        fake=FakeScheduler(projects=_PROJECTS))
+
+    _run(bridge.poll_once())
+    assert fake.submitted == []
+    assert "/new" in sent[0]["text"]
+
+
+def test_status_lists_active_tasks_only(tmp_path):
+    tasks = [
+        _task(id="t-run", status=TaskStatus.running, project_name="webapp"),
+        _task(id="t-wait", status=TaskStatus.pending, project_name="data-pipeline"),
+        _task(id="t-done", status=TaskStatus.done),
+    ]
+    bridge, sent, fake, _ = _poll_setup(
+        tmp_path, [_update(update_id=1, text="/status")],
+        fake=FakeScheduler(tasks=tasks))
+
+    _run(bridge.poll_once())
+    text = sent[0]["text"]
+    assert "t-run" in text and "t-wait" in text
+    assert "t-done" not in text
+
+
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────
 
 def test_endpoint_telegram_status_and_test(tmp_path, monkeypatch):

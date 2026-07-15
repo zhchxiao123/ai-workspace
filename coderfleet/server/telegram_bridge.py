@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from coderfleet.config import load_config
-from coderfleet.server.models import TASK_STATUS_LABELS, Task
+from coderfleet.server.models import TASK_STATUS_LABELS, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,9 @@ _HELP_TEXT = (
     "CoderFleet bot 命令：\n"
     "/chats — 最近会话列表\n"
     "/use <编号> — 把普通消息的默认路由切到某条会话\n"
+    "/projects — 项目列表\n"
+    "/new <项目> <指令> — 在指定项目开新会话链\n"
+    "/status — 运行中与排队的任务\n"
     "/help — 本帮助\n"
     "\n"
     "回复任一任务播报可直接续聊对应任务链（优先级高于默认路由）。"
@@ -54,7 +57,8 @@ _HELP_TEXT = (
 
 _COLD_START_HINT = (
     "还没有可续聊的会话。回复任一任务播报即可续聊；"
-    "或发送 /chats 查看会话列表后用 /use 选择。"
+    "或发送 /chats 查看会话列表后用 /use 选择；"
+    "也可以用 /new <项目> <指令> 直接开一条新会话链。"
 )
 
 
@@ -405,9 +409,12 @@ class TelegramBridge:
 
     def _command_handlers(self) -> dict:
         return {
-            "chats": self._cmd_chats,
-            "use":   self._cmd_use,
-            "help":  self._cmd_help,
+            "chats":    self._cmd_chats,
+            "use":      self._cmd_use,
+            "projects": self._cmd_projects,
+            "new":      self._cmd_new,
+            "status":   self._cmd_status,
+            "help":     self._cmd_help,
         }
 
     async def _handle_command(self, chat_id: str, cmd: str, args: str) -> None:
@@ -472,6 +479,93 @@ class TelegramBridge:
             "chat_id": chat_id,
             "text": f"✅ 默认会话已切到 {label or conv_id}，之后的普通消息都会续聊这里。",
         })
+
+    async def _cmd_projects(self, chat_id: str, args: str) -> None:
+        projects = list(self.scheduler.get_projects()) if self.scheduler else []
+        if not projects:
+            await self._api("sendMessage", {
+                "chat_id": chat_id, "text": "还没有配置任何项目。",
+            })
+            return
+        lines = ["项目列表："]
+        numbering: dict[str, str] = {}
+        for i, p in enumerate(projects, start=1):
+            numbering[str(i)] = p.name
+            lines.append(f"{i}. {p.name} · {p.account}")
+        lines.append("")
+        lines.append("发送 /new <项目名或编号> <指令> 开新会话链。")
+        self._update_state(
+            lambda s: s.setdefault("project_lists", {}).__setitem__(chat_id, numbering)
+        )
+        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
+
+    async def _cmd_new(self, chat_id: str, args: str) -> None:
+        parts = args.split(None, 1)
+        if len(parts) < 2:
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": "用法：/new <项目名或编号> <指令>。项目列表见 /projects。",
+            })
+            return
+        project_ref, prompt = parts[0], parts[1].strip()
+        project_name = self._resolve_project(chat_id, project_ref)
+        if project_name is None:
+            names = "、".join(p.name for p in self.scheduler.get_projects()) \
+                if self.scheduler else ""
+            await self._api("sendMessage", {
+                "chat_id": chat_id,
+                "text": f"项目「{project_ref}」不存在。现有项目：{names or '（无）'}",
+            })
+            return
+        try:
+            task = await self.scheduler.submit(
+                prompt=prompt,
+                project_name=project_name,
+                conversation_name=prompt[:32],
+            )
+            logger.info("新会话已创建 [project=%s conversation=%s task=%s]",
+                        project_name, task.conversation_id, task.id)
+        except Exception as exc:
+            logger.warning("新会话创建失败 [project=%s]: %r", project_name, exc)
+            await self._api("sendMessage", {
+                "chat_id": chat_id, "text": f"⚠️ 创建失败：{exc}",
+            })
+            return
+        if task.conversation_id:
+            self._update_state(
+                lambda s: s.setdefault("defaults", {})
+                          .__setitem__(chat_id, task.conversation_id)
+            )
+        await self._api("sendMessage", {
+            "chat_id": chat_id,
+            "text": f"🆕 已在 {project_name} 创建会话「{prompt[:32]}」，"
+                    f"任务 {task.id} 开始排队执行。之后的普通消息默认续聊这里。",
+        })
+
+    def _resolve_project(self, chat_id: str, ref: str) -> Optional[str]:
+        """项目引用 → 项目名。接受 /projects 列表编号或项目名本身。"""
+        if self.scheduler is None:
+            return None
+        numbering = self._load_state().get("project_lists", {}).get(chat_id, {})
+        name = numbering.get(ref, ref)
+        project = self.scheduler.find_project_by_name(name)
+        return project.name if project else None
+
+    async def _cmd_status(self, chat_id: str, args: str) -> None:
+        active = [
+            t for t in (self.scheduler.list_tasks() if self.scheduler else [])
+            if t.status in (TaskStatus.running, TaskStatus.pending, TaskStatus.scheduled)
+        ]
+        if not active:
+            await self._api("sendMessage", {
+                "chat_id": chat_id, "text": "当前没有运行或排队中的任务。",
+            })
+            return
+        lines = ["进行中的任务："]
+        for t in active:
+            prompt = t.prompt.strip()[:40]
+            lines.append(f"· {t.project_name or '?'} · {t.id} [{t.status.value}] {prompt}")
+        await self._api("sendMessage", {"chat_id": chat_id, "text": "\n".join(lines)})
 
     async def _handle_voice_message(
         self, chat_id: str, voice: dict, msg: dict
