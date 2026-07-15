@@ -46,12 +46,39 @@ class TelegramError(RuntimeError):
     """Telegram Bot API 调用失败（未配置、网络错误、上游返回非 ok 等）。"""
 
 
+def build_voice_summary_prompt(task, output_text: str) -> tuple[str, str]:
+    """组装语音摘要的 (system, user) 提示词。纯函数，独立可测。"""
+    system = (
+        "你是任务播报员。把编码任务的执行结果压缩成 2~3 句口语化中文，"
+        "适合语音播报：不出现代码、路径、标点堆砌，先说结论再说要点。"
+    )
+    label = _STATUS_LABELS.get(task.status, str(task.status))
+    user = (
+        f"项目：{task.project_name or task.project}\n"
+        f"状态：{label}\n"
+        f"任务指令：{task.prompt}\n"
+        f"执行结果：\n{output_text or '（无输出）'}"
+    )
+    return system, user
+
+
+def ffmpeg_opus_args(src: str, dst: str) -> list[str]:
+    """TTS 中间产物 → Telegram 语音消息要求的 OGG/Opus。纯函数，独立可测。"""
+    return [
+        "ffmpeg", "-y", "-i", src,
+        "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1",
+        dst,
+    ]
+
+
 class TelegramBridge:
     def __init__(
         self,
         workspace_dir: Path,
         *,
         transport: Optional[httpx.BaseTransport] = None,
+        summarizer=None,
+        voice_synth=None,
     ) -> None:
         self.workspace_dir = workspace_dir
         self.state_path = workspace_dir / "telegram_state.json"
@@ -59,6 +86,9 @@ class TelegramBridge:
         self.scheduler = None
         # 仅供测试注入 httpx.MockTransport；真实路径永远为 None。
         self._transport = transport
+        # 语音链路 seam：async callable(text) -> str / ogg bytes；默认实现见下
+        self._summarizer = summarizer
+        self._voice_synth = voice_synth
         self._poll_task: Optional[asyncio.Task] = None
 
     # ── 配置（每次惰性读取，改动即时生效） ─────────────────────
@@ -170,16 +200,68 @@ class TelegramBridge:
             return
         try:
             excerpt = self._output_excerpt(task)
-            text = self.format_task_message(task, excerpt)
-            result = await self._api("sendMessage", {
-                "chat_id": self.chat_ids[0],
-                "text": text,
-            })
+            result = None
+            if self.notify_mode == "voice":
+                try:
+                    result = await self._send_voice_broadcast(task, excerpt)
+                except Exception as exc:
+                    # 语音链路（摘要/TTS/ffmpeg）任一环节不可用 → 降级为文本
+                    logger.warning("Telegram 语音播报失败，降级为文本 [task=%s]: %s",
+                                   task.id, exc)
+            if result is None:
+                text = self.format_task_message(task, excerpt)
+                result = await self._api("sendMessage", {
+                    "chat_id": self.chat_ids[0],
+                    "text": text,
+                })
             message_id = result.get("message_id")
             if message_id is not None:
                 self._record_broadcast(int(message_id), task)
         except Exception as exc:
             logger.warning("Telegram 播报失败 [task=%s]: %s", task.id, exc)
+
+    async def _send_voice_broadcast(self, task: Task, excerpt: str) -> dict:
+        summary = await self._summarize(task, excerpt)
+        ogg = await self._synthesize(summary)
+        label = _STATUS_LABELS.get(task.status, "")
+        return await self._api(
+            "sendVoice",
+            {"chat_id": self.chat_ids[0],
+             "caption": f"{label} · {task.project_name or task.project}"},
+            files={"voice": ("result.ogg", ogg, "audio/ogg")},
+        )
+
+    async def _summarize(self, task: Task, excerpt: str) -> str:
+        """结果 → 口语化中文摘要。system_llm 未配置时抛错，由上层降级为文本。"""
+        if self._summarizer is not None:
+            return await self._summarizer(excerpt)
+        from coderfleet.server.system_llm import SystemLLM
+        llm = SystemLLM.from_config(self.workspace_dir)
+        if not llm.is_configured():
+            raise TelegramError("SYSTEM_LLM 未配置，无法生成语音摘要")
+        system, user = build_voice_summary_prompt(task, excerpt)
+        return (await llm.complete(
+            [{"role": "user", "content": user}], system=system, max_tokens=300,
+        )).strip()
+
+    async def _synthesize(self, text: str) -> bytes:
+        """文本 → OGG/Opus 音频。edge-tts / ffmpeg 缺失时抛错，由上层降级。"""
+        if self._voice_synth is not None:
+            return await self._voice_synth(text)
+        import subprocess
+        import tempfile
+        import edge_tts  # 缺失则 ImportError → 降级
+        with tempfile.TemporaryDirectory() as tmp:
+            mp3 = f"{tmp}/tts.mp3"
+            ogg = f"{tmp}/tts.ogg"
+            await edge_tts.Communicate(text, voice="zh-CN-XiaoxiaoNeural").save(mp3)
+            proc = await asyncio.to_thread(
+                subprocess.run, ffmpeg_opus_args(mp3, ogg),
+                capture_output=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                raise TelegramError(f"ffmpeg 转码失败: {proc.stderr.decode()[:200]}")
+            return Path(ogg).read_bytes()
 
     async def send_test_message(self) -> None:
         """连通性自检：向白名单第一个 chat 发一条测试消息。失败抛 TelegramError。"""

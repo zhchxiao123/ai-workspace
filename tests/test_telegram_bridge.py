@@ -128,6 +128,106 @@ def test_notify_task_survives_api_failure(tmp_path):
     _run(_bridge(ws, handler).notify_task(_task()))
 
 
+# ── 语音播报 ────────────────────────────────────────────────
+
+def _voice_ws(tmp_path):
+    return _ws(tmp_path, telegram_bot_token="TOK", telegram_chat_id="123",
+               telegram_notify_mode="voice")
+
+
+def test_voice_notify_sends_ogg_with_caption(tmp_path):
+    sent = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if str(req.url).endswith("/sendVoice"):
+            sent["content_type"] = req.headers.get("content-type", "")
+            sent["body"] = req.content
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 55}})
+        pytest.fail(f"意外请求: {req.url}")
+
+    async def summarizer(text):
+        return "任务顺利完成，十二个测试全部通过。"
+
+    async def synth(text):
+        sent["spoken"] = text
+        return b"OGG_OPUS_BYTES"
+
+    ws = _voice_ws(tmp_path)
+    bridge = _bridge(ws, handler, summarizer=summarizer, voice_synth=synth)
+    _run(bridge.notify_task(_task()))
+
+    assert sent["spoken"] == "任务顺利完成，十二个测试全部通过。"
+    assert "multipart/form-data" in sent["content_type"]
+    assert b"OGG_OPUS_BYTES" in sent["body"]
+    assert "myproj".encode() in sent["body"]          # caption 带项目名
+    # 语音播报同样记录映射，可被 reply 续聊
+    state = json.loads((ws / "telegram_state.json").read_text())
+    assert state["messages"]["55"]["conversation_id"] == "c1"
+
+
+def test_voice_notify_degrades_to_text_on_synth_failure(tmp_path):
+    sent = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if str(req.url).endswith("/sendMessage"):
+            sent["text"] = json.loads(req.content)["text"]
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+        pytest.fail(f"应降级为 sendMessage: {req.url}")
+
+    async def summarizer(text):
+        return "摘要"
+
+    async def broken_synth(text):
+        raise RuntimeError("edge-tts unavailable")
+
+    bridge = _bridge(_voice_ws(tmp_path), handler,
+                     summarizer=summarizer, voice_synth=broken_synth)
+    _run(bridge.notify_task(_task()))
+    assert "myproj" in sent["text"]
+
+
+def test_voice_notify_degrades_to_text_when_summarizer_unconfigured(tmp_path):
+    sent = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if str(req.url).endswith("/sendMessage"):
+            sent["text"] = json.loads(req.content)["text"]
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+        pytest.fail(f"应降级为 sendMessage: {req.url}")
+
+    async def broken_summarizer(text):
+        raise RuntimeError("SYSTEM_LLM 未配置")
+
+    async def synth(text):  # pragma: no cover
+        pytest.fail("摘要失败后不应再走 TTS")
+
+    bridge = _bridge(_voice_ws(tmp_path), handler,
+                     summarizer=broken_summarizer, voice_synth=synth)
+    _run(bridge.notify_task(_task()))
+    assert "✅" in sent["text"]
+
+
+def test_voice_summary_prompt_is_colloquial_chinese(tmp_path):
+    from coderfleet.server.telegram_bridge import build_voice_summary_prompt
+
+    system, user = build_voice_summary_prompt(_task(), "12 tests passed, login fixed.")
+    assert "口语" in system
+    assert "myproj" in user
+    assert "12 tests passed" in user
+    assert "fix the login bug" in user
+
+
+def test_ffmpeg_opus_args():
+    from coderfleet.server.telegram_bridge import ffmpeg_opus_args
+
+    args = ffmpeg_opus_args("/tmp/in.mp3", "/tmp/out.ogg")
+    assert args[0] == "ffmpeg"
+    assert "/tmp/in.mp3" in args
+    assert args[-1] == "/tmp/out.ogg"
+    i = args.index("-c:a")
+    assert args[i + 1] == "libopus"    # Telegram 语音消息硬性要求 OGG/Opus
+
+
 # ── 入向：回复续聊 ──────────────────────────────────────────
 
 class FakeScheduler:

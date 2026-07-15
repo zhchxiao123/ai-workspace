@@ -56,6 +56,28 @@ docker run --rm -v "$CODERFLEET_HOST_WORKSPACE:/workspace" -w /workspace alpine 
 
 挂载 Docker socket 等价于让项目容器拥有宿主机 Docker 控制权，只给可信镜像开启。Web 界面也可在「系统设置 → Docker」中配置，保存后执行 `coderfleet apply` 生效。
 
+### Telegram 通知
+
+任务结束后向 Telegram 播报结果，并支持在 Telegram 里回复播报消息续聊任务链：
+
+```bash
+coderfleet config set TELEGRAM_BOT_TOKEN <向 @BotFather 申请的 token>
+coderfleet config set TELEGRAM_CHAT_ID <向 @userinfobot 发消息获取>
+coderfleet config set TELEGRAM_PROXY http://127.0.0.1:7890   # 国内环境必填
+coderfleet config set TELEGRAM_NOTIFY_MODE text              # off | text | voice
+coderfleet telegram test    # 发送测试消息验证连通性
+```
+
+改动即时生效，无需 `coderfleet apply`。Web 界面在「系统设置 → Telegram 通知」中配置。
+
+`voice` 模式会先用系统级 LLM 把结果压成口语摘要，再经 edge-tts 合成语音播报，
+**需要宿主机安装 ffmpeg**（`brew install ffmpeg` / `apt install ffmpeg`），
+且已配置 SYSTEM_LLM_*。任一环节不可用时自动降级为文本播报。
+
+配置 `TELEGRAM_ASR_API_KEY` / `TELEGRAM_ASR_BASE_URL` / `TELEGRAM_ASR_MODEL`
+（OpenAI 兼容 `/audio/transcriptions` 接口，如 OpenAI whisper-1）后，
+还可以直接在 Telegram 里发语音下发指令。
+
 ## accounts.conf
 
 ```conf
