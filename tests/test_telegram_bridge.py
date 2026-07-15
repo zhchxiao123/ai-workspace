@@ -885,6 +885,87 @@ def test_my_commands_registered_once(tmp_path):
     assert seen["api"].count("setMyCommands") == 1
 
 
+# ── Topics 群组：出向分频道（#54 切片①） ────────────────────
+
+def _topic_ws(tmp_path, group_id="-100999"):
+    return _ws(tmp_path, telegram_bot_token="TOK", telegram_chat_id="123",
+               telegram_notify_mode="text", telegram_topic_group_id=group_id)
+
+
+def _topic_handler(sent, created, create_status=200):
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if url.endswith("/createForumTopic"):
+            body = json.loads(req.content)
+            created.append(body)
+            if create_status != 200:
+                return httpx.Response(create_status, json={
+                    "ok": False, "description": "not enough rights"})
+            return httpx.Response(200, json={
+                "ok": True, "result": {"message_thread_id": 500 + len(created)}})
+        if url.endswith("/sendMessage") or url.endswith("/sendVoice"):
+            sent.append(json.loads(req.content))
+            return httpx.Response(200, json={
+                "ok": True, "result": {"message_id": 900 + len(sent)}})
+        return httpx.Response(404, json={"ok": False, "description": url})
+    return handler
+
+
+def test_broadcast_creates_topic_and_sends_into_it(tmp_path):
+    sent, created = [], []
+    ws = _topic_ws(tmp_path)
+    bridge = _bridge(ws, _topic_handler(sent, created))
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+
+    assert created[0]["chat_id"] == "-100999"
+    assert created[0]["name"] == "myproj"
+    assert len(sent) == 1                       # 只发群，私聊白名单不再收
+    assert sent[0]["chat_id"] == "-100999"
+    assert sent[0]["message_thread_id"] == 501
+    state = json.loads((ws / "telegram_state.json").read_text())
+    assert state["topics"]["myproj"] == 501
+    assert state["messages"]["901"]["conversation_id"] == "c1"   # reply 映射照旧
+
+
+def test_broadcast_reuses_registered_topic(tmp_path):
+    sent, created = [], []
+    ws = _topic_ws(tmp_path)
+    (ws / "telegram_state.json").write_text(json.dumps(
+        {"offset": 0, "messages": {}, "topics": {"myproj": 55}}))
+    bridge = _bridge(ws, _topic_handler(sent, created))
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+
+    assert created == []                        # 不重复建话题
+    assert sent[0]["message_thread_id"] == 55
+
+
+def test_topic_creation_failure_falls_back_to_general_once_hinted(tmp_path):
+    sent, created = [], []
+    ws = _topic_ws(tmp_path)
+    bridge = _bridge(ws, _topic_handler(sent, created, create_status=400))
+
+    _run(bridge.notify_task(_task(project_name="myproj")))
+    _run(bridge.notify_task(_task(id="t2", project_name="myproj")))
+
+    broadcasts = [m for m in sent if "message_thread_id" not in m]
+    hints = [m for m in sent if "管理话题" in m.get("text", "") or "权限" in m.get("text", "")]
+    assert len(broadcasts) >= 2 + 1             # 两条播报落 General + 一条提示
+    assert len(hints) == 1                      # 权限提示只发一次
+
+
+def test_broadcast_without_project_goes_to_general(tmp_path):
+    sent, created = [], []
+    ws = _topic_ws(tmp_path)
+    bridge = _bridge(ws, _topic_handler(sent, created))
+
+    _run(bridge.notify_task(_task(project_name="")))
+
+    assert created == []
+    assert "message_thread_id" not in sent[0]
+
+
 # ── 服务端点（与 CLI 能力对等） ──────────────────────────────
 
 def test_endpoint_telegram_status_and_test(tmp_path, monkeypatch):

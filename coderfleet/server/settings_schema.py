@@ -65,6 +65,10 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
             SettingField("TELEGRAM_NOTIFY_MODE", "播报模式",
                          options=("off", "text", "voice"),
                          help="off 关闭；text 文本；voice 语音（TTS，失败自动降级为文本）"),
+            SettingField("TELEGRAM_TOPIC_GROUP_ID", "Topics 群 ID（可选）",
+                         placeholder="-1001234567890",
+                         help="开启 Topics 的群，bot 需管理员+管理话题权限；"
+                              "配置后播报按项目话题分频道发进该群（群内发 /id 可获取）"),
             SettingField("TELEGRAM_ASR_API_KEY", "语音转写 API Key（可选）",
                          placeholder="sk-...", secret=True,
                          help="OpenAI 兼容 /audio/transcriptions；配置后可用语音下发指令"),

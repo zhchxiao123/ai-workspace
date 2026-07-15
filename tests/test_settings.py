@@ -116,3 +116,8 @@ def test_telegram_secrets_and_live_effect():
     assert not field_for("TELEGRAM_BOT_TOKEN").requires_apply
     assert not field_for("TELEGRAM_NOTIFY_MODE").requires_apply
     assert field_for("TELEGRAM_NOTIFY_MODE").options == ("off", "text", "voice")
+
+
+def test_telegram_topic_group_field():
+    f = field_for("TELEGRAM_TOPIC_GROUP_ID")
+    assert f is not None and not f.secret and not f.requires_apply

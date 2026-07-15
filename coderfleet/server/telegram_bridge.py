@@ -157,6 +157,11 @@ class TelegramBridge:
         return mode if mode in ("off", "text", "voice") else "off"
 
     @property
+    def topic_group_id(self) -> str:
+        """Topics 论坛群 id；配置后播报按项目话题分频道发进该群。"""
+        return self._cfg().get("TELEGRAM_TOPIC_GROUP_ID", "").strip()
+
+    @property
     def asr_api_key(self) -> str:
         return self._cfg().get("TELEGRAM_ASR_API_KEY", "").strip()
 
@@ -307,24 +312,72 @@ class TelegramBridge:
                                    task.id, exc)
             label = TASK_STATUS_LABELS.get(task.status, "")
             text = self.format_task_message(task, excerpt)
-            for chat_id in self.chat_ids:
+            for chat_id, thread_id in await self._broadcast_targets(task):
+                extra = {"message_thread_id": thread_id} if thread_id else {}
                 if ogg is not None:
                     result = await self._api(
                         "sendVoice",
                         {"chat_id": chat_id,
-                         "caption": f"{label} · {task.project_name or task.project}"},
+                         "caption": f"{label} · {task.project_name or task.project}",
+                         **extra},
                         files={"voice": ("result.ogg", ogg, "audio/ogg")},
                     )
                 else:
-                    result = await self._api("sendMessage",
-                                             {"chat_id": chat_id, "text": text})
+                    result = await self._api(
+                        "sendMessage", {"chat_id": chat_id, "text": text, **extra})
                 message_id = result.get("message_id")
                 if message_id is not None:
                     self._record_broadcast(int(message_id), task)
-                logger.info("Telegram 播报已送达 [task=%s chat=%s message_id=%s voice=%s]",
-                            task.id, chat_id, message_id, ogg is not None)
+                logger.info("Telegram 播报已送达 [task=%s chat=%s thread=%s message_id=%s voice=%s]",
+                            task.id, chat_id, thread_id, message_id, ogg is not None)
         except Exception as exc:
             logger.warning("Telegram 播报失败 [task=%s]: %r", task.id, exc)
+
+    async def _broadcast_targets(self, task: Task) -> list[tuple[str, Optional[int]]]:
+        """播报目的地：配置话题群则只发群（按项目话题），否则发全部白名单私聊。"""
+        group = self.topic_group_id
+        if not group:
+            return [(c, None) for c in self.chat_ids]
+        thread_id = await self._ensure_topic(task.project_name)
+        return [(group, thread_id)]
+
+    async def _ensure_topic(self, project_name: str) -> Optional[int]:
+        """项目 → 话题 thread id，首次懒创建并落盘。失败降级 General（返回 None）。"""
+        if not project_name:
+            return None
+        state = self._load_state()
+        existing = state.get("topics", {}).get(project_name)
+        if existing:
+            return int(existing)
+        try:
+            result = await self._api("createForumTopic", {
+                "chat_id": self.topic_group_id, "name": project_name,
+            })
+            thread_id = int(result["message_thread_id"])
+        except Exception as exc:
+            logger.warning("话题创建失败，播报降级到 General [project=%s]: %r",
+                           project_name, exc)
+            await self._hint_topic_permission_once()
+            return None
+        self._update_state(
+            lambda s: s.setdefault("topics", {}).update({project_name: thread_id})
+        )
+        logger.info("已为项目创建话题 [project=%s thread=%s]", project_name, thread_id)
+        return thread_id
+
+    async def _hint_topic_permission_once(self) -> None:
+        state = self._load_state()
+        if state.get("topic_hint_sent"):
+            return
+        self._update_state(lambda s: s.update(topic_hint_sent=True))
+        try:
+            await self._api("sendMessage", {
+                "chat_id": self.topic_group_id,
+                "text": "⚠️ 无法创建项目话题：请把 bot 设为群管理员并开启「管理话题」权限。"
+                        "在此之前播报会发到 General。",
+            })
+        except Exception as exc:
+            logger.warning("话题权限提示发送失败: %r", exc)
 
     async def _summarize(self, task: Task, excerpt: str) -> str:
         """结果 → 口语化中文摘要。system_llm 未配置时抛错，由上层降级为文本。"""
