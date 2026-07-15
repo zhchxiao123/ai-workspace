@@ -100,7 +100,8 @@ from coderfleet.server.terminal import (
     resolve_terminal_target,
     setup_tmux_session,
 )
-from coderfleet.server.push_manager import PushManager
+from coderfleet.server.push_manager import PushManager, task_push_notifier
+from coderfleet.server.telegram_bridge import TelegramBridge, TelegramError
 from coderfleet.server.digest import (
     build_generate_prompt,
     compute_daily_stats,
@@ -207,6 +208,7 @@ class BoardCardUpdateRequest(BaseModel):
 WORKSPACE_DIR    = Path(os.environ.get("CODERFLEET_WORKSPACE", Path.home() / ".coderfleet"))
 scheduler        = Scheduler(WORKSPACE_DIR)
 push_manager     = PushManager(WORKSPACE_DIR)
+telegram_bridge  = TelegramBridge(WORKSPACE_DIR)
 marketplace_mgr  = MarketplaceManager(WORKSPACE_DIR / "cache")
 translation_cache = TranslationCache(WORKSPACE_DIR / "translations")
 DIGEST_DIR       = WORKSPACE_DIR / "digests"
@@ -249,7 +251,9 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.on_event("startup")
 async def reconcile_tasks_on_startup():
-    scheduler._push_manager = push_manager
+    scheduler._push_manager = push_manager  # 工作流审批等非任务消息
+    scheduler.register_notifier(task_push_notifier(push_manager))
+    scheduler.register_notifier(telegram_bridge.notify_task)
     await scheduler.reconcile_running_tasks()
     scheduler.start_scheduling_loop()
     scheduler.start_usage_polling_loop()
@@ -363,6 +367,24 @@ async def push_test():
     if push_manager.subscription_count == 0:
         raise HTTPException(404, "没有已订阅设备")
     await push_manager.send_all("CoderFleet 测试通知", "如果看到这条，手机 Web Push 链路已打通。")
+
+
+@app.get("/api/telegram/status")
+async def telegram_status():
+    return {
+        "configured": telegram_bridge.is_configured(),
+        "notify_mode": telegram_bridge.notify_mode,
+    }
+
+
+@app.post("/api/telegram/test", status_code=204)
+async def telegram_test():
+    if not telegram_bridge.is_configured():
+        raise HTTPException(400, "未配置 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")
+    try:
+        await telegram_bridge.send_test_message()
+    except TelegramError as e:
+        raise HTTPException(502, f"发送失败：{e}")
 
 
 # ── 健康检查 ──────────────────────────────────────────────

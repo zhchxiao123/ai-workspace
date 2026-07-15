@@ -18,6 +18,26 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def task_push_notifier(push_manager: "PushManager"):
+    """把 PushManager 适配成调度器通知渠道：async callable(task) -> None。"""
+    from coderfleet.server.models import TaskStatus
+
+    titles = {
+        TaskStatus.done:   "✅ 任务完成",
+        TaskStatus.failed: "❌ 任务失败",
+        TaskStatus.killed: "⚠️ 任务已终止",
+    }
+
+    async def notify(task) -> None:
+        title = titles.get(task.status)
+        if title is None:
+            return
+        body = (task.prompt[:70] + "…") if len(task.prompt) > 70 else task.prompt
+        await push_manager.send_all(title, body)
+
+    return notify
+
+
 class PushManager:
     def __init__(self, workspace_dir: Path):
         self.keys_path = workspace_dir / "push_keys.json"

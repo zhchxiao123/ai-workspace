@@ -49,6 +49,32 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
         ),
     ),
     SettingGroup(
+        "telegram", "Telegram 通知",
+        help="任务结束后向 Telegram 播报并支持回复续聊。改动即时生效。"
+             "chat_id 可向 @userinfobot 发消息获取。",
+        fields=(
+            SettingField("TELEGRAM_BOT_TOKEN", "Bot Token",
+                         placeholder="123456:ABC-DEF...", secret=True,
+                         help="向 @BotFather 申请"),
+            SettingField("TELEGRAM_CHAT_ID", "Chat ID 白名单",
+                         placeholder="123456789",
+                         help="逗号分隔；播报发往第一个，其余仅允许下发指令"),
+            SettingField("TELEGRAM_PROXY", "出站代理（可选）",
+                         placeholder="http://127.0.0.1:10808",
+                         help="api.telegram.org 无法直连时必填"),
+            SettingField("TELEGRAM_NOTIFY_MODE", "播报模式",
+                         options=("off", "text", "voice"),
+                         help="off 关闭；text 文本；voice 语音（TTS，失败自动降级为文本）"),
+            SettingField("TELEGRAM_ASR_API_KEY", "语音转写 API Key（可选）",
+                         placeholder="sk-...", secret=True,
+                         help="OpenAI 兼容 /audio/transcriptions；配置后可用语音下发指令"),
+            SettingField("TELEGRAM_ASR_BASE_URL", "语音转写 Base URL（可选）",
+                         placeholder="https://api.openai.com/v1"),
+            SettingField("TELEGRAM_ASR_MODEL", "语音转写模型（可选）",
+                         placeholder="whisper-1"),
+        ),
+    ),
+    SettingGroup(
         "server", "服务",
         fields=(
             SettingField("CODERFLEET_PORT", "监听端口", placeholder="8765", requires_apply=True),

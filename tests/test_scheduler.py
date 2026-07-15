@@ -2028,3 +2028,59 @@ def test_expand_skill_command_is_account_scoped(tmp_path: Path) -> None:
     _write_skill(tmp_path, "alice", "standup", "name: standup\ndescription: x", "Alice's template.")
     out = sched._expand_skill_command("/standup today", "bob")
     assert out == "/standup today"
+
+
+# ── 通知扇出 ─────────────────────────────────────────────────
+
+def _notify_task(status=TaskStatus.done):
+    return Task(
+        id="t-notify", status=status, account="a1", type=AccountType.claude,
+        prompt="p", project="/p", project_name="proj",
+    )
+
+
+def test_notify_fans_out_to_all_registered_channels(tmp_path) -> None:
+    sched = Scheduler(tmp_path)
+    calls: list[str] = []
+
+    async def channel_a(task):
+        calls.append(f"a:{task.id}")
+
+    async def channel_b(task):
+        calls.append(f"b:{task.id}")
+
+    sched.register_notifier(channel_a)
+    sched.register_notifier(channel_b)
+    asyncio.run(sched._notify(_notify_task()))
+
+    assert calls == ["a:t-notify", "b:t-notify"]
+
+
+def test_notify_channel_failure_does_not_block_others(tmp_path) -> None:
+    sched = Scheduler(tmp_path)
+    calls: list[str] = []
+
+    async def broken(task):
+        raise RuntimeError("boom")
+
+    async def healthy(task):
+        calls.append(task.id)
+
+    sched.register_notifier(broken)
+    sched.register_notifier(healthy)
+    asyncio.run(sched._notify(_notify_task()))
+
+    assert calls == ["t-notify"]
+
+
+def test_notify_skips_non_terminal_status(tmp_path) -> None:
+    sched = Scheduler(tmp_path)
+    calls: list[str] = []
+
+    async def channel(task):
+        calls.append(task.id)
+
+    sched.register_notifier(channel)
+    asyncio.run(sched._notify(_notify_task(status=TaskStatus.running)))
+
+    assert calls == []

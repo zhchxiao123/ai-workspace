@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import json
+import logging
 import os
 import random
 import re
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Optional
 
 from coderfleet.config import parse_conf
+
+logger = logging.getLogger(__name__)
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
@@ -87,6 +90,9 @@ class Scheduler:
         # task_id → asyncio.Task（后台运行的协程）
         self._running: dict[str, asyncio.Task] = {}
         self._loop_task: Optional[asyncio.Task] = None
+        # 任务终态通知渠道（Web Push / Telegram …），由 main.py 在启动时注册
+        self._notifiers: list = []
+        # 工作流审批等非任务消息仍直接走 Web Push
         self._push_manager = None  # set by main.py after both are initialized
         self._last_auto_digest_date: str = ""
         self._board_migration_done = False  # 单一引用迁移只跑一次/进程
@@ -100,20 +106,19 @@ class Scheduler:
         self._usage_loop_task: Optional[asyncio.Task] = None
         self._load_cached_usage()
 
+    def register_notifier(self, notifier) -> None:
+        """注册一个通知渠道：async callable(task) -> None。"""
+        self._notifiers.append(notifier)
+
     async def _notify(self, task: Task) -> None:
-        if self._push_manager is None:
+        """任务到达终态时向所有已注册渠道扇出；单渠道失败不影响其余渠道。"""
+        if task.status not in (TaskStatus.done, TaskStatus.failed, TaskStatus.killed):
             return
-        status_map = {
-            TaskStatus.done:   ("✅ 任务完成",   task.prompt),
-            TaskStatus.failed: ("❌ 任务失败",   task.prompt),
-            TaskStatus.killed: ("⚠️ 任务已终止", task.prompt),
-        }
-        entry = status_map.get(task.status)
-        if entry is None:
-            return
-        title, prompt = entry
-        body = (prompt[:70] + "…") if len(prompt) > 70 else prompt
-        await self._push_manager.send_all(title, body)
+        for notifier in self._notifiers:
+            try:
+                await notifier(task)
+            except Exception as exc:
+                logger.warning("通知渠道失败 [task=%s]: %s", task.id, exc)
 
     @staticmethod
     def task_process_marker(task_id: str) -> str:

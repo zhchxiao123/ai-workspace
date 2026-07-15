@@ -97,3 +97,22 @@ def test_settings_js_and_nav_wired():
     nav = (STATIC / "js" / "nav.js").read_text(encoding="utf-8")
     assert "settings: '系统设置'" in nav
     assert "loadSettings()" in nav
+
+
+# ── telegram 分组 ───────────────────────────────────────────
+
+def test_telegram_group_registered():
+    group = next((g for g in SETTINGS_GROUPS if g.id == "telegram"), None)
+    assert group is not None
+    keys = {f.key for f in group.fields}
+    assert {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_PROXY",
+            "TELEGRAM_NOTIFY_MODE"} <= keys
+
+
+def test_telegram_secrets_and_live_effect():
+    assert field_for("TELEGRAM_BOT_TOKEN").secret
+    assert not field_for("TELEGRAM_CHAT_ID").secret
+    # Telegram 配置即时生效，不需要 coderfleet apply
+    assert not field_for("TELEGRAM_BOT_TOKEN").requires_apply
+    assert not field_for("TELEGRAM_NOTIFY_MODE").requires_apply
+    assert field_for("TELEGRAM_NOTIFY_MODE").options == ("off", "text", "voice")
