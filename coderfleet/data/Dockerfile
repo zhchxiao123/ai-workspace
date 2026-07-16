@@ -130,6 +130,14 @@ RUN set -eux; \
     kimi --version; \
     rm -f /tmp/kimi-code-install.sh
 
+# ── RTK (Rust Token Killer) ───────────────────────────────
+# CLI proxy that compresses common dev-command output before it reaches an
+# LLM's context. install.sh auto-detects arch (amd64/arm64) and verifies
+# the release tarball's SHA-256 checksum before extracting.
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
+    | RTK_INSTALL_DIR=/usr/local/bin sh \
+    && rtk --version
+
 # ── Rust 1.93.0 ───────────────────────────────────────────
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
