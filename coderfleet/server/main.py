@@ -91,6 +91,7 @@ from coderfleet.server.scheduler import MAX_PENDING_PER_CONV, Scheduler
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
 from coderfleet.server.translate import translate_text
 from coderfleet.server.translation_cache import TranslationCache
+from coderfleet.server.summarize_title import summarize_title
 from coderfleet.server.settings_schema import SETTINGS_GROUPS, field_for, mask_secret
 from coderfleet.config import load_config as _load_config, set_config as _set_config
 from coderfleet.server.search import SCOPES, SearchResponse, rank_paths, search_records
@@ -144,6 +145,14 @@ class TranslateRequest(BaseModel):
 class TranslateResponse(BaseModel):
     translated: str
     cached:     bool = False
+
+
+class TitleRequest(BaseModel):
+    text: str
+
+
+class TitleResponse(BaseModel):
+    title: str
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -436,6 +445,20 @@ async def translate(req: TranslateRequest):
     if translated.strip():
         translation_cache.put(req.text, req.target, translated)
     return TranslateResponse(translated=translated, cached=False)
+
+
+@app.post("/api/summarize-title", response_model=TitleResponse)
+async def summarize_conversation_title(req: TitleRequest):
+    if not req.text.strip():
+        return TitleResponse(title="")
+    llm = SystemLLM.from_config(WORKSPACE_DIR)
+    if not llm.is_configured():
+        raise HTTPException(status_code=503, detail="系统 LLM 未配置，请在 config.conf 设置 SYSTEM_LLM_*")
+    try:
+        title = await summarize_title(llm, req.text)
+    except SystemLLMError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return TitleResponse(title=title.strip()[:40])
 
 
 # ── 系统设置（config.conf 读写，由 settings_schema 登记表驱动） ──

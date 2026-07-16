@@ -78,6 +78,7 @@ def test_backend_endpoints_wired():
     assert '@app.put("/api/config")' in src
     assert '@app.get("/api/system-llm/status")' in src
     assert '@app.post("/api/translate"' in src
+    assert '@app.post("/api/summarize-title"' in src
 
 
 def test_settings_page_and_entry_wired():

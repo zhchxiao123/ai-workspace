@@ -8,6 +8,7 @@ import pytest
 
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
 from coderfleet.server.translate import translate_text
+from coderfleet.server.summarize_title import summarize_title
 
 
 def _run(coro):
@@ -131,6 +132,29 @@ def test_translate_sends_target_and_text():
     assert out == "已翻译"
     assert "简体中文" in seen["body"]["system"]
     assert seen["body"]["messages"][0]["content"] == "Hello world"
+
+
+# ── summarize_title 薄函数 ────────────────────────────────────
+
+def test_summarize_title_empty_short_circuits():
+    llm = SystemLLM(provider="anthropic", api_key="k", model="m")
+    assert _run(summarize_title(llm, "   ")) == ""
+
+
+def test_summarize_title_sends_prompt_and_text():
+    seen = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        import json
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "会话标题"}]})
+
+    llm = SystemLLM(provider="anthropic", api_key="k", model="m", transport=_mock(handler))
+    out = _run(summarize_title(llm, "帮我看下这段代码为什么报错"))
+
+    assert out == "会话标题"
+    assert "title" in seen["body"]["system"].lower()
+    assert seen["body"]["messages"][0]["content"] == "帮我看下这段代码为什么报错"
 
 
 # ── from_config ─────────────────────────────────────────────

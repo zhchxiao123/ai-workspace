@@ -1,5 +1,32 @@
 // ── AI 对话（聊天室）核心逻辑 ───────────────────────────────────
 
+// 用首条消息生成会话标题（系统级 LLM，不占池化配额）。未配置时静默跳过，
+// 保留调用方已设置的截断兜底名字。失败也静默——命名从来不是关键路径。
+async function _autoTitleConversation(convId, promptText) {
+  if (!systemLlmConfigured || !promptText.trim()) return;
+  try {
+    const r = await fetch(`${API}/api/summarize-title`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: promptText }),
+    });
+    if (!r.ok) return;
+    const { title } = await r.json();
+    if (!title || !title.trim()) return;
+    const rr = await fetch(`${API}/api/conversations/${encodeURIComponent(convId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: title.trim() }),
+    });
+    if (!rr.ok) return;
+    const conv = chatConversationsList.find(c => c.id === convId);
+    if (conv) conv.name = title.trim();
+    conversationsCache[convId] = title.trim();
+    syncConversationTabLabels();
+    rerenderChatProjectList();
+  } catch { /* 命名失败静默，兜底名字保留 */ }
+}
+
 // 加载会话列表及数据
 async function loadConversations(renderWorkspace = true) {
   // Restore active conversation from sessionStorage on first load after page refresh
@@ -1786,6 +1813,7 @@ async function sendChatMessage() {
       activeConversationId = taskData.conversation_id;
       activeTabId = upsertConversationTab(activeConversationId);
       renderTopbarTabs();
+      _autoTitleConversation(activeConversationId, promptText);
       const snapshotPaths = pendingImages.map(i => i.container_path);
       textarea.value = '';
       textarea.style.height = 'auto';
