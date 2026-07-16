@@ -122,6 +122,11 @@ def ffmpeg_opus_args(src: str, dst: str) -> list[str]:
     ]
 
 
+def ffmpeg_wav_args(src: str, dst: str) -> list[str]:
+    """Telegram 语音（OGG/Opus）→ WAV：部分转写后端不支持直接解码 Opus。纯函数，独立可测。"""
+    return ["ffmpeg", "-y", "-i", src, "-ar", "16000", "-ac", "1", dst]
+
+
 class TelegramBridge:
     def __init__(
         self,
@@ -130,6 +135,7 @@ class TelegramBridge:
         transport: Optional[httpx.BaseTransport] = None,
         summarizer: Optional[Callable[[str], Awaitable[str]]] = None,
         voice_synth: Optional[Callable[[str], Awaitable[bytes]]] = None,
+        asr_transcode: Optional[Callable[[bytes], Awaitable[bytes]]] = None,
     ) -> None:
         self.workspace_dir = workspace_dir
         self.state_path = workspace_dir / "telegram_state.json"
@@ -140,6 +146,7 @@ class TelegramBridge:
         # 语音链路 seam：async callable(text) -> str / ogg bytes；默认实现见下
         self._summarizer = summarizer
         self._voice_synth = voice_synth
+        self._asr_transcode = asr_transcode
         self._poll_task: Optional[asyncio.Task] = None
         self._commands_registered = False
         self._commands: dict[str, Callable[[str, str], Awaitable[None]]] = {
@@ -907,7 +914,7 @@ class TelegramBridge:
         await self._submit_continuation(ctx, text, msg)
 
     async def _transcribe_voice(self, file_id: str) -> str:
-        """Telegram 语音文件 → OpenAI 兼容 /audio/transcriptions → 文本。"""
+        """Telegram 语音文件 → WAV → OpenAI 兼容 /audio/transcriptions → 文本。"""
         info = await self._api("getFile", {"file_id": file_id})
         file_path = info.get("file_path", "")
         if not file_path:
@@ -916,15 +923,34 @@ class TelegramBridge:
             audio = await client.get(f"{_API_BASE}/file/bot{self.token}/{file_path}")
             if audio.status_code != 200:
                 raise TelegramError(f"下载语音失败 HTTP {audio.status_code}")
+            wav = await self._transcode_to_wav(audio.content)
             resp = await client.post(
                 f"{self.asr_base_url}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self.asr_api_key}"},
                 data={"model": self.asr_model},
-                files={"file": ("voice.oga", audio.content, "audio/ogg")},
+                files={"file": ("voice.wav", wav, "audio/wav")},
             )
         if resp.status_code != 200:
             raise TelegramError(f"转写接口 HTTP {resp.status_code}: {resp.text[:200]}")
         return str(resp.json().get("text", "")).strip()
+
+    async def _transcode_to_wav(self, audio: bytes) -> bytes:
+        """OGG/Opus → WAV：防御部分转写后端不支持直接解码 Opus。ffmpeg 缺失时抛错。"""
+        if self._asr_transcode is not None:
+            return await self._asr_transcode(audio)
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            src = f"{tmp}/voice.oga"
+            dst = f"{tmp}/voice.wav"
+            Path(src).write_bytes(audio)
+            proc = await asyncio.to_thread(
+                subprocess.run, ffmpeg_wav_args(src, dst),
+                capture_output=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                raise TelegramError(f"ffmpeg 转码失败: {proc.stderr.decode()[:200]}")
+            return Path(dst).read_bytes()
 
     def _route_conversation(self, msg: dict, ctx: _MsgCtx) -> tuple[str, str, bool]:
         """解析目标会话，优先级：reply 映射 → 本上下文 /use 默认 →

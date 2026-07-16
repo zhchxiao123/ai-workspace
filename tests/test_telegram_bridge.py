@@ -27,6 +27,11 @@ def _bridge(ws, handler=None, **kw) -> TelegramBridge:
     return TelegramBridge(ws, transport=transport, **kw)
 
 
+async def _identity_transcode(audio: bytes) -> bytes:
+    """测试用 asr_transcode seam：跳过真实 ffmpeg，原样透传假音频字节。"""
+    return audio
+
+
 # ── 配置 ────────────────────────────────────────────────────
 
 def test_is_configured_requires_token_and_chat_id(tmp_path):
@@ -269,6 +274,15 @@ def test_ffmpeg_opus_args():
     assert args[i + 1] == "libopus"    # Telegram 语音消息硬性要求 OGG/Opus
 
 
+def test_ffmpeg_wav_args():
+    from coderfleet.server.telegram_bridge import ffmpeg_wav_args
+
+    args = ffmpeg_wav_args("/tmp/in.oga", "/tmp/out.wav")
+    assert args[0] == "ffmpeg"
+    assert "/tmp/in.oga" in args
+    assert args[-1] == "/tmp/out.wav"
+
+
 # ── 入向：回复续聊 ──────────────────────────────────────────
 
 def _conv(id, name, project_name="myproj", updated="2026-07-15T10:00:00", last_task_id=""):
@@ -381,7 +395,7 @@ def _poll_setup(tmp_path, updates, fake=None, extra_routes=None):
         return httpx.Response(404, json={"ok": False, "description": url})
 
     ws = _configured(tmp_path)
-    bridge = _bridge(ws, handler)
+    bridge = _bridge(ws, handler, asr_transcode=_identity_transcode)
     fake = fake or FakeScheduler()
     bridge.scheduler = fake
     return bridge, sent, fake, seen
