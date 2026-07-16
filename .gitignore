@@ -63,3 +63,6 @@ server.log
 
 update.sh
 skills-lock.json
+
+# ── TokenSave MCP 缓存（本地代码图，无需入库）──────────
+.tokensave/
