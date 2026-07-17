@@ -74,19 +74,60 @@ Containers join an `internal: true` Docker network; they cannot reach the public
 - SSE (`EventSource`) is used for real-time log streaming; WebSocket for the terminal.
 - New chat sessions are always started from a per-project "+" button, so `chatNewSessionProject` is pre-set before the empty chat state renders.
 
-## Agent skills
+## North Star
 
-### Issue tracker
+<!-- map-init placeholder — filled in Step 3 (Fill). One paragraph: the
+     value function the agent judges trade-offs against when no instruction
+     covers the case. -->
 
-Issues and PRDs live as GitHub issues in `zhchxiao123/ai-workspace` (via `gh` CLI); external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+## Core mental model
 
-### Triage labels
+<!-- map-init placeholder — filled in Step 3 (Fill). The 1–2 concepts that,
+     misunderstood, cause silent misrouting. Not a feature tour. -->
 
-Canonical role names used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+## Cross-cutting invariants
 
-### Domain docs
+- **State-file mutations must be a single synchronous read-modify-write, never a separate read then a later write.** `telegram_bridge.py`'s `_advance_offset` vs `notify_task` race (fixed in `b315ea7`): a long-poll offset writeback captured at poll-start clobbered a mapping another coroutine had persisted while the poll was suspended. Correct form: load → mutate in a callback with no `await` inside → save (`_update_state`'s own pattern). Applies to every JSON store under Data storage (`tasks/`, `builds/`, `conversations/`, `telegram_state.json`). No guard script (behavioral); full detail in `docs/agents/key-files.md`'s `telegram_bridge.py` entry.
 
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+- **Don't duplicate cross-entry-point logic or constants — extract one shared helper/constant.** The per-conversation pending-task cap was independently reimplemented in `main.py` and `telegram_bridge.py` and drifted; `TASK_STATUS_LABELS` was independently hardcoded in two notifier paths and drifted too (both fixed in the same commit, `b315ea7`). Correct form: `scheduler.conversation_queue_full()` and `models.TASK_STATUS_LABELS` are the single source each entry point calls/reads — any new task-submission or notification entry point must reuse these, not recount/relabel locally.
+
+- **Never silently fall back to a stale or "most recent" default when a reference is invalid — reject or warn explicitly.** Recurred across the Telegram bridge's #46-49 and #51-53 review passes: replying to an untracked message, clicking an expired conversation button, and a deleted topic thread all previously risked silent misrouting. Correct form: return an explicit rejection/warning and log it; see the `telegram_bridge.py` entry in `docs/agents/key-files.md`.
+
+- **A list rerender must not discard an in-progress inline edit; inline-edit input handlers must `stopPropagation()` on click.** Fixed three times in the chat sidebar before the pattern was named (`d6b471e` stale highlight, `bec0523` rename-click bubbling into row select, `40e3e85` rerender destroying an in-flight rename/queue edit). Correct form: check an editing-in-progress flag before any rerender that could touch the item being edited — see `_isRenamingConversation`/`_isEditingQueueItem` in `docs/agents/key-files.md`'s `chat.js` entry.
+
+- **A model field must be fully wired end-to-end (read + write + UI) before it ships — no half-wired "write-only" placeholder fields.** `Board.project_name`, `WorkflowRun.template_version`, and the `artifact_sync` workspace-policy value were added but never connected to real logic, then had to be found and stripped in a dedicated cleanup pass (`0aca8a3`, #32). Correct form: wire the field's read path in the same change that adds it, or don't add it yet.
+
+## Iron rules
+
+<!-- map-init placeholder — no incident yet shows a process step (test
+     invocation, release step) being skipped and causing a break. Add one
+     here only after that happens once; don't promote the `uv run --with
+     pytest pytest -q` line under Key commands on speculation alone. -->
+
+## Reference map
+
+| When you're working on... | Read first |
+|---|---|
+| any file in `coderfleet/` | `docs/agents/key-files.md` — find the file's entry |
+| triaging or filing GitHub issues, applying labels | `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md` |
+| domain modeling, `CONTEXT.md`, ADRs | `docs/agents/domain.md` |
+
+## Maintaining this map
+
+The map grows only on triggers — never speculatively:
+
+1. **After an incident** — write the postmortem in `docs/incidents/`
+   (append-only is legal there), then ask "what grep would have prevented
+   this" → a new guard, or an append to an existing one.
+2. **After editing a load-bearing file** — rewrite its `docs/agents/key-files.md`
+   entry in place. Behaviour changed means the entry changes; never append
+   history.
+3. **Same mistake twice** — triage into exactly one layer:
+   machine-checkable → guard in `scripts/verify.sh`'s CHECKS;
+   cross-cutting → quad bullet above;
+   domain detail → docs/ file + a Reference-map row.
+
+Guards: `bash scripts/verify.sh` before every push (kept under 30s).
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands
