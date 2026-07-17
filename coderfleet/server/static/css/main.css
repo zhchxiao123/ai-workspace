@@ -7070,10 +7070,9 @@
     }
 
     .sidebar-footer-actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 36px;
+      display: flex;
+      flex-direction: column;
       gap: 6px;
-      align-items: center;
     }
 
     /* footer 里的入口要比主导航轻一号，避免大块高亮 */
