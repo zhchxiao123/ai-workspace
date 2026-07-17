@@ -14,6 +14,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run map guards
         run: bash scripts/verify.sh
+
+      - name: Entry freshness (advisory — never fails the build)
+        env:
+          MAP_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: bash scripts/check-entry-freshness.sh

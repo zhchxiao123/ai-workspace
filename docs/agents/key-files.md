@@ -10,10 +10,10 @@ history lives in the changelog + git, never here — enforced by
 
 Entry anatomy — write invariants, not features:
 
-- `path/to/file.py` — one-line role. Load-bearing invariants, precise to
-  the expression level (e.g. "`project_name` takes precedence over path
-  matching"): what must not break when editing this file. No feature lists —
-  the code already says what it does.
+> `path/to/file.py` — one-line role. Load-bearing invariants, precise to
+> the expression level (e.g. "`project_name` takes precedence over path
+> matching"): what must not break when editing this file. No feature lists —
+> the code already says what it does.
 
 ## Entries
 
