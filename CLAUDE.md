@@ -32,11 +32,6 @@ Run the Python test suite with `uv run --with pytest pytest -q`.
 
 ## Architecture
 
-### Two modes of operation
-
-1. **Interactive** — `coderfleet enter <project>` drops into a container shell; user runs `claude` or `codex` directly.
-2. **Scheduled** — `coderfleet server` runs the FastAPI scheduler; tasks are submitted via CLI or Web UI and executed non-interactively inside containers.
-
 ### Component map
 
 | Component | Role |
@@ -59,10 +54,6 @@ Run the Python test suite with `uv run --with pytest pytest -q`.
 - `builds/*.json`, `builds/*.log` — image build records (shared and per-project; CLI- and Web-triggered builds share this store).
 - `telegram_state.json` — Telegram bridge state: getUpdates offset, broadcast message_id → conversation mappings for reply routing, `topics` (project → forum thread id registry) + `topic_hint_sent`, plus per-context sections keyed by chat_id or `chat:thread` composite (`defaults` for /use routing, `chat_lists`/`project_lists` numbering snapshots, `pending_new` for the two-step /new flow).
 
-### Task / Conversation model
-
-A **Task** is a single `claude`/`codex` invocation inside a container. A **Conversation** is a named chain of tasks that share context via `--resume {native_session_id}`. Tasks store `project` (path) and `project_name` (config name) — both are needed because multiple projects can share the same path, and sidebar grouping uses `project_name` for disambiguation.
-
 ### Network isolation
 
 Containers join an `internal: true` Docker network; they cannot reach the public internet directly. All traffic is forced through a `coderfleet-proxy-relay` container running gost, which forwards to the host proxy (Clash/v2ray). `PROXY=off` accounts skip the relay and connect to the default bridge.
@@ -76,14 +67,12 @@ Containers join an `internal: true` Docker network; they cannot reach the public
 
 ## North Star
 
-<!-- map-init placeholder — filled in Step 3 (Fill). One paragraph: the
-     value function the agent judges trade-offs against when no instruction
-     covers the case. -->
+CoderFleet's job is to let one operator run more AI-coding-CLI work than any single account's quota allows, by pooling several accounts (Codex/Claude Code/OpenCode/Hermes/Grok/Kimi) behind strict per-account isolation — container, auth, and proxy egress never leak into each other — coordinated through a shared scheduler. When a trade-off isn't covered by an explicit rule, prefer whichever option (1) keeps account/container/proxy isolation intact over one that's more convenient to build, (2) keeps CLI and Web UI at equal capability rather than shipping a UI-only or CLI-only feature, and (3) never loses or silently corrupts task/conversation state a real user is depending on to resume work.
 
 ## Core mental model
 
-<!-- map-init placeholder — filled in Step 3 (Fill). The 1–2 concepts that,
-     misunderstood, cause silent misrouting. Not a feature tour. -->
+1. **One execution atom, two orchestration modes, one read-only overlay.** A **Task** is the only thing that actually runs — one CLI invocation inside one container, with its own state machine. **Conversation** chains Tasks serially via `--resume {native_session_id}`, for interactive/manual work; **Workflow** (`WorkflowTemplate` → `WorkflowRun`) is a declarative DAG for automation (branching, approval, retry). **Board** is a pure overlay: a card points at *either* a Conversation *or* a WorkflowRun for human progress tracking — it never executes and never holds its own task list. Full concept map and "which one do I use" table: `CONTEXT.md`.
+2. **Interactive and Scheduled are two different entry points into the same containers, not two products.** `coderfleet enter <project>` drops into a shell where the user runs `claude`/`codex` by hand — no Task record, no scheduler involvement. `coderfleet server` (the FastAPI scheduler) is what turns work into a tracked Task, whether submitted via CLI or Web UI. Code that assumes "there's a Task for this" breaks against interactive sessions, and vice versa.
 
 ## Cross-cutting invariants
 
@@ -96,6 +85,8 @@ Containers join an `internal: true` Docker network; they cannot reach the public
 - **A list rerender must not discard an in-progress inline edit; inline-edit input handlers must `stopPropagation()` on click.** Fixed three times in the chat sidebar before the pattern was named (`d6b471e` stale highlight, `bec0523` rename-click bubbling into row select, `40e3e85` rerender destroying an in-flight rename/queue edit). Correct form: check an editing-in-progress flag before any rerender that could touch the item being edited — see `_isRenamingConversation`/`_isEditingQueueItem` in `docs/agents/key-files.md`'s `chat.js` entry.
 
 - **A model field must be fully wired end-to-end (read + write + UI) before it ships — no half-wired "write-only" placeholder fields.** `Board.project_name`, `WorkflowRun.template_version`, and the `artifact_sync` workspace-policy value were added but never connected to real logic, then had to be found and stripped in a dedicated cleanup pass (`0aca8a3`, #32). Correct form: wire the field's read path in the same change that adds it, or don't add it yet.
+
+- **Every user-facing feature must ship with CLI and Web UI at equal capability — never Web-UI-only.** Violated three times: schedules/digest (#12), boards/cards (#18), and workflows (#19) all shipped through the Web UI with zero CLI commands, each requiring a dedicated "CLI/UI 对等" retrofit issue to close the gap. Correct form: when adding a new REST-backed capability, add its `coderfleet <noun> <verb>` CLI counterpart in the same change, output style matching existing `task list/logs` — not as follow-up work.
 
 ## Iron rules
 
