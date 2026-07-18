@@ -202,26 +202,10 @@ function _notifyNewApprovals(runs) {
   for (const r of runs) {
     const prev = _wfRunStatusSeen.get(r.id);
     if (r.status === 'waiting_approval' && prev !== 'waiting_approval') {
-      _wfToast(`工作流「${r.name || r.id}」等待人工批准`, r.id);
+      showToast(`⏸ 工作流「${r.name || r.id}」等待人工批准`, 'warning', () => openPipeline(r.id));
     }
     _wfRunStatusSeen.set(r.id, r.status);
   }
-}
-
-// 轻量浮层提示（点击可跳转到对应 run）。
-function _wfToast(message, runId) {
-  let host = document.getElementById('wf-toast-host');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'wf-toast-host';
-    document.body.appendChild(host);
-  }
-  const el = document.createElement('div');
-  el.className = 'wf-toast';
-  el.innerHTML = `<span>⏸ ${esc(message)}</span>`;
-  el.onclick = () => { if (runId) openPipeline(runId); el.remove(); };
-  host.appendChild(el);
-  setTimeout(() => el.remove(), 8000);
 }
 
 // 特殊状态在节点上的醒目标记（待批准 / 已跳过）。

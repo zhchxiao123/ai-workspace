@@ -1042,12 +1042,15 @@ async def start_project_container(name: str):
     from coderfleet.docker_ops import start_services
 
     service = project.service_name(acc.type)
+    _app_logger.info("收到项目 '%s' 的启动请求", name)
     await asyncio.get_event_loop().run_in_executor(None, write_compose, WORKSPACE_DIR)
     result = await asyncio.get_event_loop().run_in_executor(
         None, start_services, WORKSPACE_DIR, [service]
     )
     if result.returncode != 0:
+        _app_logger.warning("项目 '%s' 启动失败（returncode=%s）", name, result.returncode)
         raise HTTPException(status_code=500, detail=f"启动项目 '{name}' 失败")
+    _app_logger.info("项目 '%s' 启动成功", name)
     return {"ok": True}
 
 
@@ -1057,11 +1060,14 @@ async def stop_project_container(name: str):
     from coderfleet.docker_ops import stop_services
 
     service = project.service_name(acc.type)
+    _app_logger.info("收到项目 '%s' 的停止请求", name)
     result = await asyncio.get_event_loop().run_in_executor(
         None, stop_services, WORKSPACE_DIR, [service]
     )
     if result.returncode != 0:
+        _app_logger.warning("项目 '%s' 停止失败（returncode=%s）", name, result.returncode)
         raise HTTPException(status_code=500, detail=f"停止项目 '{name}' 失败")
+    _app_logger.info("项目 '%s' 停止成功", name)
     return {"ok": True}
 
 

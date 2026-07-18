@@ -57,8 +57,8 @@ function renderProjectCards(projects, tasks, accounts) {
         ? `<span class="badge running">● 运行中</span>`
         : `<span class="badge offline">○ 已停止</span>`;
     const containerToggleBtn = containerRunning
-      ? `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();stopProjectContainer('${esc(project.name)}')">停止</button>`
-      : `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();startProjectContainer('${esc(project.name)}')">启动</button>`;
+      ? `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();stopProjectContainer('${esc(project.name)}', this)">停止</button>`
+      : `<button class="btn" style="font-size:12px" onclick="event.stopPropagation();startProjectContainer('${esc(project.name)}', this)">启动</button>`;
     let latestText = '还没有任务记录';
     if (latest && latest.prompt) {
       const cleanPrompt = String(latest.prompt || '').replace(/\s+/g, ' ');
@@ -368,31 +368,41 @@ async function deleteProjectConfirm(name) {
   }
 }
 
-async function startProjectContainer(name) {
+async function startProjectContainer(name, btn) {
+  const originalLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '启动中…'; }
   try {
     const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}/container/start`, { method: 'POST' });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      alert(d.detail || '启动失败');
+      showToast(d.detail || '启动失败', 'error');
       return;
     }
+    showToast('项目已启动', 'success');
     await loadProjectsDashboard();
   } catch (e) {
-    alert(e.message);
+    showToast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
   }
 }
 
-async function stopProjectContainer(name) {
+async function stopProjectContainer(name, btn) {
+  const originalLabel = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '停止中…'; }
   try {
     const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}/container/stop`, { method: 'POST' });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      alert(d.detail || '停止失败');
+      showToast(d.detail || '停止失败', 'error');
       return;
     }
+    showToast('项目已停止', 'success');
     await loadProjectsDashboard();
   } catch (e) {
-    alert(e.message);
+    showToast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
   }
 }
 

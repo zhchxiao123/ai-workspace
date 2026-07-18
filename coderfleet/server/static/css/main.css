@@ -4853,8 +4853,8 @@
       opacity: .4;
     }
 
-    /* 工作流待审批浮层提示 */
-    #wf-toast-host {
+    /* 通用浮层提示（toast），供 workflow 待审批提示、项目启动/停止反馈等共用 */
+    #toast-host {
       position: fixed;
       right: 20px;
       bottom: 20px;
@@ -4863,10 +4863,10 @@
       flex-direction: column;
       gap: 8px;
     }
-    .wf-toast {
+    .toast {
       background: var(--surface-1, var(--bg-2));
-      border: 1px solid color-mix(in srgb, var(--yellow, #e0a53f) 55%, var(--border));
-      border-left: 3px solid var(--yellow, #e0a53f);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--text-3);
       border-radius: 8px;
       padding: 10px 14px;
       font-size: 12px;
@@ -4874,6 +4874,18 @@
       box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
       cursor: pointer;
       max-width: 320px;
+    }
+    .toast-success {
+      border-color: color-mix(in srgb, var(--green, #17824b) 55%, var(--border));
+      border-left-color: var(--green, #17824b);
+    }
+    .toast-error {
+      border-color: color-mix(in srgb, var(--red, #d33c32) 55%, var(--border));
+      border-left-color: var(--red, #d33c32);
+    }
+    .toast-warning {
+      border-color: color-mix(in srgb, var(--yellow, #e0a53f) 55%, var(--border));
+      border-left-color: var(--yellow, #e0a53f);
     }
 
     .dag-node-account {

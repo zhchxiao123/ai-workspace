@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,46 @@ def test_start_project_container_reports_failure(
     assert getattr(exc_info.value, "status_code", None) == 500
 
 
+def test_start_project_container_logs_request_and_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    monkeypatch.setattr(compose, "write_compose", lambda workspace: None)
+    monkeypatch.setattr(docker_ops, "start_services", lambda workspace, services: _FakeResult(0))
+
+    coderfleet_logger = logging.getLogger("coderfleet")
+    coderfleet_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="coderfleet")
+
+    asyncio.run(server_main.start_project_container("repo"))
+
+    assert any("repo" in r.message and "启动" in r.message for r in caplog.records)
+
+
+def test_start_project_container_logs_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    monkeypatch.setattr(compose, "write_compose", lambda workspace: None)
+    monkeypatch.setattr(docker_ops, "start_services", lambda workspace, services: _FakeResult(1))
+
+    coderfleet_logger = logging.getLogger("coderfleet")
+    coderfleet_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="coderfleet")
+
+    with pytest.raises(Exception):
+        asyncio.run(server_main.start_project_container("repo"))
+
+    assert any(
+        "repo" in r.message and "失败" in r.message and r.levelno >= logging.WARNING
+        for r in caplog.records
+    )
+
+
 def test_stop_project_container_uses_non_destructive_stop_scoped_to_one_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -107,6 +148,44 @@ def test_stop_project_container_uses_non_destructive_stop_scoped_to_one_service(
 
     assert result == {"ok": True}
     assert ("stop", ws, ["claude-project-repo"]) in calls
+
+
+def test_stop_project_container_logs_request_and_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    monkeypatch.setattr(docker_ops, "stop_services", lambda workspace, services: _FakeResult(0))
+
+    coderfleet_logger = logging.getLogger("coderfleet")
+    coderfleet_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="coderfleet")
+
+    asyncio.run(server_main.stop_project_container("repo"))
+
+    assert any("repo" in r.message and "停止" in r.message for r in caplog.records)
+
+
+def test_stop_project_container_logs_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws = _make_workspace(tmp_path)
+    _use_scheduler(monkeypatch, ws)
+
+    monkeypatch.setattr(docker_ops, "stop_services", lambda workspace, services: _FakeResult(1))
+
+    coderfleet_logger = logging.getLogger("coderfleet")
+    coderfleet_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="coderfleet")
+
+    with pytest.raises(Exception):
+        asyncio.run(server_main.stop_project_container("repo"))
+
+    assert any(
+        "repo" in r.message and "失败" in r.message and r.levelno >= logging.WARNING
+        for r in caplog.records
+    )
 
 
 def test_get_project_container_status_reflects_running_state(

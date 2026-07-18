@@ -181,6 +181,46 @@ def test_project_card_exposes_container_status_and_start_stop_controls() -> None
     assert "onclick=\"event.stopPropagation();stopProjectContainer(" in source
 
 
+def test_start_project_container_shows_in_flight_state_and_toast_feedback() -> None:
+    """issue #57：点击"启动"按钮要立即进入禁用 + "启动中…" 的中间态，请求结束后
+    用共享 toast（而非 alert()）给出成功/失败反馈，并在两种结局下都恢复按钮。"""
+    source = read_projects_js()
+
+    assert "onclick=\"event.stopPropagation();startProjectContainer('${esc(project.name)}', this)\"" in source
+
+    match = re.search(
+        r"async function startProjectContainer\(name, btn\) \{(?P<body>.*?)\n\}\n", source, re.S,
+    )
+    assert match, "startProjectContainer(name, btn) not found"
+    body = match.group("body")
+
+    assert "btn.disabled = true" in body
+    assert "启动中…" in body
+    assert "showToast(" in body
+    assert "alert(" not in body
+    assert "btn.disabled = false" in body
+
+
+def test_stop_project_container_shows_in_flight_state_and_toast_feedback() -> None:
+    """issue #58：点击"停止"按钮要立即进入禁用 + "停止中…" 的中间态，请求结束后
+    用共享 toast（而非 alert()）给出成功/失败反馈，并在两种结局下都恢复按钮。"""
+    source = read_projects_js()
+
+    assert "onclick=\"event.stopPropagation();stopProjectContainer('${esc(project.name)}', this)\"" in source
+
+    match = re.search(
+        r"async function stopProjectContainer\(name, btn\) \{(?P<body>.*?)\n\}\n", source, re.S,
+    )
+    assert match, "stopProjectContainer(name, btn) not found"
+    body = match.group("body")
+
+    assert "btn.disabled = true" in body
+    assert "停止中…" in body
+    assert "showToast(" in body
+    assert "alert(" not in body
+    assert "btn.disabled = false" in body
+
+
 def test_saving_project_form_does_not_auto_start_container() -> None:
     source = read_projects_js()
 
@@ -1059,6 +1099,26 @@ def test_open_pipeline_does_not_refetch_full_task_list() -> None:
     assert "api/workflow-runs/${id}" in body
     assert "renderPipelineList(pipelinesCache, workflowTasksCache)" in body
     assert "_renderActivePipeline(pipeline, pipeline.tasks" in body
+
+
+def test_shared_toast_helper_is_promoted_to_utils_and_reused_by_workflow_toasts() -> None:
+    """issue #56：项目启动/停止按钮（#57/#58）要复用 workflow 场景已有的浮层提示，
+    而不是各自重新实现一份。把 workflows.js 里的 _wfToast 提升为 utils.js 的通用
+    showToast(message, type)，workflows.js 改为调用共享实现，不再本地定义。"""
+    utils_source = (STATIC_DIR / "js" / "utils.js").read_text(encoding="utf-8")
+    workflows_source = (STATIC_DIR / "js" / "workflows.js").read_text(encoding="utf-8")
+
+    assert "function showToast(message, type" in utils_source
+    assert "toast-host" in utils_source
+
+    assert "function _wfToast" not in workflows_source
+    assert "showToast(" in workflows_source
+
+    ui_source = read_ui_source()
+    assert "#toast-host" in ui_source
+    assert ".toast-success" in ui_source
+    assert ".toast-error" in ui_source
+    assert ".wf-toast" not in ui_source
 
 
 def test_open_template_renders_before_projects_and_accounts_resolve() -> None:

@@ -356,6 +356,27 @@ function stripAnsi(s) {
   return String(s ?? '').replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '');
 }
 
+// ── 共享浮层提示（toast） ─────────────────────────────────
+/**
+ * 通用浮层提示。type: 'info' | 'success' | 'error' | 'warning'。
+ * onClick 可选：提供时点击提示会执行该回调（例如跳转到相关记录）。
+ */
+function showToast(message, type = 'info', onClick) {
+  let host = document.getElementById('toast-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toast-host';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.innerHTML = `<span>${esc(message)}</span>`;
+  el.onclick = () => { if (onClick) onClick(); el.remove(); };
+  host.appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+  return el;
+}
+
 /**
  * 移动友好相对时间（与桌面 fmtTime 风格略有差异）
  */
