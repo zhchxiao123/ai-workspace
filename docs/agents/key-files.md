@@ -45,5 +45,11 @@ Entry anatomy — write invariants, not features:
      - CLAUDE.md — the map itself, not indexed in its own on-demand layer.
      - README.md — user-facing project readme, no load-bearing invariants
        (churn is wording/badges, not behavior).
-     - .gitignore, .rtk/filters.toml — tooling config, no runtime invariants. -->
+     - .gitignore, .rtk/filters.toml — tooling config, no runtime invariants.
+     - scripts/verify.sh, scripts/check-*.sh, scripts/map-stop-hook.sh — the
+       guard scripts are the enforced layer itself; each documents its own
+       invariants in its header comment rather than in this index.
+     - .github/workflows/verify.yml — CI wiring only, calls verify.sh.
+     - coderfleet/server/static/css/main.css — styling, no runtime
+       invariants. -->
 
