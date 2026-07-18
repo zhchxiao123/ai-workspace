@@ -113,10 +113,12 @@ function applySidebarCollapsed(collapsed) {
   const layout = document.querySelector('.layout');
   const btn = document.getElementById('sidebar-toggle');
   if (!layout || !btn) return;
+  const label = document.getElementById('sidebar-toggle-label');
   layout.classList.toggle('sidebar-collapsed', collapsed);
   btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
   btn.setAttribute('aria-label', collapsed ? '展开侧边栏' : '折叠侧边栏');
   btn.setAttribute('title', collapsed ? '展开侧边栏' : '折叠侧边栏');
+  if (label) label.textContent = collapsed ? '展开侧边栏' : '折叠侧边栏';
 }
 
 function initSidebarState() {
