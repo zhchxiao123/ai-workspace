@@ -5,7 +5,7 @@
 # The re-stop after the agent responds (stop_hook_active) always passes —
 # no nag loop.
 #
-# Wired in this repo's committed .claude/settings.json:
+# Wire in the repo's committed .claude/settings.json:
 #   {"hooks": {"Stop": [{"hooks": [{"type": "command",
 #     "command": "bash scripts/map-stop-hook.sh"}]}]}}
 

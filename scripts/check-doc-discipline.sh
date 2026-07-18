@@ -19,13 +19,17 @@
 #   MAP_ROOT              repo root         (default: git toplevel)
 #   MAP_CLAUDE_MAX_BYTES  resident cap      (default: 40000)
 #   MAP_REFERENCE_DOCS    space-separated current-state docs
-#                         (default: "docs/agents/key-files.md")
+#                         (default: "docs/architecture/KEY_FILES.md docs/TESTING.md")
 
 set -uo pipefail
 
+# Layout params: env → scripts/.map.conf → the built-in defaults below.
+_MAP_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$_MAP_DIR/.map.conf" ] && . "$_MAP_DIR/.map.conf"
+
 ROOT="${MAP_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 MAX_BYTES="${MAP_CLAUDE_MAX_BYTES:-40000}"
-DOCS="${MAP_REFERENCE_DOCS:-docs/agents/key-files.md}"
+DOCS="${MAP_REFERENCE_DOCS:-docs/architecture/KEY_FILES.md docs/TESTING.md}"
 
 fail=0
 

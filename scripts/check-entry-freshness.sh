@@ -22,17 +22,22 @@
 #   otherwise                     → two sets: uncommitted; the last commit
 #
 # Env:
-#   MAP_KEY_FILES                index (default: docs/agents/key-files.md)
+#   MAP_KEY_FILES                index (default: docs/architecture/KEY_FILES.md)
 #   MAP_SOURCE_GLOBS             space-separated source prefixes for signal 2
-#                                (default: "coderfleet/")
-#   MAP_BASE_REF                 e.g. origin/main (CI)
+#                                (default: "src/")
+#   MAP_BASE_REF                 e.g. origin/master (CI)
 #   MAP_ENTRY_FRESHNESS_STRICT   1 → exit 1 when signal 1 fires
 
 set -uo pipefail
+
+# Layout params: env → scripts/.map.conf → the built-in defaults below.
+_MAP_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$_MAP_DIR/.map.conf" ] && . "$_MAP_DIR/.map.conf"
+
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
-KEY="${MAP_KEY_FILES:-docs/agents/key-files.md}"
-GLOBS="${MAP_SOURCE_GLOBS:-coderfleet/}"
+KEY="${MAP_KEY_FILES:-docs/architecture/KEY_FILES.md}"
+GLOBS="${MAP_SOURCE_GLOBS:-src/}"
 [ -f "$KEY" ] || { echo "OK: no key-files index yet"; exit 0; }
 
 indexed=$(grep -oE '^- `[^`]+`' "$KEY" | sed 's/^- `//; s/`$//' | sort -u)

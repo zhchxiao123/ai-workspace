@@ -11,11 +11,17 @@
 # violations fail immediately).
 
 set -uo pipefail
+
+# Layout params: env → scripts/.map.conf → the built-in defaults below.
+_MAP_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$_MAP_DIR/.map.conf" ] && . "$_MAP_DIR/.map.conf"
+
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 CHECKS=(
   "scripts/check-doc-discipline.sh"
   "scripts/check-map-territory.sh"
+  "scripts/check-entry-freshness.sh"
 )
 
 if [ "${#CHECKS[@]}" -eq 0 ]; then
@@ -30,7 +36,11 @@ fi
 
 fail=0
 for c in "${CHECKS[@]}"; do
-  if ! out=$(bash "$c" 2>&1); then
+  if out=$(bash "$c" 2>&1); then
+    # soft warns must survive a green run
+    warns=$(printf '%s\n' "$out" | grep -A 20 '^WARN' || true)
+    [ -n "$warns" ] && printf '%s\n' "$warns" | sed "s|^|[$c] |" >&2
+  else
     fail=1
     echo "FAIL: $c" >&2
     printf '%s\n' "$out" | sed 's/^/  /' >&2

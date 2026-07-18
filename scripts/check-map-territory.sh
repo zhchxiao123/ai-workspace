@@ -7,6 +7,11 @@
 # Extend the prefix list (docs|skills) to match your repo's layout.
 
 set -uo pipefail
+
+# Layout params: env → scripts/.map.conf → the built-in defaults below.
+_MAP_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$_MAP_DIR/.map.conf" ] && . "$_MAP_DIR/.map.conf"
+
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 [ -f CLAUDE.md ] || { echo "OK: no CLAUDE.md yet"; exit 0; }
