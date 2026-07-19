@@ -1,7 +1,7 @@
 # ============================================================
 #  CoderFleet — 统一工作容器镜像
-#  包含：Python 3.12 / Node.js 20 / Rust / Java 21 + Maven
-#        Codex CLI / Claude Code / OpenCode / Hermes / Grok
+#  包含：Python 3.12 / Node.js 22 / Rust / Java 21 + Maven
+#        Codex CLI / Claude Code / OpenCode / Hermes / Grok / Kimi / Pi
 #        FFmpeg / LibreOffice (headless) / Playwright + Chromium
 #  平台：linux/amd64 + linux/arm64（多平台镜像）
 # ============================================================
@@ -39,8 +39,9 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y gh \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 20 (via NodeSource) ───────────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# ── Node.js 22 (via NodeSource) ───────────────────────────
+# pi (@earendil-works/pi-coding-agent) requires node>=22.19.0; bumped from 20.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -116,8 +117,9 @@ RUN set -eux; \
     rm -rf "$grok_home" /tmp/grok-install.sh
 
 # ── Kimi Code CLI ────────────────────────────────────────
-# Use the official native binary installer instead of npm because this image
-# currently carries Node.js 20 while @moonshot-ai/kimi-code requires newer Node.
+# Use the official native binary installer instead of npm — kept even after the
+# Node 20→22 bump made an npm install viable, to avoid an unnecessary churn on an
+# already-working install path. Revisit only if the standalone installer breaks.
 ARG KIMI_CODE_VERSION=0.11.0
 RUN set -eux; \
     curl -fsSL https://code.kimi.com/kimi-code/install.sh -o /tmp/kimi-code-install.sh; \
@@ -129,6 +131,11 @@ RUN set -eux; \
     chmod -R a+rx /opt/kimi-code; \
     kimi --version; \
     rm -f /tmp/kimi-code-install.sh
+
+# ── Pi Agent CLI ───────────────────────────────────────────
+# --ignore-scripts per pi's own install docs (no install-time scripts needed).
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent \
+    && pi --version
 
 # ── RTK (Rust Token Killer) ───────────────────────────────
 # CLI proxy that compresses common dev-command output before it reaches an

@@ -125,7 +125,7 @@ coderfleet build
 
 - Ubuntu 24.04
 - Python 3.12（含 uv / ruff / black / mypy）
-- Node.js 20
+- Node.js 22
 - Rust 1.93.0
 - Codex CLI（`@openai/codex`）
 - Claude Code（`@anthropic-ai/claude-code`）
@@ -133,6 +133,7 @@ coderfleet build
 - Hermes Agent（安装在 `/opt/hermes-venv`）
 - Grok Build（`grok` CLI，需 `XAI_API_KEY`）
 - Kimi Code（`kimi` CLI）
+- Pi Agent（`@earendil-works/pi-coding-agent`）
 
 ### 3. 添加账号与项目
 

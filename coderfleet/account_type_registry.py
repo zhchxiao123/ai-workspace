@@ -132,6 +132,21 @@ def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images, mod
     )
 
 
+def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+    p  = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
+    ep = shlex.quote(p)
+    session   = f" --session {shlex.quote(session_id)}" if session_id else ""
+    model_arg = f" --model {shlex.quote(model)}" if model else ""
+    # pi has no tool-permission confirmation system (its own docs: "No permission
+    # popups. Run in a container.") — --approve/--no-approve only gates trusting
+    # project-local .pi/ config, not tool execution.
+    approve = " --approve" if auto else " --no-approve"
+    return (
+        f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
+        f"pi --mode json{session}{model_arg}{approve} {ep}"
+    )
+
+
 # ── per-type session ID extractors ────────────────────────────
 
 def _extract_claude(text):
@@ -226,6 +241,22 @@ def _extract_kimi(text):
                 return str(d["session_id"])
     m = re.search(r"To resume this session:\s+kimi\s+-r\s+(\S+)", text)
     return m.group(1) if m else ""
+
+
+def _extract_pi(text):
+    # `--mode json` always writes the session header as its first JSON line:
+    # {"type":"session","version":3,"id":"...","timestamp":"...","cwd":"..."}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s.startswith("{"):
+            continue
+        try:
+            d = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        if d.get("type") == "session" and d.get("id"):
+            return str(d["id"])
+    return ""
 
 
 # ── AccountTypeSpec ───────────────────────────────────────────
@@ -345,6 +376,25 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="#101820", badge_color="#7dd3fc",
         build_inner_cmd=_build_kimi,
         extract_session_id=_extract_kimi,
+    ),
+    "pi": AccountTypeSpec(
+        id="pi", label="Pi Agent",
+        auth_dir="/home/byclaw/.pi/agent",
+        login_cli="pi", login_args=[],
+        supports_env_auth=True,
+        env_vars={
+            "PI_SKIP_VERSION_CHECK": "1",
+            "PI_TELEMETRY":          "0",
+        },
+        env_hint=(
+            "请在 env 文件中配置 provider API Key，pi 原生支持 20+ providers\n"
+            "示例：ANTHROPIC_API_KEY=sk-ant-...  或  OPENAI_API_KEY=sk-...\n"
+            "登录（含订阅制 OAuth）没有无头命令，请用 coderfleet login 进入交互式\n"
+            "pi 会话后手动执行 /login"
+        ),
+        badge_bg="#1a2e1a", badge_color="#7ee787",
+        build_inner_cmd=_build_pi,
+        extract_session_id=_extract_pi,
     ),
 }
 
