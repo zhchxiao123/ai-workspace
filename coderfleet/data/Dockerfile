@@ -46,8 +46,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 验证 Node 版本并安装常用全局包
+# Pin npm below the optionalDependencies regression window (npm/cli #8464,
+# #8628: npm >=11.5.0 can silently skip installing a package's
+# optionalDependencies — e.g. @anthropic-ai/claude-code's native binary —
+# while still exiting 0). Don't float this back to npm@latest without first
+# checking those issues are closed upstream.
 RUN node --version && npm --version \
-    && npm install -g npm@latest
+    && npm install -g npm@11.4.2
 
 # ── Python 3.12 (via deadsnakes PPA) ─────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
