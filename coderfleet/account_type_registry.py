@@ -133,8 +133,12 @@ def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images, mod
 
 
 def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
-    p  = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
-    ep = shlex.quote(p)
+    ep = shlex.quote(prompt)
+    # pi's real attachment mechanism (docs/usage.md "File Arguments"): `@path`
+    # positional args before the message, e.g. `pi @screenshot.png "..."`. For
+    # images this attaches actual multimodal bytes, not just a path reference
+    # — unlike claude/grok/kimi's builders, don't fold these into prompt text.
+    file_args = "".join(f" {shlex.quote('@' + i)}" for i in images)
     session   = f" --session {shlex.quote(session_id)}" if session_id else ""
     model_arg = f" --model {shlex.quote(model)}" if model else ""
     # pi has no tool-permission confirmation system (its own docs: "No permission
@@ -143,7 +147,7 @@ def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model
     approve = " --approve" if auto else " --no-approve"
     return (
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-        f"pi --mode json{session}{model_arg}{approve} {ep}"
+        f"pi --mode json{session}{model_arg}{approve}{file_args} {ep}"
     )
 
 

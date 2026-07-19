@@ -53,10 +53,18 @@ def test_build_pi_manual_maps_to_no_approve_flag() -> None:
     assert "--no-approve" in cmd
 
 
-def test_build_pi_appends_image_paths_as_text_hint() -> None:
+def test_build_pi_attaches_images_via_at_file_syntax() -> None:
+    # pi's real attachment mechanism (docs/usage.md "File Arguments"):
+    # `pi @screenshot.png "prompt"` — not a text hint appended to the prompt.
     cmd = _build_pi("hi", False, "t1", "marker1", "t1", "", ["/tmp/a.png"], "")
-    assert "Attached images" in cmd
-    assert "/tmp/a.png" in cmd
+    assert "@/tmp/a.png" in cmd
+
+
+def test_build_pi_attaches_multiple_images_before_the_prompt() -> None:
+    cmd = _build_pi("hi", False, "t1", "marker1", "t1", "", ["/tmp/a.png", "/tmp/b.png"], "")
+    assert "@/tmp/a.png" in cmd
+    assert "@/tmp/b.png" in cmd
+    assert cmd.index("@/tmp/a.png") < cmd.index("@/tmp/b.png") < cmd.rindex("hi")
 
 
 def test_build_pi_includes_task_marker_and_env() -> None:
