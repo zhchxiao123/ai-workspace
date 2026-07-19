@@ -22,6 +22,7 @@ CHECKS=(
   "scripts/check-doc-discipline.sh"
   "scripts/check-map-territory.sh"
   "scripts/check-entry-freshness.sh"
+  "scripts/check-docker-npm-pin.sh"
 )
 
 if [ "${#CHECKS[@]}" -eq 0 ]; then
