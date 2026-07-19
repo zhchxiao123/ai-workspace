@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from coderfleet.server.log_parser import extract_task_output
+import json
+
+from coderfleet.server.log_parser import extract_task_output, parse_log
 
 
 def test_extract_kimi_stream_json_output() -> None:
@@ -54,3 +56,70 @@ def test_extract_grok_output_ignores_thought_tokens() -> None:
     ])
 
     assert extract_task_output(log, "grok") == "我先从仓库结构入手"
+
+
+def _pi_message(role, content, usage=None):
+    msg = {"role": role, "content": content}
+    if usage is not None:
+        msg["usage"] = usage
+    return msg
+
+
+def test_extract_pi_final_answer_ignores_thinking_blocks() -> None:
+    # Shape taken from a real `pi --mode json` transcript.
+    user_msg = _pi_message("user", [{"type": "text", "text": "hello"}])
+    assistant_msg = _pi_message(
+        "assistant",
+        [
+            {"type": "thinking", "thinking": "The user just said \"hello\". No tool calls needed."},
+            {"type": "text", "text": "Hello! \U0001f44b How can I help you today?"},
+        ],
+        usage={
+            "input": 781, "output": 59, "cacheRead": 0, "cacheWrite": 0,
+            "totalTokens": 840,
+            "cost": {"input": 0.01, "output": 0.02, "cacheRead": 0, "cacheWrite": 0, "total": 0.03},
+        },
+    )
+    log = "\n".join([
+        json.dumps({"type": "session", "version": 3, "id": "019f7b78-22a3-78c8-a20d-0acb8d31edc1", "timestamp": "2026-07-19T17:41:38.595Z", "cwd": "/workspace"}),
+        json.dumps({"type": "agent_start"}),
+        json.dumps({"type": "turn_start"}),
+        json.dumps({"type": "message_start", "message": user_msg}),
+        json.dumps({"type": "message_end", "message": user_msg}),
+        json.dumps({"type": "message_end", "message": assistant_msg}),
+        json.dumps({"type": "turn_end", "message": assistant_msg}),
+        json.dumps({"type": "agent_end", "messages": [user_msg, assistant_msg], "willRetry": False}),
+        json.dumps({"type": "agent_settled"}),
+    ])
+
+    assert extract_task_output(log, "pi") == "Hello! \U0001f44b How can I help you today?"
+
+
+def test_extract_pi_token_usage_and_cost_from_message_end() -> None:
+    assistant_msg = _pi_message(
+        "assistant",
+        [{"type": "text", "text": "Done."}],
+        usage={
+            "input": 100, "output": 20, "cacheRead": 5, "cacheWrite": 0,
+            "totalTokens": 120,
+            "cost": {"input": 0.001, "output": 0.002, "cacheRead": 0, "cacheWrite": 0, "total": 0.003},
+        },
+    )
+    log = "\n".join([
+        json.dumps({"type": "message_end", "message": assistant_msg}),
+        json.dumps({"type": "agent_end", "messages": [assistant_msg], "willRetry": False}),
+    ])
+
+    result = parse_log(log, "pi")
+    assert result.text == "Done."
+    assert result.tokens_input == 100
+    assert result.tokens_output == 20
+    assert result.cost_usd == 0.003
+
+
+def test_extract_pi_falls_back_to_last_assistant_message_when_no_agent_end() -> None:
+    # A killed/truncated task may never emit agent_end.
+    assistant_msg = _pi_message("assistant", [{"type": "text", "text": "partial answer"}])
+    log = json.dumps({"type": "message_end", "message": assistant_msg})
+
+    assert extract_task_output(log, "pi") == "partial answer"

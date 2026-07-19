@@ -385,6 +385,19 @@ class ChatLogRenderer {
       case 'tool_use': return this._opencodeToolUse(d);
       case 'text': return this._opencodeText(d);
       case 'step_finish': return this._opencodeStepFinish(d);
+      // Pi Agent
+      case 'session': return this._piSession(d);
+      case 'agent_start': return; // 太噪，静默
+      case 'turn_start': return;
+      case 'turn_end': return;
+      case 'message_start': return;
+      case 'message_update': return; // 只在 message_end 渲染完整内容，不逐 delta 渲染
+      case 'message_end': return this._piMessageEnd(d);
+      case 'tool_execution_start': return this._piToolStart(d);
+      case 'tool_execution_update': return; // 太噪，静默；完成时 tool_execution_end 给出完整结果
+      case 'tool_execution_end': return this._piToolEnd(d);
+      case 'agent_end': return this._piAgentEnd(d);
+      case 'agent_settled': return;
       default:
         return this._rawLine(JSON.stringify(d));
     }
@@ -611,6 +624,64 @@ class ChatLogRenderer {
         this._appendNode(el);
       }
     }
+  }
+
+  // ── Pi Agent ──────────────────────────────────────────────
+  _piSession(d) {
+    const sid = d.id ? String(d.id).slice(0, 8) : '';
+    this._pill('Pi 会话开始', sid ? `#${sid}` : '');
+  }
+
+  _piMessageEnd(d) {
+    const msg = d.message || {};
+    if (msg.role !== 'assistant') return;
+    for (const b of (msg.content || [])) {
+      if (b.type === 'thinking' && b.thinking) this._thinking(b.thinking);
+      else if (b.type === 'text' && b.text?.trim()) this._bubble(b.text, msg.model);
+    }
+    this._piUsage(msg.usage);
+  }
+
+  _piToolStart(d) {
+    this._toolUse({
+      id: d.toolCallId || ('pi-' + Math.random().toString(36).slice(2, 8)),
+      name: d.toolName || 'tool',
+      input: d.args || {},
+    });
+  }
+
+  _piToolEnd(d) {
+    const content = d.result?.content;
+    const text = Array.isArray(content)
+      ? content.map(c => c.text || '').join('\n')
+      : (typeof d.result === 'string' ? d.result : '');
+    this._fillTool(d.toolCallId, text, !!d.isError);
+  }
+
+  _piUsage(usage) {
+    if (!usage) return;
+    const cost = usage.cost || {};
+    const items = [];
+    if (usage.input != null) items.push(`输入 <span>${usage.input.toLocaleString()}</span> tok`);
+    if (usage.output != null) items.push(`输出 <span>${usage.output.toLocaleString()}</span> tok`);
+    if (usage.cacheRead) items.push(`缓存读取 <span>${usage.cacheRead.toLocaleString()}</span> tok`);
+    if (usage.cacheWrite) items.push(`缓存写入 <span>${usage.cacheWrite.toLocaleString()}</span> tok`);
+    if (cost.total) items.push(`费用 <span>$${Number(cost.total).toFixed(4)}</span>`);
+
+    if (items.length) {
+      const el = document.createElement('div');
+      el.className = 'chat-usage timeline-node is-muted';
+      el.innerHTML = items.map(i => `<div class="usage-item">${i}</div>`).join('');
+      this._appendNode(el);
+    }
+  }
+
+  _piAgentEnd(d) {
+    // willRetry === true means pi is about to retry the turn — not actually
+    // done yet, a further agent_end will follow. Leave the footer to that one
+    // (or to CoderFleet's own wrapper-appended `finished:` line as fallback).
+    if (d.willRetry) return;
+    if (!this._footerRendered) this._renderFooter('done');
   }
 
   // ── OpenCode ──────────────────────────────────────────────

@@ -36,7 +36,7 @@ def parse_log(log_text: str, acc_type: str = "claude") -> TaskOutputData:
     """
     result = TaskOutputData()
 
-    if acc_type in ("claude", "codex", "opencode", "grok", "kimi"):
+    if acc_type in ("claude", "codex", "opencode", "grok", "kimi", "pi"):
         _parse_jsonl_log(log_text, result, acc_type)
 
     # Fallback / supplement: plain-text extraction when JSONL gave no text
@@ -77,6 +77,8 @@ def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> No
             _parse_grok_line(d, t, text_chunks, result)
         elif acc_type == "kimi":
             _parse_kimi_line(d, text_chunks)
+        elif acc_type == "pi":
+            _parse_pi_line(d, t, text_chunks, result)
 
     if not result.text and text_chunks:
         result.text = "".join(text_chunks).strip()
@@ -159,6 +161,31 @@ def _parse_grok_line(
         if isinstance(usage, dict):
             result.tokens_input = int(usage.get("input_tokens", 0))
             result.tokens_output = int(usage.get("output_tokens", 0))
+
+
+def _parse_pi_line(
+    d: dict, t: str, chunks: list[str], result: TaskOutputData
+) -> None:
+    # `--mode json` emits one `message_end` per completed message; the final
+    # answer is whichever assistant message_end(s) land last (accumulated the
+    # same way opencode/kimi are, since pi has no single dedicated "result"
+    # event like claude's `type=="result"`). `agent_end` re-lists the same
+    # messages, so it's intentionally not parsed here to avoid double-counting.
+    if t != "message_end":
+        return
+    msg = d.get("message", {})
+    if msg.get("role") != "assistant":
+        return
+    for block in msg.get("content", []):
+        if isinstance(block, dict) and block.get("type") == "text":
+            chunks.append(block.get("text", ""))
+    usage = msg.get("usage", {})
+    if isinstance(usage, dict) and usage:
+        result.tokens_input = max(result.tokens_input, int(usage.get("input", 0)))
+        result.tokens_output += int(usage.get("output", 0))
+        cost = usage.get("cost", {})
+        if isinstance(cost, dict) and cost.get("total"):
+            result.cost_usd = float(cost["total"])
 
 
 def _parse_kimi_line(d: dict, chunks: list[str]) -> None:
