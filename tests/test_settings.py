@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from coderfleet.config import load_config, set_config
+import pytest
+
+from coderfleet.config import container_timezone, load_config, set_config
 from coderfleet.server.settings_schema import (
     SETTINGS_GROUPS, all_fields, field_for, mask_secret,
 )
@@ -29,6 +31,18 @@ def test_field_for_is_case_insensitive():
 def test_provider_and_platform_have_options():
     assert field_for("SYSTEM_LLM_PROVIDER").options == ("anthropic", "openai")
     assert field_for("BUILD_PLATFORM").options == ("linux/arm64", "linux/amd64")
+
+
+def test_container_timezone_setting_and_validation():
+    field = field_for("CONTAINER_TIMEZONE")
+    assert field is not None and field.requires_apply
+    assert container_timezone({}) == "Asia/Shanghai"
+    assert container_timezone({"CONTAINER_TIMEZONE": "UTC"}) == "UTC"
+
+
+def test_invalid_container_timezone_is_rejected():
+    with pytest.raises(ValueError, match="无效的容器时区"):
+        container_timezone({"CONTAINER_TIMEZONE": "Mars/Olympus_Mons"})
 
 
 def test_apply_flags_split_live_vs_infra():

@@ -220,3 +220,50 @@ def _parse_text_fallback(log_text: str, result: TaskOutputData) -> None:
     content = _strip_ansi(content)
     # Cap at 8 000 chars to avoid bloating subsequent prompts
     result.text = content[:8000]
+
+
+# ── light-mode log stripping (for the Web UI's history viewer) ────────────────
+
+# JSON fields that carry raw per-event metadata Claude Code's stream-json format
+# duplicates alongside the actual displayed content (e.g. `tool_use_result` mirrors
+# the same tool output already present in `message.content[].content`, but as full
+# unprocessed structured data). renderer.js never reads these — on real logs they
+# routinely account for >95% of the file's bytes, so stripping them before sending
+# a log to the Web UI cuts network + JSON.parse cost dramatically without touching
+# anything actually rendered. Add a field here only after confirming (grep the whole
+# `server/static/js/` tree) that no renderer path reads it.
+_UNUSED_RENDER_FIELDS = ("tool_use_result",)
+
+
+def strip_unused_render_fields(log_text: str) -> str:
+    """
+    Drop `_UNUSED_RENDER_FIELDS` from each JSON-object line of a task log.
+
+    Best-effort and line-local: any line that isn't a single JSON object, or that
+    fails to parse, is passed through unchanged. This must never be used for the
+    CLI's raw `task logs` output or anything a user expects byte-for-byte —
+    only for the Web UI's display-only fetches (chat/log-modal/workflow viewers).
+    """
+    if not any(f'"{f}"' in log_text for f in _UNUSED_RENDER_FIELDS):
+        return log_text
+
+    out_lines = []
+    for line in log_text.split("\n"):
+        if not any(f'"{f}"' in line for f in _UNUSED_RENDER_FIELDS):
+            out_lines.append(line)
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            out_lines.append(line)
+            continue
+        if not isinstance(d, dict):
+            out_lines.append(line)
+            continue
+        changed = False
+        for field in _UNUSED_RENDER_FIELDS:
+            if field in d:
+                del d[field]
+                changed = True
+        out_lines.append(json.dumps(d, ensure_ascii=False) if changed else line)
+    return "\n".join(out_lines)

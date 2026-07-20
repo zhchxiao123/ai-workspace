@@ -3,9 +3,24 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 DEFAULT_WORKSPACE = Path.home() / ".coderfleet"
+DEFAULT_CONTAINER_TIMEZONE = "Asia/Shanghai"
+
+
+def container_timezone(config: dict[str, str]) -> str:
+    """Return a validated IANA timezone for containers."""
+    value = config.get("CONTAINER_TIMEZONE", DEFAULT_CONTAINER_TIMEZONE).strip()
+    timezone = value or DEFAULT_CONTAINER_TIMEZONE
+    try:
+        ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError) as err:
+        raise ValueError(
+            f"无效的容器时区 {timezone!r}，请使用 IANA 时区名称（如 Asia/Shanghai 或 UTC）"
+        ) from err
+    return timezone
 
 
 def get_workspace() -> Path:

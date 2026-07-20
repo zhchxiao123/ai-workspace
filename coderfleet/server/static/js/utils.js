@@ -155,7 +155,10 @@ function formatToolInput(name, input) {
   if (name === 'Edit') {
     return `file: ${input.file_path || ''}\n- old: ${(input.old_string || '').slice(0, 120)}\n+ new: ${(input.new_string || '').slice(0, 120)}`;
   }
-  try { return JSON.stringify(input, null, 2); } catch { return String(input); }
+  try {
+    const s = JSON.stringify(input, null, 2);
+    return s.length > 2000 ? s.slice(0, 2000) + '\n…' : s;
+  } catch { return String(input); }
 }
 
 // ── 安全 HTML 转义 ─────────────────────────────────────────

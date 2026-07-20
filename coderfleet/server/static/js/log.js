@@ -22,7 +22,7 @@ async function openLogModal(taskId) {
   try {
     const [task, logText] = await Promise.all([
       fetch(`${API}/api/tasks/${taskId}`).then(r => r.json()),
-      fetch(`${API}/api/tasks/${taskId}/logs`).then(r => r.text()).catch(() => ''),
+      fetch(`${API}/api/tasks/${taskId}/logs?light=1`).then(r => r.text()).catch(() => ''),
     ]);
     currentTaskData = task;
     updateLogSummary(task);

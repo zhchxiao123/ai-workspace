@@ -10,7 +10,7 @@ from typing import Optional
 
 import click
 
-from coderfleet.config import ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
+from coderfleet.config import container_timezone, ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
 from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types, env_auth_type_ids
 from coderfleet.ports import allocate_ide_port
 
@@ -629,6 +629,11 @@ def cmd_config_set(ctx: click.Context, key: str, value: str) -> None:
     normalized = key.upper()
     if normalized == "PORT":
         normalized = "CODERFLEET_PORT"
+    if normalized == "CONTAINER_TIMEZONE":
+        try:
+            value = container_timezone({normalized: value})
+        except ValueError as err:
+            raise click.ClickException(str(err)) from err
     set_config(ws, normalized, value)
     click.secho(f"✓ {normalized}={value}  已写入 config.conf", fg="green")
     if normalized == "CODERFLEET_PORT":

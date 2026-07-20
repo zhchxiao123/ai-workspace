@@ -48,6 +48,7 @@ def _write_config(ws: Path, values: dict[str, str]) -> None:
         f"IMAGE_NAME={values['IMAGE_NAME']}",
         f"IMAGE_TAG={values['IMAGE_TAG']}",
         f"BUILD_PLATFORM={values['BUILD_PLATFORM']}",
+        "CONTAINER_TIMEZONE=Asia/Shanghai",
         "",
         "# ── Docker socket（可选，高权限）──────────────────────────",
         "# off 关闭；auto 自动识别 Colima / Docker Desktop / Linux / rootless Docker",

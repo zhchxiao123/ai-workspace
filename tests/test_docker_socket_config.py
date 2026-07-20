@@ -69,6 +69,29 @@ def test_generate_compose_mounts_configured_docker_socket(tmp_path: Path) -> Non
     assert service["environment"]["CODERFLEET_HOST_WORKSPACE"] == str(project_path)
 
 
+def test_generate_compose_injects_configured_container_timezone(tmp_path: Path) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    _write_minimal_workspace(tmp_path, project_path)
+    (tmp_path / "config.conf").write_text(
+        "CONTAINER_TIMEZONE=America/New_York\n", encoding="utf-8"
+    )
+
+    compose = generate_compose(tmp_path)
+
+    assert compose["services"]["codex-project-repo"]["environment"]["TZ"] == "America/New_York"
+
+
+def test_generate_compose_defaults_container_timezone(tmp_path: Path) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    _write_minimal_workspace(tmp_path, project_path)
+
+    compose = generate_compose(tmp_path)
+
+    assert compose["services"]["codex-project-repo"]["environment"]["TZ"] == "Asia/Shanghai"
+
+
 def test_project_docker_socket_off_overrides_global_socket(tmp_path: Path) -> None:
     project_path = tmp_path / "repo"
     project_path.mkdir()

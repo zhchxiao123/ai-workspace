@@ -933,6 +933,29 @@ class ChatLogRenderer {
     };
   }
 
+  // 单条工具输出直接塞进 textContent 的字符上限：少数工具（Bash 里 cat 大文件、Read 整份
+  // 长文件等）会把几十上百 KB 原样写进 tool_result，历史回放时这些内容大多数还在折叠区里
+  // 没人看，却仍然要整体构建成 DOM——手机端一次打开会话要拼好几个这样的任务，主线程明显卡顿。
+  // 超限后先截断显示，点「显示完整输出」再补上剩余部分。
+  static TOOL_OUTPUT_TRUNCATE_LEN = 8000;
+
+  _setToolOutputText(el, out, ok) {
+    if (!out) { el.textContent = ok ? '(无输出)' : '(执行失败)'; return; }
+    if (out.length <= ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN) { el.textContent = out; return; }
+
+    el.textContent = out.slice(0, ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN);
+    const remaining = out.length - ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN;
+    const more = document.createElement('button');
+    more.className = 'tool-output-more';
+    more.textContent = `… 显示完整输出（还有 ${remaining.toLocaleString()} 字符）`;
+    more.addEventListener('click', ev => {
+      ev.stopPropagation();
+      el.textContent = out;
+      more.remove();
+    });
+    el.after(more);
+  }
+
   // ── 填充工具结果 ──────────────────────────────────────────
   _fillTool(id, text, isError) {
     const e = this.toolMap[id];
@@ -946,7 +969,7 @@ class ChatLogRenderer {
     const out = (text || '').trim();
     e.outputEl.style.display = '';
     e.outputEl.className = `tool-output${ok ? '' : ' is-error'}`;
-    e.outputEl.textContent = out || (ok ? '(无输出)' : '(执行失败)');
+    this._setToolOutputText(e.outputEl, out, ok);
 
     e.exitEl.style.display = '';
     e.exitEl.className = `tool-exit ${ok ? 'ok-exit' : 'fail-exit'}`;

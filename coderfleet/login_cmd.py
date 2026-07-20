@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from coderfleet.config import load_config, parse_conf
+from coderfleet.config import container_timezone, load_config, parse_conf
 from coderfleet.account_type_registry import ACCOUNT_TYPES
 
 
@@ -87,6 +87,7 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
     cfg        = load_config(ws)
     image      = f"{cfg.get('IMAGE_NAME', 'coderfleet')}:{cfg.get('IMAGE_TAG', 'latest')}"
     platform   = cfg.get("BUILD_PLATFORM", "linux/amd64")
+    timezone   = container_timezone(cfg)
     proxy_host = cfg.get("PROXY_HOST", "host.docker.internal")
     proxy_port = cfg.get("PROXY_HTTP_PORT", "7890")
     proxy_url  = f"http://{proxy_host}:{proxy_port}"
@@ -117,6 +118,7 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
         "-e", "no_proxy=localhost,127.0.0.1",
         "-e", "CODEX_HOME=/home/byclaw/.codex",
         "-e", "CLAUDE_CONFIG_DIR=/home/byclaw/.claude",
+        "-e", f"TZ={timezone}",
         "-e", f"CODERFLEET_ACCOUNT_NAME={target}",
         "-e", f"CODERFLEET_ACCOUNT_TYPE={acc_type}",
         "-e", f"CODERFLEET_RELAY_IP={proxy_host}",

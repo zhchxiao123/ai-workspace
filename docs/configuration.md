@@ -8,6 +8,7 @@
 IMAGE_NAME=coderfleet
 IMAGE_TAG=latest
 BUILD_PLATFORM=linux/amd64
+CONTAINER_TIMEZONE=Asia/Shanghai
 
 DOCKER_SOCKET=off
 DOCKER_SOCKET_TARGET=/var/run/docker.sock
@@ -28,6 +29,10 @@ RELAY_IMAGE=gogost/gost:3
 ```bash
 coderfleet apply
 ```
+
+`CONTAINER_TIMEZONE` 使用 IANA 时区名称，例如 `Asia/Shanghai`、`UTC` 或
+`America/New_York`。修改后执行 `coderfleet apply` 重新创建持久容器；新启动的
+临时任务容器和登录容器也会使用该时区。未配置时默认使用 `Asia/Shanghai`。
 
 ### Docker socket
 

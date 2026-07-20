@@ -12,7 +12,7 @@ from typing import Any
 import click
 import yaml
 
-from coderfleet.config import load_config, parse_conf
+from coderfleet.config import container_timezone, load_config, parse_conf
 from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
 from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types
 from coderfleet.ports import allocate_ide_port
@@ -116,6 +116,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     dns_upstream   = cfg.get("DNS_UPSTREAM", "https://1.1.1.1/dns-query")
     ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
+    timezone       = container_timezone(cfg)
 
     proxy_mode     = cfg.get("PROXY_MODE", "host")
     xray_ip        = cfg.get("XRAY_IP", "172.21.0.3")
@@ -192,6 +193,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
 
         # 基础环境变量（所有类型共享）
         environment: dict[str, str] = {
+            "TZ":                      timezone,
             "CODEX_HOME":              "/home/byclaw/.codex",
             "CLAUDE_CONFIG_DIR":       "/home/byclaw/.claude",
             "CODERFLEET_ACCOUNT_NAME": paccount,

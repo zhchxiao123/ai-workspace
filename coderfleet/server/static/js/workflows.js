@@ -691,7 +691,7 @@ async function _openWorkflowDetail(taskId) {
 
     const [task, logText, outputData] = await Promise.all([
       fetch(`${API}/api/tasks/${taskId}`).then(r => r.json()),
-      fetch(`${API}/api/tasks/${taskId}/logs`).then(r => r.text()).catch(() => ''),
+      fetch(`${API}/api/tasks/${taskId}/logs?light=1`).then(r => r.text()).catch(() => ''),
       fetch(`${API}/api/tasks/${taskId}/output`).then(r => r.json()).catch(() => ({ text: '' })),
     ]);
     const dur = fmtDuration(task.created, task.finished);

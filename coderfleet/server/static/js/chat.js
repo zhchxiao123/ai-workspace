@@ -1596,7 +1596,7 @@ async function _fetchTaskLogCached(task) {
       return persisted;
     }
   }
-  const text = await fetch(`${API}/api/tasks/${task.id}/logs`).then(r => r.text()).catch(() => '');
+  const text = await fetch(`${API}/api/tasks/${task.id}/logs?light=1`).then(r => r.text()).catch(() => '');
   if (task.status !== 'running') {
     _finishedLogCache.set(task.id, text);
     logCacheSet(task.id, text);

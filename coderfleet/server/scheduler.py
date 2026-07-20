@@ -2183,7 +2183,7 @@ class Scheduler:
         不依赖持久容器，任务结束后容器自动销毁。
         """
         from coderfleet.account_type_registry import get_spec
-        from coderfleet.config import load_config
+        from coderfleet.config import container_timezone, load_config
         from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
 
         retention = self._normalize_ephemeral_retention(
@@ -2267,6 +2267,7 @@ class Scheduler:
             # Standard env vars (matching compose.py baseline — always set for all types)
             env["CODEX_HOME"] = "/home/byclaw/.codex"
             env["CLAUDE_CONFIG_DIR"] = "/home/byclaw/.claude"
+            env["TZ"] = container_timezone(cfg)
             env["CODERFLEET_ACCOUNT_NAME"] = acc.name
             env["CODERFLEET_ACCOUNT_TYPE"] = acc.type.value
             env["CODERFLEET_ACCOUNT_AUTH"] = acc.auth.value

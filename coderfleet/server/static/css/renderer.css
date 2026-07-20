@@ -335,6 +335,16 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
 
 .tool-output.is-error { color: #f87171; }
 
+.tool-output-more {
+  display: block; width: 100%;
+  padding: 6px 12px; font-family: var(--mono);
+  font-size: 11px; text-align: left;
+  color: #93c5fd; background: #0b111a;
+  border: none; border-top: 1px solid rgba(148,163,184,.1);
+  cursor: pointer;
+}
+.tool-output-more:hover { color: #bfdbfe; background: #101722; }
+
 .tool-exit {
   padding: 4px 12px 5px; background: #0b111a;
   font-size: 10px; font-family: var(--mono);

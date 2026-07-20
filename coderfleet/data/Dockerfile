@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev libffi-dev zlib1g-dev libbz2-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
     # 系统工具与常用开发工具
-    bash-completion less vim nano tmux jq fzf htop tree zip unzip fd-find \
+    bash-completion less vim nano tmux jq fzf htop tree zip unzip fd-find tzdata \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 

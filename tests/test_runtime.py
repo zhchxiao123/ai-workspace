@@ -255,6 +255,25 @@ def test_ephemeral_task_mounts_configured_docker_socket(
     assert spec.env["CODERFLEET_HOST_WORKSPACE"] == str(session_dir)
 
 
+def test_ephemeral_task_injects_configured_container_timezone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "config.conf").write_text(
+        "CONTAINER_TIMEZONE=Europe/Paris\n", encoding="utf-8"
+    )
+    rt = FakeRuntime().queue(FakeProcess(returncode=0))
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    import asyncio as _a
+    _a.run(sched._run_ephemeral_task(task, acc, log_path, auto=False))
+
+    assert rt.runs[0].env["TZ"] == "Europe/Paris"
+
+
 def test_ephemeral_task_project_docker_socket_overrides_global(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

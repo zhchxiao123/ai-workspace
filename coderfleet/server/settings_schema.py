@@ -11,6 +11,9 @@ config.conf 的可编辑面只在这里定义一次，同时驱动三件事：
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
+
+from coderfleet.config import container_timezone
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,7 @@ class SettingField:
     secret: bool = False          # 密钥：GET 不回传明文，PUT 留空则保持不变
     requires_apply: bool = False  # 改动需 coderfleet apply + 重启容器才生效
     options: tuple[str, ...] = ()  # 非空则渲染为下拉框
+    validator: Callable[[str], str] | None = None  # 配置边界校验，并返回规范化后的值
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,10 @@ class SettingGroup:
     title: str
     fields: tuple[SettingField, ...]
     help: str = ""
+
+
+def _validate_container_timezone(value: str) -> str:
+    return container_timezone({"CONTAINER_TIMEZONE": value})
 
 
 SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
@@ -93,6 +101,9 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
             SettingField("IMAGE_TAG", "标签", placeholder="latest", requires_apply=True),
             SettingField("BUILD_PLATFORM", "构建平台",
                          options=("linux/arm64", "linux/amd64"), requires_apply=True),
+            SettingField("CONTAINER_TIMEZONE", "容器时区", placeholder="Asia/Shanghai",
+                         help="IANA 时区名称，例如 Asia/Shanghai、UTC、America/New_York",
+                         requires_apply=True, validator=_validate_container_timezone),
         ),
     ),
     SettingGroup(

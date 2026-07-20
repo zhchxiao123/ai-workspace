@@ -497,6 +497,11 @@ async def update_config(req: ConfigUpdateRequest):
             raise HTTPException(status_code=400, detail=f"{f.key} 的值不能包含空格")
         if f.options and value and value not in f.options:
             raise HTTPException(status_code=400, detail=f"{f.key} 取值须为 {list(f.options)} 之一")
+        if f.validator is not None:
+            try:
+                value = f.validator(value)
+            except ValueError as err:
+                raise HTTPException(status_code=400, detail=str(err)) from err
         if f.secret and value == "":
             continue  # 密钥留空 = 保持不变
         _set_config(WORKSPACE_DIR, f.key, value)
@@ -2100,13 +2105,20 @@ async def delete_task_record(task_id: str):
 # ── 完整日志（文本）──────────────────────────────────────
 
 @app.get("/api/tasks/{task_id}/logs", response_class=PlainTextResponse)
-async def get_logs(task_id: str):
+async def get_logs(
+    task_id: str,
+    light: bool = Query(False, description="精简模式：去掉 Web UI 渲染器不读的大字段（如 tool_use_result），仅供前端展示用，不改变落盘文件"),
+):
     log_path = scheduler.get_log_path(task_id)
     if not log_path.exists():
         raise HTTPException(status_code=404, detail=f"日志文件不存在：{task_id}")
     # 日志文件可达数 MB，同步读取会独占单进程事件循环，挤占同一时刻的其它请求
     # （SSE 日志流、心跳轮询等）——丢进线程池执行。
-    return await run_in_threadpool(log_path.read_text, encoding="utf-8")
+    text = await run_in_threadpool(log_path.read_text, encoding="utf-8")
+    if light:
+        from coderfleet.server.log_parser import strip_unused_render_fields
+        text = await run_in_threadpool(strip_unused_render_fields, text)
+    return text
 
 
 @app.get("/api/tasks/{task_id}/output")
