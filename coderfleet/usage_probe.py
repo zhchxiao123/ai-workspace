@@ -54,7 +54,7 @@ class AccountUsage(BaseModel):
 
 
 def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _exec_argv(container_name: str, script: str) -> list[str]:

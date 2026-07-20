@@ -19,7 +19,7 @@ import re
 import shlex
 import subprocess
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -59,6 +59,9 @@ from coderfleet.server.models import (
     WorkflowNodeState,
     WorkflowRun,
     WorkflowTemplate,
+    now_iso,
+    parse_iso,
+    utc_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -589,13 +592,13 @@ class Scheduler:
 
     async def _poll_due_account_usage(self) -> None:
         busy = self.get_busy_accounts()
-        now = datetime.now()
+        now = utc_now()
         for acc in self._usage_eligible_accounts():
             delay = self._usage_adaptive_delay(acc.name, busy)
             cached = self._usage_cache.get(acc.name)
             if cached and cached.fetched_at:
                 try:
-                    last_fetch = datetime.fromisoformat(cached.fetched_at)
+                    last_fetch = parse_iso(cached.fetched_at)
                     if (now - last_fetch).total_seconds() < delay:
                         continue
                 except ValueError:
@@ -772,7 +775,7 @@ class Scheduler:
         for k, v in updates.items():
             if hasattr(sched, k):
                 setattr(sched, k, v)
-        sched.updated = datetime.now().isoformat(timespec="seconds")
+        sched.updated = now_iso()
         sched.next_run_at = self._compute_next_run_at(sched)
         sched.save(self.schedules_dir)
         return sched
@@ -847,7 +850,7 @@ class Scheduler:
     async def _trigger_schedule(self, sched: Schedule) -> None:
         try:
             run_type, run_obj = await self._run_schedule_target(sched)
-            sched.last_run_at = datetime.now().isoformat(timespec="seconds")
+            sched.last_run_at = now_iso()
             sched.last_run_type = run_type
             if run_type == "workflow":
                 sched.last_workflow_run_id = run_obj.id
@@ -856,7 +859,7 @@ class Scheduler:
                 sched.last_task_id = run_obj.id
                 sched.last_workflow_run_id = ""
             sched.next_run_at = self._compute_next_run_at(sched)
-            sched.updated = datetime.now().isoformat(timespec="seconds")
+            sched.updated = now_iso()
             sched.save(self.schedules_dir)
         except Exception as e:
             import traceback
@@ -1130,7 +1133,7 @@ class Scheduler:
             if match and t.id not in seen:
                 seen.add(t.id)
                 out.append(t)
-        out.sort(key=lambda t: t.created or "")
+        out.sort(key=lambda t: parse_iso(t.created) if t.created else utc_now())
         return out
 
     def task_ids_for_board_card(self, card: BoardCard) -> list[str]:
@@ -1347,7 +1350,7 @@ class Scheduler:
             return
 
         # 按照创建时间升序排列，先进先出
-        pending_tasks.sort(key=lambda t: t.created or "")
+        pending_tasks.sort(key=lambda t: parse_iso(t.created) if t.created else utc_now())
 
         # conversation 级串行约束：同一 conversation 同时只能有一个任务在跑
         busy_conv_ids = {
@@ -2070,7 +2073,7 @@ class Scheduler:
 
     @staticmethod
     def _ephemeral_expires_at(ttl_minutes: int) -> str:
-        return (datetime.now() + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds")
+        return (utc_now() + timedelta(minutes=ttl_minutes)).isoformat(timespec="seconds")
 
     def _docker_container_running(self, container_name: str) -> bool:
         if not container_name:
@@ -2098,7 +2101,7 @@ class Scheduler:
         return True
 
     async def _cleanup_expired_ephemeral_sessions(self) -> None:
-        now = datetime.now()
+        now = utc_now()
         for conversation in self.list_conversations(include_archived=True):
             if not getattr(conversation, "ephemeral", False):
                 continue
@@ -2108,7 +2111,7 @@ class Scheduler:
             if not expires_at:
                 continue
             try:
-                if datetime.fromisoformat(expires_at) > now:
+                if parse_iso(expires_at) > now:
                     continue
             except ValueError:
                 continue
@@ -2905,7 +2908,7 @@ class Scheduler:
         for pipeline in self.list_pipelines():
             if pipeline.template_id and pipeline.id not in known_legacy_ids:
                 runs.append(self._workflow_run_from_pipeline(pipeline))
-        return sorted(runs, key=lambda r: r.updated, reverse=True)
+        return sorted(runs, key=lambda r: parse_iso(r.updated) if r.updated else utc_now(), reverse=True)
 
     def _find_workflow_run_by_legacy_pipeline_id(self, pipeline_id: str) -> Optional[WorkflowRun]:
         """按 legacy_pipeline_id 查找 WorkflowRun：先查内存索引，未命中才扫一遍
@@ -2990,7 +2993,7 @@ class Scheduler:
                 pipeline.touch(self.pipelines_dir)
 
         run.status = "cancelled"
-        run.updated = datetime.now().isoformat(timespec="seconds")
+        run.updated = now_iso()
         # WorkflowRun 只有 legacy pipeline bridge 会在 workflow_runs_dir 有文件；
         # 纯 legacy run 不在 workflow_runs_dir，无需 save
         path = self.workflow_runs_dir / f"{run.id}.json"
@@ -3076,7 +3079,7 @@ class Scheduler:
         sorted_nodes: list[TemplateNode],
         resolved_projects: dict[str, str],
     ) -> WorkflowRun:
-        now = datetime.now().isoformat(timespec="seconds")
+        now = now_iso()
         node_executions = [
             NodeExecution(
                 node_id          = node.node_id,
@@ -3132,7 +3135,7 @@ class Scheduler:
                 if attempt is not None:
                     node.attempts.append(attempt)
                 break
-        run.updated = datetime.now().isoformat(timespec="seconds")
+        run.updated = now_iso()
         run.save(self.workflow_runs_dir)
 
     def _update_workflow_run_from_pipeline(self, pipeline: Pipeline) -> None:
@@ -3615,7 +3618,7 @@ class Scheduler:
             output_dir=node_output_dir,
             ephemeral_retention=node_retention,
             ephemeral_ttl_minutes=node_ttl,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=now_iso(),
         )
 
         task = await self.submit(
@@ -3800,7 +3803,7 @@ class Scheduler:
                     self._update_workflow_node(
                         pipeline_id, node.node_id,
                         state=WorkflowNodeState.skipped,
-                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        finished_at=now_iso(),
                         error_message="未命中条件分支（跳过）",
                     )
                     continue
@@ -3816,7 +3819,7 @@ class Scheduler:
                     self._update_workflow_node(
                         pipeline_id, node.node_id,
                         state=WorkflowNodeState.succeeded,
-                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        finished_at=now_iso(),
                         error_message="",
                     )
                     print(f"[pipeline {pipeline_id}] condition node {node.node_id}: activated={activated}, skipped={all_next - set(activated)}")
@@ -3832,7 +3835,7 @@ class Scheduler:
                     self._update_workflow_node(
                         pipeline_id, node.node_id,
                         state=WorkflowNodeState.succeeded,
-                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        finished_at=now_iso(),
                         error_message="",
                     )
 
@@ -3844,7 +3847,7 @@ class Scheduler:
                         self._update_workflow_node(
                             pipeline_id, node.node_id,
                             state=WorkflowNodeState.succeeded,
-                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            finished_at=now_iso(),
                             error_message="",
                         )
                     else:
@@ -3876,7 +3879,7 @@ class Scheduler:
                     self._update_workflow_node(
                         pipeline_id, node.node_id,
                         state=WorkflowNodeState.failed,
-                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                        finished_at=now_iso(),
                         error_message=str(submit_result),
                     )
                     node_error = node_error or err_msg
@@ -3919,7 +3922,7 @@ class Scheduler:
                             node_outputs[node.node_id] = ""
                             node_output = ""
                         succeeded_nodes.add(node.node_id)
-                        _now = datetime.now().isoformat(timespec="seconds")
+                        _now = now_iso()
                         self._update_workflow_node(
                             pipeline_id, node.node_id,
                             state=WorkflowNodeState.succeeded,
@@ -3936,7 +3939,7 @@ class Scheduler:
                         append_attempt={
                             "task_id": task.id,
                             "state": final_status.value,
-                            "finished_at": datetime.now().isoformat(timespec="seconds"),
+                            "finished_at": now_iso(),
                         },
                     )
                     if attempt < max_retries:
@@ -3972,7 +3975,7 @@ class Scheduler:
                         self._update_workflow_node(
                             pipeline_id, node.node_id,
                             state=WorkflowNodeState.failed,
-                            finished_at=datetime.now().isoformat(timespec="seconds"),
+                            finished_at=now_iso(),
                             error_message=_err_msg,
                         )
                         node_error = node_error or f"节点「{node.name or node.node_id}」{_err_msg}"
@@ -4018,7 +4021,7 @@ class Scheduler:
         self._update_workflow_node(
             pipeline_id, node.node_id,
             state=WorkflowNodeState.waiting_approval,
-            started_at=datetime.now().isoformat(timespec="seconds"),
+            started_at=now_iso(),
         )
 
         # 将审批 token 写入 WorkflowRun
@@ -4064,7 +4067,7 @@ class Scheduler:
         run.pending_approval_node_id = ""
         run.approval_token           = ""
         run.status                   = "running"
-        run.updated                  = datetime.now().isoformat(timespec="seconds")
+        run.updated                  = now_iso()
         run.save(self.workflow_runs_dir)
         return run
 

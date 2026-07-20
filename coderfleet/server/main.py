@@ -26,7 +26,6 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from urllib.parse import urlparse
@@ -81,6 +80,9 @@ from coderfleet.server.models import (
     WorkflowRun,
     WorkflowRunResponse,
     WorkflowTemplateResponse,
+    now_iso,
+    parse_iso,
+    utc_now,
 )
 from coderfleet.account_type_registry import duplicate_account_types
 from coderfleet.server.auth import AuthMiddleware, load_api_key
@@ -529,7 +531,7 @@ async def get_usage_stats(
     返回总计 + 按账号 + 按项目的分组统计。
     """
     from datetime import timedelta
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    cutoff = utc_now() - timedelta(days=days)
 
     tasks = scheduler.list_tasks()
 
@@ -542,7 +544,7 @@ async def get_usage_stats(
     per_project: dict[str, dict] = {}
 
     for task in tasks:
-        if (task.created or "") < cutoff:
+        if not task.created or parse_iso(task.created) < cutoff:
             continue
         if project_name and task.project_name != project_name:
             continue
@@ -2524,7 +2526,7 @@ async def run_schedule_now(sched_id: str):
     if sched is None:
         raise HTTPException(status_code=404, detail=f"定时计划 '{sched_id}' 不存在")
     run_type, run_obj = await scheduler._run_schedule_target(sched)
-    sched.last_run_at = datetime.now().isoformat(timespec="seconds")
+    sched.last_run_at = now_iso()
     sched.last_run_type = run_type
     if run_type == "workflow":
         sched.last_workflow_run_id = run_obj.id
@@ -2532,7 +2534,7 @@ async def run_schedule_now(sched_id: str):
     else:
         sched.last_task_id = run_obj.id
         sched.last_workflow_run_id = ""
-    sched.updated = datetime.now().isoformat(timespec="seconds")
+    sched.updated = now_iso()
     sched.save(scheduler.schedules_dir)
     return _schedule_run_response(sched, run_type, run_obj)
 
@@ -2548,7 +2550,7 @@ async def webhook_trigger(webhook_token: str):
     if sched is None:
         raise HTTPException(status_code=404, detail="webhook not found or disabled")
     run_type, run_obj = await scheduler._run_schedule_target(sched)
-    sched.last_run_at  = datetime.now().isoformat(timespec="seconds")
+    sched.last_run_at  = now_iso()
     sched.last_run_type = run_type
     if run_type == "workflow":
         sched.last_workflow_run_id = run_obj.id
@@ -2556,7 +2558,7 @@ async def webhook_trigger(webhook_token: str):
     else:
         sched.last_task_id = run_obj.id
         sched.last_workflow_run_id = ""
-    sched.updated      = datetime.now().isoformat(timespec="seconds")
+    sched.updated      = now_iso()
     sched.save(scheduler.schedules_dir)
     return _schedule_run_response(sched, run_type, run_obj)
 
@@ -2658,7 +2660,7 @@ async def get_digest(date: str):
                 if output.text:
                     digest.ai_summary   = output.text
                     digest.status       = DigestStatus.ready
-                    digest.generated_at = datetime.now().isoformat(timespec="seconds")
+                    digest.generated_at = now_iso()
                     record = saved or DailyDigest(date=date)
                     record.ai_summary   = digest.ai_summary
                     record.ai_task_id   = digest.ai_task_id
@@ -2697,7 +2699,7 @@ async def trigger_digest_generation(date: str):
     record = load_digest(date, DIGEST_DIR) or DailyDigest(date=date)
     record.ai_task_id = task.id
     record.status     = DigestStatus.generating
-    record.updated    = datetime.now().isoformat(timespec="seconds")
+    record.updated    = now_iso()
     record.save(DIGEST_DIR)
 
     return {"task_id": task.id, "status": "generating"}

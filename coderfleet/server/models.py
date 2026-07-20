@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -14,6 +14,34 @@ from coderfleet.account_type_registry import env_auth_type_ids
 from coderfleet.config import parse_optional_int, truthy
 from coderfleet.server.store import JsonStore
 from coderfleet.usage_probe import AccountUsage, UsageWindow  # noqa: F401 (re-exported)
+
+
+# ── 时间戳（UTC-aware） ──────────────────────────────────────
+#
+# 所有落盘的 created/updated/finished/started_at 等字段一律用这里生成——绝不能
+# 再用裸 datetime.now().isoformat()。裸值不带时区，前端 `new Date(iso)` 会把它当成
+# 浏览器本地时区解析；一旦调度进程所在宿主机的系统时区和浏览器不一致（哪怕只是
+# 时钟漂移几分钟），解析结果就可能"超前"于真实时间，而 fmtTime()/relTime() 对负
+# diff 没有下界保护，会让这些时间戳永久卡在"刚刚"。UTC-aware 字符串把这个依赖
+# 从"两台机器时区一致"降到"两台机器都认识 UTC"，与宿主机时区设置无关。
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def now_iso() -> str:
+    return utc_now().isoformat(timespec="seconds")
+
+
+def parse_iso(value: str) -> datetime:
+    """解析落盘的 ISO 时间戳为 aware datetime（UTC）。
+
+    兼容迁移前写入的裸时间戳（无 tzinfo）：那些字符串是用宿主机本地时钟生成的，
+    因此按本地时区补齐 tzinfo 后再转 UTC，行为等价于修复前的裸时间比较。
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.astimezone(timezone.utc)
 
 
 class TaskStatus(str, Enum):
@@ -168,8 +196,8 @@ class Conversation(BaseModel):
     status:            ConversationStatus = ConversationStatus.active
     mode:              ConversationMode   = ConversationMode.chat
     tmux_session:      str = ""
-    created:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:           str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:           str = Field(default_factory=now_iso)
+    updated:           str = Field(default_factory=now_iso)
     last_task_id:      str = ""
     ephemeral:         bool = False
     output_dir:        str = ""
@@ -199,15 +227,15 @@ class Conversation(BaseModel):
             self.native_session_id = native_session_id
         if last_task_id:
             self.last_task_id = last_task_id
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(conversations_dir)
 
 
 class Board(BaseModel):
     id:      str
     name:    str
-    created: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created: str = Field(default_factory=now_iso)
+    updated: str = Field(default_factory=now_iso)
 
     def save(self, boards_dir: Path) -> None:
         JsonStore(Board, boards_dir).save(self)
@@ -221,7 +249,7 @@ class Board(BaseModel):
         return JsonStore(cls, boards_dir).all()
 
     def touch(self, boards_dir: Path) -> None:
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(boards_dir)
 
 
@@ -238,8 +266,8 @@ class BoardCard(BaseModel):
     conversation_id: str = ""
     pipeline_id:     str = ""
     archived:        bool = False
-    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:         str = Field(default_factory=now_iso)
+    updated:         str = Field(default_factory=now_iso)
 
     def save(self, cards_dir: Path) -> None:
         JsonStore(BoardCard, cards_dir).save(self)
@@ -253,7 +281,7 @@ class BoardCard(BaseModel):
         return JsonStore(cls, cards_dir).all()
 
     def touch(self, cards_dir: Path) -> None:
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(cards_dir)
 
 
@@ -268,7 +296,7 @@ class Task(BaseModel):
     conversation_id:   str = ""
     native_session_id: str = ""
     pid:      str = ""
-    created:  str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:  str = Field(default_factory=now_iso)
     finished: Optional[str] = None
     archived: bool = False
     auto:     bool = False
@@ -309,7 +337,7 @@ class Task(BaseModel):
     def update_status(self, status: TaskStatus, tasks_dir: Path) -> None:
         self.status = status
         if status in (TaskStatus.done, TaskStatus.failed, TaskStatus.killed):
-            self.finished = datetime.now().isoformat(timespec="seconds")
+            self.finished = now_iso()
         self.save(tasks_dir)
 
     @property
@@ -326,7 +354,7 @@ class ImageBuild(BaseModel):
     image_tag:    str
     status:       ImageBuildStatus = ImageBuildStatus.running
     triggered_by: str = "web"      # "web" | "cli"
-    created:      str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:      str = Field(default_factory=now_iso)
     finished:     Optional[str] = None
     exit_code:    Optional[int] = None
 
@@ -346,7 +374,7 @@ class ImageBuild(BaseModel):
     ) -> None:
         self.status = status
         if status != ImageBuildStatus.running:
-            self.finished = datetime.now().isoformat(timespec="seconds")
+            self.finished = now_iso()
         if exit_code is not None:
             self.exit_code = exit_code
         self.save(builds_dir)
@@ -643,8 +671,8 @@ class Pipeline(BaseModel):
     workspace_policy: str = "isolated"  # isolated | shared_ephemeral
     shared_conversation_id: str = ""
     artifact_dir: str = ""
-    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:         str = Field(default_factory=now_iso)
+    updated:         str = Field(default_factory=now_iso)
 
     def save(self, pipelines_dir: Path) -> None:
         JsonStore(Pipeline, pipelines_dir).save(self)
@@ -658,7 +686,7 @@ class Pipeline(BaseModel):
         return JsonStore(cls, pipelines_dir).all()
 
     def touch(self, pipelines_dir: Path) -> None:
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(pipelines_dir)
 
 
@@ -769,8 +797,8 @@ class WorkflowTemplate(BaseModel):
     name:        str
     description: str = ""
     nodes:       list[TemplateNode] = Field(default_factory=list)
-    created:     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:     str = Field(default_factory=now_iso)
+    updated:     str = Field(default_factory=now_iso)
 
     def save(self, templates_dir: Path) -> None:
         JsonStore(WorkflowTemplate, templates_dir).save(self)
@@ -784,7 +812,7 @@ class WorkflowTemplate(BaseModel):
         return JsonStore(cls, templates_dir).all()
 
     def touch(self, templates_dir: Path) -> None:
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(templates_dir)
 
 
@@ -958,8 +986,8 @@ class DailyDigest(BaseModel):
     ai_summary:    str = ""
     ai_task_id:    str = ""
     generated_at:  str = ""
-    created:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:       str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:       str = Field(default_factory=now_iso)
+    updated:       str = Field(default_factory=now_iso)
 
     def save(self, digests_dir: Path) -> None:
         JsonStore(DailyDigest, digests_dir, key="date").save(self)
@@ -1009,8 +1037,8 @@ class Schedule(BaseModel):
     last_run_type:   str = ""
     last_task_id:    str = ""
     last_workflow_run_id: str = ""
-    created:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:         str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:         str = Field(default_factory=now_iso)
+    updated:         str = Field(default_factory=now_iso)
 
     def save(self, schedules_dir: Path) -> None:
         JsonStore(Schedule, schedules_dir).save(self)
@@ -1183,8 +1211,8 @@ class WorkflowRun(BaseModel):
     trigger_input:               str = ""
     status:                      str = "running"  # running | succeeded | failed | cancelled | partial | waiting_approval
     node_executions:             list[NodeExecution] = Field(default_factory=list)
-    created:                     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-    updated:                     str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
+    created:                     str = Field(default_factory=now_iso)
+    updated:                     str = Field(default_factory=now_iso)
     # 兼容/审计
     legacy_pipeline_id:          str = ""         # 若由旧 Pipeline 迁移而来
     project_map:                 dict[str, str] = Field(default_factory=dict)  # 运行时角色->项目快照
@@ -1208,7 +1236,7 @@ class WorkflowRun(BaseModel):
         return JsonStore(cls, runs_dir).all()
 
     def touch(self, runs_dir: Path) -> None:
-        self.updated = datetime.now().isoformat(timespec="seconds")
+        self.updated = now_iso()
         self.save(runs_dir)
 
 

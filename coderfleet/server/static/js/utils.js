@@ -201,7 +201,12 @@ function renderMd(text) {
 // ── 时间格式化 ─────────────────────────────────────────────
 function fmtTime(iso) {
   if (!iso) return '-';
-  const d = new Date(iso), now = new Date(), diff = (now - d) / 1000;
+  const d = new Date(iso), now = new Date();
+  let diff = (now - d) / 1000;
+  // diff 明显为负说明时间戳被解析成了"未来"（客户端/服务端时钟或时区不一致）。
+  // 不能再判定为"刚刚"——那会让它无论过多久都卡在"刚刚"——直接退化成绝对时间。
+  if (diff < -5) return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  diff = Math.max(diff, 0);
   if (diff < 60) return '刚刚';
   if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
@@ -385,7 +390,10 @@ function showToast(message, type = 'info', onClick) {
  */
 function relTime(iso) {
   if (!iso) return '';
-  const diff = Date.now() - new Date(iso);
+  const raw = Date.now() - new Date(iso);
+  // 时钟偏差保护：见桌面端 fmtTime() 同名注释。
+  if (raw < -5000) return new Date(iso).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const diff = Math.max(raw, 0);
   if (diff < 60000)    return '刚刚';
   if (diff < 3600000)  return `${Math.floor(diff / 60000)} 分钟前`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;

@@ -12,11 +12,11 @@ translation_cache.py — 气泡翻译的内容寻址缓存
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel
 
+from coderfleet.server.models import now_iso
 from coderfleet.server.store import JsonStore
 
 
@@ -48,5 +48,5 @@ class TranslationCache:
             target=target,
             translated=translated,
             source_preview=text[:80],
-            created=datetime.now().isoformat(timespec="seconds"),
+            created=now_iso(),
         ))
