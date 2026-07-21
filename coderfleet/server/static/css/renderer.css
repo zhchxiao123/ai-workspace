@@ -299,6 +299,13 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
 .tool-badge.ok      { background: rgba(21,128,61,.18);  color: #86efac; }
 .tool-badge.fail    { background: rgba(220,38,38,.16);  color: #fca5a5; }
 
+.tool-risk-badge {
+  flex-shrink: 0; font-size: 10px; font-weight: 700;
+  color: #fca5a5; background: rgba(220,38,38,.14);
+  border: 1px solid rgba(252,165,165,.24);
+  border-radius: 999px; padding: 2px 8px;
+}
+
 .tool-cmd {
   flex: 1; font-family: var(--mono); font-size: 11.5px;
   color: #bfdbfe; overflow: hidden;
@@ -317,6 +324,11 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
 .tool-body { border-top: 1px solid rgba(148,163,184,.12); }
 .tool-body.collapsed { display: none; }
 
+.tool-section-label {
+  padding: 6px 12px 0; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase; color: #64748b;
+}
+
 .tool-input {
   padding: 8px 12px; font-family: var(--mono);
   font-size: 11.5px; color: #93c5fd;
@@ -333,7 +345,121 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
   max-height: 260px; overflow-y: auto;
 }
 
+/* Edit 工具的逐行 diff */
+.tool-input.tool-diff {
+  padding: 4px 0; white-space: normal;
+  max-height: 240px;
+}
+
+.diff-line {
+  padding: 1px 12px; display: flex; gap: 6px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-all;
+}
+
+.diff-line .diff-sign { flex-shrink: 0; width: 10px; opacity: .65; }
+.diff-line .diff-text { flex: 1; }
+
+.diff-line.diff-add { background: rgba(34,197,94,.12); color: #86efac; }
+.diff-line.diff-del { background: rgba(239,68,68,.12); color: #fca5a5; }
+.diff-line.diff-ctx { color: #93c5fd; opacity: .7; }
+
+/* Task/Agent 子agent会话面板 */
+.subagent-toggle-row { padding: 6px 12px 0; }
+
+.subagent-toggle-btn {
+  font-size: 11px; font-weight: 600; color: #5eead4;
+  background: none; border: none; cursor: pointer; padding: 2px 0;
+}
+.subagent-toggle-btn:hover { color: #99f6e4; }
+
+.subagent-thread {
+  margin: 8px 12px 10px; padding: 10px 12px 4px;
+  border: 1px dashed rgba(148,163,184,.22); border-radius: 8px;
+  background: rgba(15,23,32,.4);
+}
+.subagent-thread.collapsed { display: none; }
+.subagent-thread .chat-log.timeline { padding-left: 16px; }
+.subagent-thread .chat-log.timeline::before { left: 4px; }
+.subagent-thread .timeline-node::before { left: -16px; }
+
+/* TodoWrite 待办清单 */
+.todo-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: rgba(148,163,184,.06);
+  border-bottom: 1px solid rgba(148,163,184,.14);
+}
+.todo-header-icon { flex-shrink: 0; font-size: 13px; color: #94a3b8; }
+.todo-header-label { flex: 1; min-width: 0; font-size: 12px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-header-detail { color: #e2e8f0; }
+.todo-header-count {
+  flex-shrink: 0; font-family: var(--mono); font-size: 11px; color: #94a3b8;
+  background: rgba(148,163,184,.12); border-radius: 999px; padding: 2px 8px;
+}
+
+.todo-list { display: flex; flex-direction: column; }
+.todo-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px dashed rgba(148,163,184,.14);
+  font-size: 12.5px;
+}
+.todo-row:last-child { border-bottom: none; }
+.todo-row-active { background: rgba(37,99,235,.06); }
+
+.todo-check { flex-shrink: 0; color: #64748b; font-size: 13px; line-height: 1.4; }
+.todo-check.done { color: #4ade80; }
+.todo-row-icon { flex-shrink: 0; color: #60a5fa; font-size: 12px; line-height: 1.4; }
+
+.todo-row-text { color: #cbd5e1; }
+.todo-row-text.todo-done { color: #64748b; text-decoration: line-through; }
+.todo-row-text.todo-active { color: #e2e8f0; font-weight: 600; }
+
+/* AskUserQuestion 问答卡片 */
+.tool-input.tool-askq {
+  padding: 10px 12px; max-height: none;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+.askq-block { display: flex; gap: 8px; align-items: flex-start; }
+
+.askq-ordinal {
+  flex-shrink: 0; width: 20px; padding-top: 2px;
+  font-family: var(--mono); font-size: 11px; color: #64748b;
+}
+
+.askq-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.askq-title-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+
+.askq-question { font-size: 13px; font-weight: 600; color: #e2e8f0; }
+
+.askq-header-chip {
+  font-size: 10.5px; color: #94a3b8;
+  background: rgba(148,163,184,.12); border-radius: 4px; padding: 1px 6px;
+}
+
+.askq-answer { display: flex; flex-direction: column; gap: 6px; }
+.askq-answer-line { display: flex; gap: 6px; align-items: flex-start; }
+.askq-check { flex-shrink: 0; color: #2dd4bf; font-size: 12px; padding-top: 1px; }
+.askq-answer-text { font-size: 12.5px; color: #dbeafe; }
+.askq-desc { font-size: 11.5px; color: #94a3b8; }
+.askq-unanswered { font-size: 12px; color: #64748b; font-style: italic; }
+
+.askq-freeform {
+  display: flex; gap: 6px; align-items: flex-start;
+  padding: 8px 12px 2px; margin-top: 2px;
+  border-top: 1px dashed rgba(148,163,184,.18);
+}
+
 .tool-output.is-error { color: #f87171; }
+
+/* Skill 工具输出：按 markdown 渲染，不强制等宽/不换行 */
+.tool-output.tool-output-md { font-family: inherit; white-space: normal; word-break: normal; line-height: 1.6; }
+.tool-output-md p { margin: 0 0 8px; }
+.tool-output-md p:last-child { margin-bottom: 0; }
+.tool-output-md code { background: rgba(148,163,184,.12); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 11.5px; }
+.tool-output-md pre { background: #0b111a; border: 1px solid rgba(148,163,184,.14); border-radius: 6px; padding: 8px 10px; overflow-x: auto; font-family: var(--mono); font-size: 11.5px; }
+.tool-output-md ul, .tool-output-md ol { padding-left: 18px; margin: 4px 0; }
 
 .tool-output-more {
   display: block; width: 100%;
@@ -344,6 +470,13 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
   cursor: pointer;
 }
 .tool-output-more:hover { color: #bfdbfe; background: #101722; }
+
+/* Read 命中图片时的缩略图 */
+.tool-output-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0; }
+.tool-output-img {
+  max-height: 200px; max-width: 100%; border-radius: 6px;
+  border: 1px solid rgba(148,163,184,.16); cursor: zoom-in;
+}
 
 .tool-exit {
   padding: 4px 12px 5px; background: #0b111a;

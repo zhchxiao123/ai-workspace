@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from coderfleet.server.log_parser import extract_task_output, parse_log
+from coderfleet.server.log_parser import extract_task_output, parse_log, split_complete_lines
 
 
 def test_extract_kimi_stream_json_output() -> None:
@@ -123,3 +123,36 @@ def test_extract_pi_falls_back_to_last_assistant_message_when_no_agent_end() -> 
     log = json.dumps({"type": "message_end", "message": assistant_msg})
 
     assert extract_task_output(log, "pi") == "partial answer"
+
+
+def test_split_complete_lines_holds_back_partial_tail() -> None:
+    complete, pending = split_complete_lines(b'{"a":1}\n{"b":2')
+    assert complete == b'{"a":1}\n'
+    assert pending == b'{"b":2'
+
+
+def test_split_complete_lines_no_newline_yet() -> None:
+    complete, pending = split_complete_lines(b'{"a":1')
+    assert complete == b""
+    assert pending == b'{"a":1'
+
+
+def test_split_complete_lines_everything_complete() -> None:
+    complete, pending = split_complete_lines(b'{"a":1}\n{"b":2}\n')
+    assert complete == b'{"a":1}\n{"b":2}\n'
+    assert pending == b""
+
+
+def test_split_complete_lines_reassembles_across_calls() -> None:
+    # Simulates the actual failure mode: a poll tick lands mid-write, splitting
+    # one JSON line's bytes across two reads. The caller must hold back the
+    # partial tail and prepend it to the next chunk before re-checking.
+    first_read = b'{"type":"user","message":{"content":[{"tool_use_id":"t1","content":"fn f() {'
+    second_read = b'\\n}"}]}}\n'
+
+    complete1, pending = split_complete_lines(first_read)
+    assert complete1 == b""  # no newline yet — nothing safe to flush
+
+    complete2, pending = split_complete_lines(pending + second_read)
+    assert pending == b""
+    assert json.loads(complete2.decode())["message"]["content"][0]["content"] == "fn f() {\n}"

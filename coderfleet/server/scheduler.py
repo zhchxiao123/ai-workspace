@@ -26,6 +26,7 @@ from typing import Awaitable, Callable, Optional
 from coderfleet.config import parse_conf
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
+from coderfleet.server.log_parser import split_complete_lines
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
 from coderfleet.ports import allocate_ide_port
 from coderfleet.server.models import (
@@ -1987,8 +1988,26 @@ class Scheduler:
         last_size = start_offset
         captured_session_id = ""
         container_name = self._get_task_container(task) or ""
+        # 跨轮次缓冲还没见到换行符的尾巴——见下方 async with 内的说明。
+        pending = b""
 
         async with aiofiles.open(log_path, mode="a", encoding="utf-8") as f:
+            async def _write_chunk(chunk: bytes) -> None:
+                nonlocal captured_session_id
+                if not chunk:
+                    return
+                text = chunk.decode("utf-8", errors="replace")
+                await f.write(text)
+                await f.flush()
+                if not captured_session_id:
+                    sid = self.extract_native_session_id(acc.type, text)
+                    if sid:
+                        captured_session_id = sid
+                        task.native_session_id = sid
+                        task.save(self.tasks_dir)
+                        if conversation:
+                            self.update_conversation_native_session(conversation.id, sid, task.id)
+
             while True:
                 await asyncio.sleep(0.3)
                 is_done = host_exit.exists()
@@ -1999,24 +2018,27 @@ class Scheduler:
                         async with aiofiles.open(host_log, mode="rb") as hf:
                             await hf.seek(last_size)
                             new_bytes = await hf.read()
-                        text = new_bytes.decode("utf-8", errors="replace")
-                        await f.write(text)
-                        await f.flush()
                         last_size = cur_size
+                        pending += new_bytes
 
-                        if not captured_session_id:
-                            captured_session_id = self.extract_native_session_id(acc.type, text)
-                            if captured_session_id:
-                                task.native_session_id = captured_session_id
-                                task.save(self.tasks_dir)
-                                if conversation:
-                                    self.update_conversation_native_session(
-                                        conversation.id,
-                                        captured_session_id,
-                                        task.id,
-                                    )
+                        # 每 0.3s 轮询一次 host_log 的字节增量，和容器进程实际把一行
+                        # JSON 写完之间没有任何同步——轮询边界随时可能落在一行写到一半
+                        # 的地方。之前这里不管三七二十一把读到的字节原样落盘，一行大的
+                        # JSON（比如现在 tool_use_result 明显变大之后的 Edit/Grep 结果）
+                        # 就可能被从中间截断，永久拆成 log_path 里两条不相关的"行"，
+                        # 前端按行解析 JSON 时自然连不起来，只能整段退化成裸文本展示。
+                        # split_complete_lines 只把落到完整换行处的部分交出来落盘，
+                        # 不满一行的尾巴留在 pending 里，和下一轮新读到的字节拼起来
+                        # 再判断——这样落盘的永远是完整行，也顺带避免了多字节 UTF-8
+                        # 字符被从中间切开。
+                        complete, pending = split_complete_lines(pending)
+                        await _write_chunk(complete)
 
                 if is_done:
+                    # 容器已退出：不管 pending 里还有没有换行符都强制落盘，
+                    # 否则最后一行不以换行结尾的输出会永远留在内存里、从不落盘。
+                    await _write_chunk(pending)
+                    pending = b""
                     break
 
         rc = -1

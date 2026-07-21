@@ -2159,6 +2159,8 @@ async def stream_logs(
       - 退化路径：skip_bytes=0 且 tail=0 时不推送任何已有内容（注意 Python 的
         -0 == 0 陷阱，原实现有 bug，此处已修复）。
     """
+    from coderfleet.server.log_parser import split_complete_lines
+
     log_path = scheduler.get_log_path(task_id)
 
     async def _read_from(offset: int) -> tuple[bytes, int]:
@@ -2176,6 +2178,10 @@ async def stream_logs(
 
     async def generate() -> AsyncIterator[str]:
         last_size: int = 0
+        # 持续轮询循环里跨轮次缓冲还没见到换行符的尾巴——scheduler.py 的
+        # host_log → log_path 拷贝理论上只落盘完整行，但这里独立防一手，
+        # 避免同一类"轮询边界截断一行"的问题换个地方重演。
+        pending = b""
 
         if skip_bytes > 0:
             # ── 精确模式：客户端已持有前 skip_bytes 字节，从此处开始推送剩余内容 ──
@@ -2229,10 +2235,18 @@ async def stream_logs(
                         await f.seek(last_size)
                         new_bytes = await f.read()
                     last_size = cur_size
-                    for line in new_bytes.decode("utf-8", errors="replace").splitlines(keepends=True):
+                    pending += new_bytes
+                    complete, pending = split_complete_lines(pending)
+                    for line in complete.decode("utf-8", errors="replace").splitlines(keepends=True):
                         yield f"data: {line.rstrip()}\n\n"
 
             if is_done:
+                # 任务已结束：不管 pending 里还有没有换行符都强制推送出去，
+                # 否则最后一行不以换行结尾的输出会被悄悄丢掉。
+                if pending:
+                    for line in pending.decode("utf-8", errors="replace").splitlines(keepends=True):
+                        yield f"data: {line.rstrip()}\n\n"
+                    pending = b""
                 yield "data: [DONE]\n\n"
                 return
 

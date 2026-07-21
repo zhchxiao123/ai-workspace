@@ -4,6 +4,10 @@ log_parser.py — Task log output & token usage extraction.
 Parses completed task logs to extract:
 - Final text output (for {{steps.X.outputs.text}} substitution in workflows)
 - Token usage statistics (for usage dashboard)
+
+Also hosts `split_complete_lines`, a tiny line-boundary-safe helper shared by
+every place that tails a growing log file in byte chunks (scheduler.py's
+host-log → log_path copy, main.py's SSE tail) — see its own docstring.
 """
 from __future__ import annotations
 
@@ -17,6 +21,36 @@ _HEADER_SEP_RE = re.compile(r"^={10,}\s*$", re.MULTILINE)
 
 def _strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
+
+def split_complete_lines(buf: bytes) -> tuple[bytes, bytes]:
+    """
+    Split `buf` at its last newline into (complete, pending).
+
+    `complete` is everything up to and including the last b"\\n" — safe to
+    persist/emit right now. `pending` is the trailing partial line (no
+    newline yet) that must be prepended to the next chunk before re-checking.
+
+    Exists because polling a file that's still being appended to (a
+    subprocess's stdout, mid-write) can observe a byte range that ends
+    partway through a line or even mid-UTF-8-codepoint. A caller that
+    persists/emits raw byte deltas without this check will, on an unlucky
+    poll tick, permanently tear one logical JSONL record into two unrelated
+    lines — every downstream JSON.parse of that record then fails and the
+    line degrades to a raw/garbled display. Larger individual lines (e.g. a
+    bigger `tool_use_result` after a CLI upgrade) make an unlucky tick more
+    likely simply because a big line takes longer to write, giving more polls
+    a chance to land mid-line — this isn't a new class of bug, just one that
+    got easier to trigger.
+
+    Callers must flush any remaining `pending` once the source is known to
+    have stopped growing (process exited) — otherwise a final line that
+    never gets an appended newline is silently dropped.
+    """
+    last_nl = buf.rfind(b"\n")
+    if last_nl < 0:
+        return b"", buf
+    return buf[: last_nl + 1], buf[last_nl + 1:]
 
 
 @dataclass

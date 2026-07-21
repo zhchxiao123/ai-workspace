@@ -123,9 +123,34 @@ const TOOL_ICONS = {
   Bash: 'SH', Read: 'RD', Write: 'WR', Edit: 'ED', Glob: 'GB', Grep: 'GR',
   WebFetch: 'WF', WebSearch: 'WS', Agent: 'AG', Task: 'TK',
   NotebookEdit: 'NB', ExitPlanMode: 'OK', EnterPlanMode: 'PL',
+  TodoWrite: 'TD', AskUserQuestion: 'Q', Monitor: 'MN', Skill: 'SK',
+  EnterWorktree: 'WT', ExitWorktree: 'WT',
+  // CC 较新版本内置的 agent/编排类工具（子agent任务队列、定时唤醒、
+  // 报告发现、跨会话消息等）——图标先补上，摘要格式化只对 schema
+  // 确定的几个做（见 formatToolSummary），其余沿用默认 JSON 预览，
+  // 不猜字段名导致展示空白。
+  TaskCreate: 'TC', TaskUpdate: 'TU', TaskGet: 'TG', TaskList: 'TQ',
+  TaskOutput: 'TP', TaskStop: 'TX',
+  CronCreate: 'CC', CronDelete: 'CD', CronList: 'CN',
+  DesignSync: 'DS', PushNotification: 'PN', RemoteTrigger: 'RT',
+  ReportFindings: 'RF', ScheduleWakeup: 'SW', SendMessage: 'SM',
+  ToolSearch: 'TS', Workflow: 'WK',
 };
 
 function toolIcon(name) { return TOOL_ICONS[name] || 'TL'; }
+
+// CC's Monitor 工具用毫秒（timeout_ms），格式化成人可读的 "2m 30s" 风格。
+function formatTimeoutMs(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return remSeconds > 0 ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
+}
 
 function formatToolSummary(name, input) {
   if (!input) return '';
@@ -138,6 +163,29 @@ function formatToolSummary(name, input) {
     case 'Grep': return '"' + (input.pattern || '') + '"' + (input.path ? ' in ' + input.path : '');
     case 'WebFetch': return input.url || '';
     case 'WebSearch': return input.query || '';
+    case 'Monitor': {
+      const chip = (input.description || input.command || '').trim();
+      const timeout = formatTimeoutMs(input.timeout_ms);
+      return chip + (timeout ? ` · ${timeout}` : '');
+    }
+    case 'Skill': return input.skill || input.name || input.command || '';
+    case 'EnterWorktree': return input.name || input.path || '';
+    case 'ExitWorktree': {
+      const verb = input.action === 'remove' ? '移除 worktree' : '离开 worktree';
+      return verb + (input.action === 'remove' && input.discard_changes ? ' · 丢弃改动' : '');
+    }
+    case 'TaskCreate': return input.subject || '';
+    case 'TaskUpdate': return `#${input.taskId ?? ''}` + (input.status ? ` → ${input.status}` : '');
+    case 'ReportFindings': {
+      const n = Array.isArray(input.findings) ? input.findings.length : 0;
+      return n ? `${n} 项发现` : '(无发现)';
+    }
+    case 'ScheduleWakeup': {
+      if (input.stop) return '停止循环';
+      const secs = input.delaySeconds;
+      const when = secs != null ? `${secs}s 后` : '';
+      return [when, input.reason || ''].filter(Boolean).join(' · ');
+    }
     default: {
       const s = JSON.stringify(input);
       return s.length > 100 ? s.slice(0, 100) + '…' : s;
@@ -155,10 +203,103 @@ function formatToolInput(name, input) {
   if (name === 'Edit') {
     return `file: ${input.file_path || ''}\n- old: ${(input.old_string || '').slice(0, 120)}\n+ new: ${(input.new_string || '').slice(0, 120)}`;
   }
+  if (name === 'Monitor') {
+    const parts = [];
+    if (input.command) parts.push(`command: ${input.command}`);
+    if (input.description) parts.push(`description: ${input.description}`);
+    const timeout = formatTimeoutMs(input.timeout_ms);
+    if (timeout) parts.push(`timeout: ${timeout}`);
+    if (input.run_in_background != null) parts.push(`run_in_background: ${input.run_in_background}`);
+    return parts.join('\n');
+  }
   try {
     const s = JSON.stringify(input, null, 2);
     return s.length > 2000 ? s.slice(0, 2000) + '\n…' : s;
   } catch { return String(input); }
+}
+
+// ── Edit 工具的行级 diff 渲染 ───────────────────────────────
+// old_string/new_string 通常只是文件里的一小段上下文，用标准 LCS 动态规划
+// 逐行对齐即可；只有当两侧行数乘积过大（罕见的超大段 Edit）时才退化为
+// 整体删除+整体新增，避免 O(n*m) 的表格在这种输入上过度分配内存。
+function _lcsLineDiff(aLines, bLines) {
+  const n = aLines.length, m = bLines.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = aLines[i] === bLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (aLines[i] === bLines[j]) { ops.push({ type: 'ctx', text: aLines[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: 'del', text: aLines[i] }); i++; }
+    else { ops.push({ type: 'add', text: bLines[j] }); j++; }
+  }
+  while (i < n) { ops.push({ type: 'del', text: aLines[i] }); i++; }
+  while (j < m) { ops.push({ type: 'add', text: bLines[j] }); j++; }
+  return ops;
+}
+
+function renderInlineDiff(oldStr, newStr) {
+  const aLines = String(oldStr ?? '').split('\n');
+  const bLines = String(newStr ?? '').split('\n');
+  const ops = (aLines.length * bLines.length > 200000)
+    ? [...aLines.map(t => ({ type: 'del', text: t })), ...bLines.map(t => ({ type: 'add', text: t }))]
+    : _lcsLineDiff(aLines, bLines);
+
+  return ops.map(op => {
+    const cls = op.type === 'add' ? 'diff-add' : op.type === 'del' ? 'diff-del' : 'diff-ctx';
+    const sign = op.type === 'add' ? '+' : op.type === 'del' ? '-' : ' ';
+    return `<div class="diff-line ${cls}"><span class="diff-sign">${sign}</span><span class="diff-text">${esc(op.text)}</span></div>`;
+  }).join('');
+}
+
+// ── AskUserQuestion 工具参数归一化 ──────────────────────────
+// tool_use.input 理论上是 { questions: [{question, header, options, multiSelect}] }，
+// 但模型/CLI 版本偶尔会给出单个 question 对象而非数组，或整段被序列化成字符串，
+// 所以按字段逐一容错，拿不到 question 文本的条目直接丢弃，不让一张坏卡片炸掉整个对话。
+function normalizeAskUserQuestions(args) {
+  let a = args;
+  if (typeof a === 'string') {
+    try { a = JSON.parse(a); } catch { return []; }
+  }
+  if (!a || typeof a !== 'object') return [];
+
+  let rawQuestions = a.questions;
+  if (typeof rawQuestions === 'string') {
+    try { rawQuestions = JSON.parse(rawQuestions); } catch { rawQuestions = null; }
+  }
+  if (!Array.isArray(rawQuestions)) {
+    rawQuestions = a.question ? [a] : [];
+  }
+
+  return rawQuestions.map(q => {
+    if (!q || typeof q !== 'object' || !q.question) return null;
+    const options = Array.isArray(q.options)
+      ? q.options.map(o => {
+        if (!o || typeof o !== 'object' || !o.label) return null;
+        return o.description
+          ? { label: String(o.label), description: String(o.description) }
+          : { label: String(o.label) };
+      }).filter(Boolean)
+      : [];
+    return {
+      question: String(q.question),
+      header: q.header ? String(q.header) : '',
+      multiSelect: !!q.multiSelect,
+      options,
+    };
+  }).filter(Boolean);
+}
+
+// ── Read 工具行号剥离 ───────────────────────────────────────
+// Claude Code 的 Read 结果固定用 `cat -n` 式行号前缀（"␣␣␣1\t内容"），
+// 对着行号看代码没有意义，展示前按行剥掉。
+function stripReadLineNumbers(text) {
+  if (!text) return text || '';
+  return text.split('\n').map(line => line.replace(/^\s*\d+\t/, '')).join('\n');
 }
 
 // ── 安全 HTML 转义 ─────────────────────────────────────────
@@ -166,6 +307,102 @@ function esc(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── ANSI 转义码 → 带色 HTML ──────────────────────────────────
+// Bash 类工具的输出（测试跑分、linter、`git diff --color` 等）经常带着 ANSI
+// SGR 颜色码；之前这些码要么原样显示成乱码，要么被整体吞掉。这里只解析颜色/
+// 样式相关的 SGR 序列（`\x1b[...m`），其余 CSI 序列（光标移动等，terminal-only，
+// 没有意义直接丢弃）连同裸 \r 一起剥掉。
+const ANSI_16 = [
+  '#000000', '#cc0000', '#4e9a06', '#c4a000', '#3465a4', '#75507b', '#06989a', '#d3d7cf',
+  '#555753', '#ef2929', '#8ae234', '#fce94f', '#729fcf', '#ad7fa8', '#34e2e2', '#eeeeec',
+];
+
+function _ansi256ToHex(n) {
+  n = n | 0;
+  if (n < 16) return ANSI_16[n];
+  if (n <= 231) {
+    const cube = [0, 95, 135, 175, 215, 255];
+    const i = n - 16;
+    const rgb = [cube[Math.floor(i / 36) % 6], cube[Math.floor(i / 6) % 6], cube[i % 6]];
+    return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+  const v = Math.max(0, Math.min(255, 8 + (n - 232) * 10));
+  const h = v.toString(16).padStart(2, '0');
+  return '#' + h + h + h;
+}
+
+function ansiToHtml(text) {
+  const raw = String(text ?? '');
+  if (raw.indexOf('\x1b') === -1) return esc(raw);
+
+  // 非 SGR 的 CSI 序列（光标移动/清行等）丢弃，SGR（以 m 结尾）留到下面解析。
+  const cleaned = raw
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, seq => (seq.endsWith('m') ? seq : ''))
+    .replace(/\r(?!\n)/g, '');
+
+  let out = '';
+  let openSpan = false;
+  let state = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false, strike: false };
+
+  const styleFor = s => {
+    const parts = [];
+    if (s.fg) parts.push(`color:${s.fg}`);
+    if (s.bg) parts.push(`background:${s.bg}`);
+    if (s.bold) parts.push('font-weight:700');
+    if (s.dim) parts.push('opacity:.65');
+    if (s.italic) parts.push('font-style:italic');
+    const decos = [];
+    if (s.underline) decos.push('underline');
+    if (s.strike) decos.push('line-through');
+    if (decos.length) parts.push(`text-decoration:${decos.join(' ')}`);
+    return parts.join(';');
+  };
+  const closeSpan = () => { if (openSpan) { out += '</span>'; openSpan = false; } };
+  const openSpanIfNeeded = () => {
+    closeSpan();
+    const style = styleFor(state);
+    if (style) { out += `<span style="${style}">`; openSpan = true; }
+  };
+
+  const sgrRe = /\x1b\[([0-9;]*)m/g;
+  let lastIndex = 0, m;
+  while ((m = sgrRe.exec(cleaned))) {
+    const chunk = cleaned.slice(lastIndex, m.index);
+    if (chunk) out += esc(chunk);
+    lastIndex = sgrRe.lastIndex;
+
+    const codes = m[1] === '' ? [0] : m[1].split(';').map(Number);
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) state = { fg: null, bg: null, bold: false, dim: false, italic: false, underline: false, strike: false };
+      else if (c === 1) state.bold = true;
+      else if (c === 2) state.dim = true;
+      else if (c === 3) state.italic = true;
+      else if (c === 4) state.underline = true;
+      else if (c === 9) state.strike = true;
+      else if (c === 22) { state.bold = false; state.dim = false; }
+      else if (c === 23) state.italic = false;
+      else if (c === 24) state.underline = false;
+      else if (c === 29) state.strike = false;
+      else if (c >= 30 && c <= 37) state.fg = ANSI_16[c - 30];
+      else if (c === 38 && codes[i + 1] === 5) { state.fg = _ansi256ToHex(codes[i + 2]); i += 2; }
+      else if (c === 38 && codes[i + 1] === 2) { state.fg = `rgb(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]})`; i += 4; }
+      else if (c === 39) state.fg = null;
+      else if (c >= 40 && c <= 47) state.bg = ANSI_16[c - 40];
+      else if (c === 48 && codes[i + 1] === 5) { state.bg = _ansi256ToHex(codes[i + 2]); i += 2; }
+      else if (c === 48 && codes[i + 1] === 2) { state.bg = `rgb(${codes[i + 2]},${codes[i + 3]},${codes[i + 4]})`; i += 4; }
+      else if (c === 49) state.bg = null;
+      else if (c >= 90 && c <= 97) state.fg = ANSI_16[8 + (c - 90)];
+      else if (c >= 100 && c <= 107) state.bg = ANSI_16[8 + (c - 100)];
+    }
+    openSpanIfNeeded();
+  }
+  const rest = cleaned.slice(lastIndex);
+  if (rest) out += esc(rest);
+  closeSpan();
+  return out;
 }
 
 // ── 基础 Markdown 渲染（使用 marked.js） ──────────

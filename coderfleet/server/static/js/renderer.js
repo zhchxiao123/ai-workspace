@@ -6,6 +6,12 @@ class ChatLogRenderer {
     this.container = container;   // #log-content div
     this.inner = null;        // .chat-log div
     this.toolMap = {};          // tool_use_id → { headerEl, badgeEl, outputEl, exitEl, toolName, input, wrap }
+    this.subagentRenderers = {}; // Task/Agent 工具的 tool_use_id → { renderer, toggleRowEl, revealed }
+    this.activeMonitorTasks = {}; // Monitor 工具的 task_id → tool_use_id（system task_started/task_notification 用）
+    // TaskCreate/TaskUpdate/TaskList（agent 编排用的任务队列，跟上面注释里派生子agent
+    // 的 Task/Agent 工具是两码事）的累加快照：CC 分配的数字 id(string) → {subject, status, activeForm}。
+    // 单次 TaskCreate/TaskUpdate 调用只改动其中一条，但每次渲染都展示整份看板的当前状态。
+    this.taskBoard = new Map();
     this._buf = '';          // SSE 行缓冲
     this._jsonLineBuffer = ''; // 跨行 JSON 事件缓冲
     this._footerRendered = false;
@@ -138,6 +144,9 @@ class ChatLogRenderer {
     this.container.innerHTML = '<div class="chat-log timeline"></div>';
     this.inner = this.container.querySelector('.chat-log');
     this.toolMap = {};
+    this.subagentRenderers = {};
+    this.activeMonitorTasks = {};
+    this.taskBoard = new Map();
     this._buf = '';
     this._jsonLineBuffer = '';
     this._footerRendered = false;
@@ -290,6 +299,9 @@ class ChatLogRenderer {
       this._isPending = false;
       if (this.inner) this.inner.innerHTML = '';
       this.toolMap = {};
+      this.subagentRenderers = {};
+      this.activeMonitorTasks = {};
+      this.taskBoard = new Map();
       this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
@@ -306,6 +318,9 @@ class ChatLogRenderer {
         this.inner.innerHTML = '';
       }
       this.toolMap = {};
+      this.subagentRenderers = {};
+      this.activeMonitorTasks = {};
+      this.taskBoard = new Map();
       this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
@@ -363,12 +378,25 @@ class ChatLogRenderer {
 
   // ── 私有：事件分发 ────────────────────────────────────────
   _event(d) {
+    // Claude 的 Task/Agent 子agent事件带 parent_tool_use_id，指向发起它的
+    // tool_use.id——这类事件属于子agent自己的会话，不进主时间线，转发给
+    // 对应工具卡片内嵌的子会话渲染器（后者是一个完整的 ChatLogRenderer 实例，
+    // 复用同一套气泡/工具卡/diff/问答渲染逻辑，天然支持递归嵌套）。
+    if (d.parent_tool_use_id) {
+      const sub = this.subagentRenderers[d.parent_tool_use_id];
+      if (sub) {
+        sub.renderer._event(d);
+        if (!sub.revealed) { sub.revealed = true; sub.toggleRowEl.style.display = ''; }
+        return;
+      }
+    }
     switch (d.type) {
       // Claude
       case 'system': return this._claudeSys(d);
       case 'assistant': return this._claudeAssistant(d.message);
       case 'user': return this._claudeUser(d.message);
       case 'result': return this._claudeResult(d);
+      case 'rate_limit_event': return this._claudeRateLimit(d);
       // Codex
       case 'thread.started': return this._pill('会话开始', d.thread_id ? '#' + String(d.thread_id).slice(0, 8) : '');
       case 'turn.started': return; // 太噪，静默
@@ -429,7 +457,43 @@ class ChatLogRenderer {
       const model = (d.model || '').replace(/^claude-/, '');
       const n = (d.tools || []).length;
       this._pill('Claude 就绪', model + (n ? ` · ${n} 工具` : ''));
+      return;
     }
+    // Monitor 工具（CC 2.1+ 后台长驻命令）的生命周期用独立的 system 事件驱动，
+    // 不经过普通的 tool_result：task_started 登记 task_id→tool_use_id，
+    // task_notification 是任务结束的终态信号。这里只做"翻一下这张卡的状态灯"
+    // 这一件事——CC 真正的做法是把 task 存活期间被后台任务唤醒的后续轮次都
+    // 归并展示到同一个分组里（lobehub 的 activeTasks/pendingExternalSignal 状态机），
+    // 那需要一整套跨轮次归因的状态机，和这里"事件流直接转 DOM"的架构不是一个量级，
+    // 暂不实现；只做最诚实有用的子集：卡片状态灯准确反映"运行中/已结束"。
+    if (d.subtype === 'task_started' && d.task_id && d.tool_use_id) {
+      this.activeMonitorTasks[d.task_id] = d.tool_use_id;
+      const e = this.toolMap[d.tool_use_id];
+      if (e && e.statusEl) {
+        e.statusEl.textContent = '⏳';
+        e.badgeEl.className = 'tool-badge pending';
+      }
+      return;
+    }
+    if (d.subtype === 'task_notification' && d.task_id) {
+      const toolUseId = this.activeMonitorTasks[d.task_id];
+      delete this.activeMonitorTasks[d.task_id];
+      const e = toolUseId && this.toolMap[toolUseId];
+      if (e && e.statusEl) {
+        e.statusEl.textContent = '✓';
+        e.badgeEl.className = 'tool-badge ok';
+      }
+    }
+  }
+
+  // ── Claude: rate_limit_event ───────────────────────────────
+  // 每次请求都会带一份 rate_limit_info，status 绝大多数时候是 'allowed'——
+  // 正常状态不值得打断时间线；只在真的接近/触发限额时才提示一下。
+  _claudeRateLimit(d) {
+    const info = d.rate_limit_info || {};
+    if (!info.status || info.status === 'allowed') return;
+    const label = info.rateLimitType ? `${info.rateLimitType} 限额` : '速率限制';
+    this._pill(`⚠ ${label}`, info.status);
   }
 
   // ── Claude: assistant ─────────────────────────────────────
@@ -448,9 +512,15 @@ class ChatLogRenderer {
     for (const b of msg.content) {
       if (b.type === 'tool_result') {
         let text = '';
+        let images = [];
         if (typeof b.content === 'string') text = b.content;
-        else if (Array.isArray(b.content)) text = b.content.map(c => c.text || '').join('\n');
-        this._fillTool(b.tool_use_id, text, b.is_error);
+        else if (Array.isArray(b.content)) {
+          // Read 命中图片文件时，content 里混着一个没有 .text 的 image block——
+          // 原先直接 join 会把它拼成空字符串,图片就悄悄消失了。
+          text = b.content.filter(c => c.type !== 'image').map(c => c.text || '').join('\n');
+          images = b.content.filter(c => c.type === 'image' && c.source);
+        }
+        this._fillTool(b.tool_use_id, text, b.is_error, images);
       }
     }
   }
@@ -884,15 +954,48 @@ class ChatLogRenderer {
   // ── 工具调用卡片 ──────────────────────────────────────────
   _toolUse(block) {
     const { id, name, input } = block;
+    if (name === 'AskUserQuestion') { this._toolUseAskUserQuestion(block); return; }
+    if (name === 'TodoWrite') { this._toolUseTodoWrite(block); return; }
+    if (name === 'TaskUpdate') { this._toolUseTaskUpdate(block); return; }
+    if (name === 'TaskList') { this._toolUseTaskList(block); return; }
     const summary = formatToolSummary(name, input);
-    const detail = formatToolInput(name, input);
     const icon = toolIcon(name);
-    const hasInput = detail && detail !== summary;
+    // Edit 工具：old_string/new_string 用逐行 diff 展示，比截断后的纯文本预览
+    // 更能一眼看出改了什么;其余工具沿用原来的 JSON/命令预览。
+    const isDiff = name === 'Edit' && input && (input.old_string != null || input.new_string != null);
+    const detail = isDiff ? '' : formatToolInput(name, input);
+    const hasInput = isDiff || (detail && detail !== summary);
 
     const wrap = document.createElement('div');
     wrap.className = 'chat-tool-wrap';
     wrap.classList.add('timeline-node');
     wrap.dataset.toolId = id;
+
+    const inputBody = isDiff
+      ? `<div class="tool-input tool-diff">${renderInlineDiff(input.old_string, input.new_string)}</div>`
+      : (hasInput ? `<div class="tool-input">${esc(detail)}</div>` : '');
+    // 折叠区里输入/输出紧挨着堆叠，展开后不加标签容易分不清哪段是哪段——
+    // 尤其是 Bash 类工具，命令预览和执行结果长得都差不多。
+    const inputHtml = inputBody
+      ? `<div class="tool-section-label">${isDiff ? '改动' : '输入'}</div>${inputBody}`
+      : '';
+
+    // Task/Agent：这是 CC 派生子agent的工具，子agent自己的 assistant/user 轮次会
+    // 带 parent_tool_use_id 指回这里，用一个嵌套的 ChatLogRenderer 承接（见 _event）。
+    // 面板默认隐藏，第一条子agent事件到达时才现身——不是每次 Task 调用都真的分叉出
+    // 独立会话，没内容的话不该有一个空面板杵在那儿。
+    const isSubagentSpawn = name === 'Task' || name === 'Agent';
+    const subagentHtml = isSubagentSpawn ? `
+    <div class="subagent-toggle-row" id="sar-${id}" style="display:none">
+      <button class="subagent-toggle-btn" id="sabtn-${id}">▸ 子agent 会话</button>
+    </div>
+    <div class="subagent-thread collapsed" id="sathread-${id}"><div class="chat-log timeline"></div></div>` : '';
+
+    // ExitWorktree 且 action:'remove' + discard_changes:true 是真正的破坏性操作
+    // （移除 worktree 且不保留改动），单独标一个红色警示徽章，不要淹没在其余
+    // 工具卡片同样的视觉权重里。
+    const isDiscardRisk = name === 'ExitWorktree' && input?.action === 'remove' && input?.discard_changes === true;
+    const riskBadgeHtml = isDiscardRisk ? `<span class="tool-risk-badge">⚠ 丢弃改动</span>` : '';
 
     const card = document.createElement('div');
     card.className = 'chat-tool-card';
@@ -901,12 +1004,15 @@ class ChatLogRenderer {
     <span class="tool-status" id="ts-${id}">⏳</span>
     <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
     <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
+    ${riskBadgeHtml}
     <button class="tool-toggle" id="tt-${id}">展开</button>
   </div>
   <div class="tool-body collapsed" id="tbody-${id}">
-    ${hasInput ? `<div class="tool-input">${esc(detail)}</div>` : ''}
+    ${inputHtml}
+    <div class="tool-section-label" id="tol-${id}" style="display:none">输出</div>
     <div class="tool-output" id="to-${id}" style="display:none"></div>
     <div class="tool-exit"   id="te-${id}" style="display:none"></div>
+    ${subagentHtml}
   </div>`;
 
     wrap.appendChild(card);
@@ -922,14 +1028,345 @@ class ChatLogRenderer {
     });
     btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
 
+    if (isSubagentSpawn) {
+      const toggleRowEl = document.getElementById(`sar-${id}`);
+      const subBtn = document.getElementById(`sabtn-${id}`);
+      const subThread = document.getElementById(`sathread-${id}`);
+      subBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const collapsed = subThread.classList.toggle('collapsed');
+        subBtn.textContent = collapsed ? '▸ 子agent 会话' : '▾ 子agent 会话';
+      });
+      const subRenderer = new ChatLogRenderer(subThread, this.isRunning, false, this.projectName);
+      subRenderer.inner = subThread.querySelector('.chat-log');
+      this.subagentRenderers[id] = { renderer: subRenderer, toggleRowEl, revealed: false };
+    }
+
     this.toolMap[id] = {
       statusEl: document.getElementById(`ts-${id}`),
       badgeEl: document.getElementById(`tb-${id}`),
       outputEl: document.getElementById(`to-${id}`),
+      outputLabelEl: document.getElementById(`tol-${id}`),
       exitEl: document.getElementById(`te-${id}`),
       bodyEl: body,
       btnEl: btn,
       wrap, name, input,
+    };
+  }
+
+  // ── AskUserQuestion：问答卡片 ──────────────────────────────
+  // 交互式提问工具，input 是 1-4 道题（question/header/options/multiSelect）；
+  // tool_result 到达前先渲染"等待作答"占位，到达后按题目匹配已选项打勾，
+  // 匹配不上（纯文本/自由回复）就整卡底部加一行"回复"，而不是硬套成 JSON 转储。
+  _toolUseAskUserQuestion(block) {
+    const { id, name, input } = block;
+    const questions = normalizeAskUserQuestions(input);
+    const multiple = questions.length > 1;
+    const icon = toolIcon(name);
+    const summary = questions.length === 1 ? questions[0].question : `${questions.length} 个问题`;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-tool-wrap';
+    wrap.classList.add('timeline-node');
+    wrap.dataset.toolId = id;
+
+    const qBlocks = questions.map((q, i) => `
+  <div class="askq-block">
+    ${multiple ? `<span class="askq-ordinal">Q${i + 1}</span>` : ''}
+    <div class="askq-body">
+      <div class="askq-title-row">
+        <span class="askq-question">${esc(q.question)}</span>
+        ${multiple && q.header ? `<span class="askq-header-chip">${esc(q.header)}</span>` : ''}
+      </div>
+      <div class="askq-answer" id="askq-ans-${id}-${i}"><span class="askq-unanswered">等待作答…</span></div>
+    </div>
+  </div>`).join('');
+
+    const card = document.createElement('div');
+    card.className = 'chat-tool-card';
+    card.innerHTML = `
+  <div class="chat-tool-header">
+    <span class="tool-status" id="ts-${id}">⏳</span>
+    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
+    <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
+    <button class="tool-toggle" id="tt-${id}">收起</button>
+  </div>
+  <div class="tool-body" id="tbody-${id}">
+    <div class="tool-input tool-askq" id="tiq-${id}">${qBlocks}</div>
+    <div class="tool-exit" id="te-${id}" style="display:none"></div>
+  </div>`;
+
+    wrap.appendChild(card);
+    this._appendNode(wrap);
+
+    const header = card.querySelector('.chat-tool-header');
+    const body = document.getElementById(`tbody-${id}`);
+    const btn = document.getElementById(`tt-${id}`);
+    header.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('collapsed');
+      btn.textContent = collapsed ? '展开' : '收起';
+    });
+    btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
+
+    this.toolMap[id] = {
+      statusEl: document.getElementById(`ts-${id}`),
+      badgeEl: document.getElementById(`tb-${id}`),
+      outputEl: null,
+      outputLabelEl: null,
+      exitEl: document.getElementById(`te-${id}`),
+      bodyEl: body,
+      btnEl: btn,
+      wrap, name, input,
+      askQuestions: questions,
+    };
+  }
+
+  _fillAskUserAnswers(id, e, text) {
+    const questions = e.askQuestions || [];
+    const raw = (text || '').trim();
+    let answers = null;
+
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const src = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.answers
+          && typeof parsed.answers === 'object') ? parsed.answers : parsed;
+        if (src && typeof src === 'object' && !Array.isArray(src)) answers = src;
+      } catch { /* 非 JSON：走自由回复分支 */ }
+    }
+
+    const matchedAny = !!answers && questions.some(
+      q => Object.prototype.hasOwnProperty.call(answers, q.question)
+    );
+
+    questions.forEach((q, i) => {
+      const slot = document.getElementById(`askq-ans-${id}-${i}`);
+      if (!slot) return;
+      if (matchedAny) {
+        const val = answers[q.question];
+        const labels = Array.isArray(val) ? val : (val != null ? [val] : []);
+        slot.innerHTML = labels.length
+          ? labels.map(label => {
+            const opt = (q.options || []).find(o => o.label === label);
+            const desc = (opt && opt.description && opt.description !== label)
+              ? `<div class="askq-desc">${esc(opt.description)}</div>` : '';
+            return `<div class="askq-answer-line"><span class="askq-check">✓</span><div><div class="askq-answer-text">${esc(label)}</div>${desc}</div></div>`;
+          }).join('')
+          : `<span class="askq-unanswered">未作答</span>`;
+      } else if (!raw) {
+        slot.innerHTML = `<span class="askq-unanswered">未作答</span>`;
+      } else {
+        slot.innerHTML = '';
+      }
+    });
+
+    if (!matchedAny && raw) {
+      const wrap = document.getElementById(`tiq-${id}`);
+      if (wrap) {
+        const fr = document.createElement('div');
+        fr.className = 'askq-freeform';
+        fr.innerHTML = `<span class="askq-check">✎</span><span class="askq-answer-text">${esc(raw)}</span>`;
+        wrap.appendChild(fr);
+      }
+    }
+  }
+
+  // 待办/任务面板的单行渲染，TodoWrite 和下面的 TaskCreate/Update/List 任务看板共用——
+  // 两者的条目形状不同（{content,status,activeForm} vs {subject,status,activeForm}），
+  // 调用方各自把"非 in_progress 状态下要显示的文字"传进 text 参数。
+  _renderTaskRowHtml(text, status, activeForm) {
+    if (status === 'in_progress') {
+      return `<div class="todo-row todo-row-active"><span class="todo-row-icon">▶</span><span class="todo-row-text todo-active">${esc(activeForm || text || '')}</span></div>`;
+    }
+    if (status === 'deleted') {
+      return `<div class="todo-row"><span class="todo-check">✗</span><span class="todo-row-text todo-done">${esc(text || '')}</span></div>`;
+    }
+    const done = status === 'completed';
+    return `<div class="todo-row"><span class="todo-check${done ? ' done' : ''}">${done ? '✓' : '○'}</span><span class="todo-row-text${done ? ' todo-done' : ''}">${esc(text || '')}</span></div>`;
+  }
+
+  // ── TodoWrite：待办清单卡片 ────────────────────────────────
+  // input.todos = [{content, status, activeForm}]，status 是 pending/in_progress/completed。
+  // tool_result 只是一句确认文本（"Todos have been modified successfully"之类），没有信息量，
+  // 卡片本身就是从 tool_use.input 里的最新清单状态渲染完的，不需要等 tool_result 再填充。
+  _toolUseTodoWrite(block) {
+    const { id, name, input } = block;
+    const todos = Array.isArray(input?.todos) ? input.todos : [];
+    const total = todos.length;
+    const completed = todos.filter(t => t?.status === 'completed').length;
+    const inProgress = todos.find(t => t?.status === 'in_progress');
+    const allDone = total > 0 && completed === total;
+
+    const icon = toolIcon(name);
+    const summary = inProgress
+      ? (inProgress.activeForm || inProgress.content || '')
+      : (allDone ? '全部完成' : `${total} 项待办`);
+
+    const headerIcon = inProgress ? '▶' : (allDone ? '✓' : '☰');
+    const headerLabel = inProgress ? '当前步骤' : (allDone ? '全部完成' : '待办事项');
+    const headerDetailText = inProgress ? (inProgress.activeForm || inProgress.content || '') : '';
+
+    const rows = todos.map(t => this._renderTaskRowHtml(t?.content, t?.status, t?.activeForm)).join('');
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-tool-wrap';
+    wrap.classList.add('timeline-node');
+    wrap.dataset.toolId = id;
+
+    const card = document.createElement('div');
+    card.className = 'chat-tool-card';
+    card.innerHTML = `
+  <div class="chat-tool-header">
+    <span class="tool-status" id="ts-${id}">⏳</span>
+    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
+    <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
+    <button class="tool-toggle" id="tt-${id}">收起</button>
+  </div>
+  <div class="tool-body" id="tbody-${id}">
+    <div class="todo-header">
+      <span class="todo-header-icon">${headerIcon}</span>
+      <span class="todo-header-label">${esc(headerLabel)}${headerDetailText ? `: <span class="todo-header-detail">${esc(headerDetailText)}</span>` : ''}</span>
+      <span class="todo-header-count">${completed}/${total}</span>
+    </div>
+    <div class="todo-list">${rows}</div>
+  </div>`;
+
+    wrap.appendChild(card);
+    this._appendNode(wrap);
+
+    const header = card.querySelector('.chat-tool-header');
+    const body = document.getElementById(`tbody-${id}`);
+    const btn = document.getElementById(`tt-${id}`);
+    header.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('collapsed');
+      btn.textContent = collapsed ? '展开' : '收起';
+    });
+    btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
+
+    this.toolMap[id] = {
+      statusEl: document.getElementById(`ts-${id}`),
+      badgeEl: document.getElementById(`tb-${id}`),
+      outputEl: null,
+      outputLabelEl: null,
+      exitEl: null,
+      bodyEl: body,
+      btnEl: btn,
+      wrap, name, input,
+      isTodoWrite: true,
+    };
+  }
+
+  // ── TaskUpdate：更新任务看板并展示这一次更新做了什么 ─────────
+  // input = {taskId, status?, subject?, activeForm?, ...}。status:'deleted' 直接从
+  // this.taskBoard 里摘掉，其余状态合并进已有条目（没有就新建一条只有 id 的占位）。
+  // 卡片头部显示"这一次更新"本身（已完成/已开始/已重置/已删除 + 主题），body 里展示
+  // 整份看板此刻的最新状态——不是只显示这一条，这样连续几次 TaskUpdate 才能看出进度。
+  _toolUseTaskUpdate(block) {
+    const { input } = block;
+    const taskId = input?.taskId != null ? String(input.taskId) : null;
+    let subjectForHeader = input?.subject || '';
+
+    if (taskId) {
+      const existing = this.taskBoard.get(taskId) || {};
+      if (!subjectForHeader) subjectForHeader = existing.subject || '';
+      if (input.status === 'deleted') {
+        this.taskBoard.delete(taskId);
+      } else {
+        const next = { ...existing };
+        if (input.subject != null) next.subject = input.subject;
+        if (input.activeForm != null) next.activeForm = input.activeForm;
+        if (input.status != null) next.status = input.status;
+        this.taskBoard.set(taskId, next);
+      }
+    }
+
+    const STATUS_META = {
+      completed:   { icon: '✓', verb: '已完成' },
+      deleted:     { icon: '✗', verb: '已删除' },
+      in_progress: { icon: '▶', verb: '已开始' },
+      pending:     { icon: '↺', verb: '已重置' },
+    };
+    const meta = STATUS_META[input?.status] || { icon: '☰', verb: '更新任务' };
+
+    this._renderTaskBoardCard(block, { icon: meta.icon, label: meta.verb, detail: subjectForHeader });
+  }
+
+  // ── TaskList：不改动看板状态，只是把当前快照重新展示一遍 ───────
+  _toolUseTaskList(block) {
+    this._renderTaskBoardCard(block, null);
+  }
+
+  // TaskUpdate/TaskList 共用的任务看板卡片。headerOverride 为 null 时展示标准聚合头
+  // （当前步骤 / 全部完成 / 任务看板 + 完成数/总数）；TaskUpdate 传入
+  // {icon, label, detail} 描述"这一次更新做了什么"，覆盖掉聚合头。
+  _renderTaskBoardCard(block, headerOverride) {
+    const { id, name, input } = block;
+    const items = [...this.taskBoard.entries()]
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([taskId, t]) => ({ id: taskId, ...t }));
+
+    const total = items.length;
+    const completed = items.filter(t => t.status === 'completed').length;
+    const inProgress = items.find(t => t.status === 'in_progress');
+    const allDone = total > 0 && completed === total;
+
+    const icon = toolIcon(name);
+    const headerIcon = headerOverride ? headerOverride.icon : (inProgress ? '▶' : (allDone ? '✓' : '☰'));
+    const headerLabel = headerOverride ? headerOverride.label : (inProgress ? '当前步骤' : (allDone ? '全部完成' : '任务看板'));
+    const headerDetailText = headerOverride
+      ? (headerOverride.detail || '')
+      : (inProgress ? (inProgress.activeForm || inProgress.subject || '') : '');
+    const summary = headerDetailText || headerLabel;
+
+    const rows = items.length
+      ? items.map(t => this._renderTaskRowHtml(t.subject, t.status, t.activeForm)).join('')
+      : `<div class="todo-row"><span class="todo-row-text" style="opacity:.6">(暂无任务)</span></div>`;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-tool-wrap';
+    wrap.classList.add('timeline-node');
+    wrap.dataset.toolId = id;
+
+    const card = document.createElement('div');
+    card.className = 'chat-tool-card';
+    card.innerHTML = `
+  <div class="chat-tool-header">
+    <span class="tool-status" id="ts-${id}">⏳</span>
+    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
+    <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
+    <button class="tool-toggle" id="tt-${id}">收起</button>
+  </div>
+  <div class="tool-body" id="tbody-${id}">
+    <div class="todo-header">
+      <span class="todo-header-icon">${headerIcon}</span>
+      <span class="todo-header-label">${esc(headerLabel)}${headerDetailText ? `: <span class="todo-header-detail">${esc(headerDetailText)}</span>` : ''}</span>
+      <span class="todo-header-count">${completed}/${total}</span>
+    </div>
+    <div class="todo-list">${rows}</div>
+  </div>`;
+
+    wrap.appendChild(card);
+    this._appendNode(wrap);
+
+    const header = card.querySelector('.chat-tool-header');
+    const body = document.getElementById(`tbody-${id}`);
+    const btn = document.getElementById(`tt-${id}`);
+    header.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('collapsed');
+      btn.textContent = collapsed ? '展开' : '收起';
+    });
+    btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
+
+    this.toolMap[id] = {
+      statusEl: document.getElementById(`ts-${id}`),
+      badgeEl: document.getElementById(`tb-${id}`),
+      outputEl: null,
+      outputLabelEl: null,
+      exitEl: null,
+      bodyEl: body,
+      btnEl: btn,
+      wrap, name, input,
+      isTaskBoard: true,
     };
   }
 
@@ -939,25 +1376,56 @@ class ChatLogRenderer {
   // 超限后先截断显示，点「显示完整输出」再补上剩余部分。
   static TOOL_OUTPUT_TRUNCATE_LEN = 8000;
 
+  // 这些工具的结果几乎总是"要看的东西"（改了什么/建了什么/计划是什么），
+  // 不管长短都直接展开，不再套用行数/字符数的通用启发式。
+  // TodoWrite/AskUserQuestion 不在这张表里——它们各自走专门的渲染方法
+  // （_toolUseTodoWrite/_toolUseAskUserQuestion），从不经过这条通用展开逻辑。
+  static ALWAYS_EXPAND_TOOLS = new Set(['Edit', 'Write', 'Task']);
+
+  // Read 命中图片文件时 tool_result 带的是 base64 image block 而非文本，
+  // 原来直接当文本处理会渲染出一片空白——这里换成缩略图，点击可在新标签打开原图。
+  _setToolOutputImages(el, images) {
+    el.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-output-images';
+    for (const img of images) {
+      const src = img.source || {};
+      let url = '';
+      if (src.type === 'base64' && src.data) url = `data:${src.media_type || 'image/png'};base64,${src.data}`;
+      else if (src.type === 'url' && src.url) url = src.url;
+      if (!url) continue;
+      const el2 = document.createElement('img');
+      el2.className = 'tool-output-img';
+      el2.src = url;
+      el2.loading = 'lazy';
+      el2.addEventListener('click', ev => { ev.stopPropagation(); window.open(url, '_blank'); });
+      wrap.appendChild(el2);
+    }
+    el.appendChild(wrap);
+  }
+
+  // ansiToHtml（utils.js）把 Bash 类工具输出里的 ANSI 颜色码渲染成带色 <span>；
+  // 没有转义码的普通文本原样走 esc() 转义，跟原来 textContent 视觉上没有差别，
+  // 所以这里对所有工具的输出统一用它，不需要按工具名区分。
   _setToolOutputText(el, out, ok) {
     if (!out) { el.textContent = ok ? '(无输出)' : '(执行失败)'; return; }
-    if (out.length <= ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN) { el.textContent = out; return; }
+    if (out.length <= ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN) { el.innerHTML = ansiToHtml(out); return; }
 
-    el.textContent = out.slice(0, ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN);
+    el.innerHTML = ansiToHtml(out.slice(0, ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN));
     const remaining = out.length - ChatLogRenderer.TOOL_OUTPUT_TRUNCATE_LEN;
     const more = document.createElement('button');
     more.className = 'tool-output-more';
     more.textContent = `… 显示完整输出（还有 ${remaining.toLocaleString()} 字符）`;
     more.addEventListener('click', ev => {
       ev.stopPropagation();
-      el.textContent = out;
+      el.innerHTML = ansiToHtml(out);
       more.remove();
     });
     el.after(more);
   }
 
   // ── 填充工具结果 ──────────────────────────────────────────
-  _fillTool(id, text, isError) {
+  _fillTool(id, text, isError, images) {
     const e = this.toolMap[id];
     if (!e) return;
 
@@ -966,31 +1434,80 @@ class ChatLogRenderer {
     e.badgeEl.className = `tool-badge ${ok ? 'ok' : 'fail'}`;
     e.badgeEl.textContent = `${toolIcon(e.name)} ${e.name}`;
 
-    const out = (text || '').trim();
+    if (e.name === 'AskUserQuestion' && e.askQuestions) {
+      this._fillAskUserAnswers(id, e, text);
+      e.exitEl.style.display = '';
+      e.exitEl.className = `tool-exit ${ok ? 'ok-exit' : 'fail-exit'}`;
+      e.exitEl.textContent = ok ? '✓  已作答' : '✗  未作答';
+      return;
+    }
+
+    // TodoWrite/TaskUpdate/TaskList 的卡片已经从 tool_use.input / this.taskBoard 渲染
+    // 完整——tool_result 只是一句确认文本，没有 outputEl/exitEl 可填
+    // （两者的 toolMap 条目里都是 null），到这就结束。
+    if (e.isTodoWrite || e.isTaskBoard) return;
+
+    // TaskCreate 的 tool_result 是 CC 自己确认成功创建的文本："Task #<N> created
+    // successfully: <subject>"——数字 id 只有这时候才揭晓（tool_use.input 里没有，
+    // 是 CC 分配的），要靠正则从这句话里抠出来才能把它登记进任务看板供后续
+    // TaskUpdate/TaskList 引用。TaskCreate 本身仍然走通用卡片正常展示这行输出，
+    // 不提前 return——这里只是顺带把状态记下来。
+    if (e.name === 'TaskCreate' && ok) {
+      const m = /Task #(\d+) created successfully/.exec(text || '');
+      if (m) {
+        this.taskBoard.set(m[1], {
+          subject: e.input?.subject || '',
+          activeForm: e.input?.activeForm || '',
+          status: 'pending',
+        });
+      }
+    }
+
+    // Read 工具的文本结果是 CLI 自带的 `cat -n` 式行号（"␣␣␣1\t内容"），对着行号
+    // 读代码没有意义，展示前统一剥掉。
+    const rawOut = e.name === 'Read' ? stripReadLineNumbers(text || '') : (text || '');
+    const out = rawOut.trim();
+    const hasImages = !!(images && images.length);
+    if (e.outputLabelEl) e.outputLabelEl.style.display = '';
     e.outputEl.style.display = '';
     e.outputEl.className = `tool-output${ok ? '' : ' is-error'}`;
-    this._setToolOutputText(e.outputEl, out, ok);
+    if (hasImages) {
+      this._setToolOutputImages(e.outputEl, images);
+    } else if (e.name === 'Skill' && out) {
+      // Skill 工具的产出本来就是给人看的说明文字，通常带 markdown 格式
+      // （列表/代码块/加粗），按 markdown 渲染比转义成一大段纯文本可读得多。
+      e.outputEl.classList.add('tool-output-md');
+      e.outputEl.innerHTML = renderMd(out);
+    } else {
+      this._setToolOutputText(e.outputEl, out, ok);
+    }
 
     e.exitEl.style.display = '';
     e.exitEl.className = `tool-exit ${ok ? 'ok-exit' : 'fail-exit'}`;
     e.exitEl.textContent = ok ? '✓  exit 0' : '✗  error';
 
-    // 短输出自动展开
+    // 自动展开：要么工具本身总是值得一看，要么命中了图片，要么输出足够短
     const lineCount = out.split('\n').length;
-    if (lineCount <= 6 && out.length <= 400) {
+    const shouldExpand = ChatLogRenderer.ALWAYS_EXPAND_TOOLS.has(e.name) ||
+      (e.name === 'Read' && hasImages) ||
+      (lineCount <= 6 && out.length <= 400);
+    if (shouldExpand) {
       e.bodyEl.classList.remove('collapsed');
       e.btnEl.textContent = '收起';
     }
 
-    // 文件操作：追加变更徽章
-    if (['Write', 'Edit', 'NotebookEdit'].includes(e.name) && ok) {
-      const fp = e.input?.file_path || e.input?.path || '';
+    // 文件操作：追加变更徽章。Write/Edit 的卡片头部本来就显示着同一个 file_path
+    // （Edit 现在还带完整 diff 正文），这里再补一张"EDIT xxx.js"卡纯属重复。
+    // NotebookEdit 没有专门的 summary/input 格式化（走的是默认 JSON 预览），
+    // 头部看不出干净的路径，这里的徽章是它唯一的清晰路径展示，所以保留。
+    if (e.name === 'NotebookEdit' && ok) {
+      // NotebookEdit 的真实字段是 notebook_path，不是 file_path/path——之前这行
+      // 一直取不到值，徽章从未真正显示过。
+      const fp = e.input?.notebook_path || e.input?.file_path || e.input?.path || '';
       if (fp) {
-        const kind = e.name === 'Write' ? 'create' : 'edit';
-        const label = e.name === 'Write' ? 'CREATE' : 'EDIT';
         const fc = document.createElement('div');
         fc.className = 'chat-file-card timeline-node';
-        fc.innerHTML = `<span class="file-op-badge ${kind}">${label}</span><span class="file-path">${esc(fp)}</span>`;
+        fc.innerHTML = `<span class="file-op-badge edit">EDIT</span><span class="file-path">${esc(fp)}</span>`;
         e.wrap.after(fc);
       }
     }

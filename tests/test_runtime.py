@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from pathlib import Path
 
@@ -141,6 +142,85 @@ def test_run_persistent_spawns_via_runtime_then_streams(
     # 真正走到了下游流式跟踪，并置为 done
     assert streamed == [task.id]
     assert sched.get_task(task.id).status == TaskStatus.done
+
+
+def test_stream_container_log_does_not_corrupt_utf8_char_split_across_poll_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Regression test for a real, reproducible corruption. _stream_container_log
+    polls host_log's byte size every 0.3s and copies whatever's new to
+    log_path. The old code decoded each raw byte-range chunk independently
+    (`new_bytes.decode("utf-8", errors="replace")`) before writing it. If a
+    poll tick's byte boundary lands in the middle of a multi-byte UTF-8
+    character — routine for this codebase, whose task prompts/content are
+    frequently Chinese — decoding the two halves independently replaces that
+    character with U+FFFD garbage on both sides of the cut; concatenating the
+    (already-decoded) halves afterward cannot undo it. If the corruption
+    lands near a JSON structural byte the line fails to JSON.parse entirely
+    and degrades to raw/garbled display — this is what was actually observed
+    after CC's tool_use_result payloads grew large enough to make an unlucky
+    mid-character poll tick likely (bigger lines take longer to write, so
+    more polls get a chance to land mid-line/mid-character). The fix defers
+    decoding until a complete, newline-terminated chunk is buffered, so it
+    only ever decodes byte ranges that start/end on valid UTF-8 boundaries.
+
+    Drives the real polling loop with asyncio.sleep replaced by a
+    call-counted fake, so the two writes to host_log land deterministically
+    on either side of one specific poll tick instead of racing on real
+    wall-clock timing.
+    """
+    real_sleep = asyncio.sleep
+    call_count = 0
+
+    text_val = "写周报总结进展完成情况"
+    line = (
+        json.dumps(
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": text_val},
+            ]}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    split_at = line.index(text_val.encode("utf-8")) + 1  # 切在第一个中文字符的 3 字节中间
+    first_half, second_half = line[:split_at], line[split_at:]
+
+    host_log = tmp_path / "host.log"
+    host_exit = tmp_path / "host.exit"
+    host_log.write_bytes(first_half)  # 轮询循环启动前，host_log 里已经是"半个字符"
+
+    async def controlled_sleep(_seconds: float) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            with host_log.open("ab") as f:
+                f.write(second_half)
+        elif call_count == 3:
+            host_exit.write_text("0")
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", controlled_sleep)
+
+    sched = Scheduler(tmp_path)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    async def noop_usage(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(sched, "_append_usage_status", noop_usage)
+    monkeypatch.setattr(sched, "_sync_board_card_for_task", lambda *_a, **_k: None)
+
+    asyncio.run(asyncio.wait_for(
+        sched._stream_container_log(task, acc, log_path, host_log, host_exit, conversation=None),
+        timeout=5,
+    ))
+
+    content = log_path.read_text(encoding="utf-8")
+    body_lines = [l for l in content.splitlines() if l.startswith("{")]
+    assert len(body_lines) == 1, f"expected one JSON line, got: {body_lines!r}"
+    parsed = json.loads(body_lines[0])
+    assert parsed["message"]["content"][0]["content"] == text_val
 
 
 def test_run_persistent_nonzero_exit_marks_failed(
