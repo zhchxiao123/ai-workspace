@@ -58,6 +58,91 @@ def test_extract_grok_output_ignores_thought_tokens() -> None:
     assert extract_task_output(log, "grok") == "我先从仓库结构入手"
 
 
+def test_extract_codex_item_completed_agent_message_text() -> None:
+    # Shape from `codex exec --json` (what account_type_registry.py actually
+    # invokes) -- final text arrives on item.completed/agent_message, not on
+    # a top-level "message" event.
+    log = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "abc123"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "item.started", "item": {"id": "item_1", "type": "agent_message"}}),
+        json.dumps({
+            "type": "item.completed",
+            "item": {"id": "item_1", "type": "agent_message", "text": "Here is the final answer."},
+        }),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 120, "output_tokens": 45}}),
+    ])
+
+    result = parse_log(log, "codex")
+    assert result.text == "Here is the final answer."
+    assert result.tokens_input == 120
+    assert result.tokens_output == 45
+
+
+def test_extract_codex_turn_completed_usage_is_cumulative_not_summed() -> None:
+    # turn.completed's usage is a running total for the whole thread, not a
+    # per-turn delta -- a second turn.completed must overwrite, not add to,
+    # the first, or usage would be double-counted for multi-turn threads.
+    log = "\n".join([
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 20}}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 150, "output_tokens": 35}}),
+    ])
+
+    result = parse_log(log, "codex")
+    assert result.tokens_input == 150
+    assert result.tokens_output == 35
+
+
+def test_extract_codex_legacy_message_role_still_works() -> None:
+    # Older codex JSON schema some historical logs may still carry.
+    log = json.dumps({
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "legacy answer"}],
+    })
+
+    assert extract_task_output(log, "codex") == "legacy answer"
+
+
+def test_extract_opencode_part_wrapped_text_and_tokens() -> None:
+    # Current OpenCode CLI nests everything under `part` (matches
+    # renderer.js's _opencodeText/_opencodeStepFinish) -- previously the
+    # parser only looked at flat top-level fields and silently fell back to
+    # a raw JSONL dump for every opencode task.
+    log = "\n".join([
+        json.dumps({"type": "step_start", "sessionID": "sess1", "part": {"type": "step-start", "id": "p1"}}),
+        json.dumps({"type": "text", "part": {"type": "text", "id": "p2", "text": "Final response text."}}),
+        json.dumps({
+            "type": "step_finish",
+            "part": {
+                "type": "step-finish", "id": "p3",
+                "tokens": {"input": 100, "output": 30, "reasoning": 5, "cache": {"read": 10, "write": 2}},
+                "cost": 0.01,
+            },
+        }),
+    ])
+
+    result = parse_log(log, "opencode")
+    assert result.text == "Final response text."
+    assert result.tokens_input == 112  # input + cache.read + cache.write
+    assert result.tokens_output == 35  # output + reasoning
+    assert result.cost_usd == 0.01
+
+
+def test_extract_opencode_legacy_flat_shape_still_works() -> None:
+    log = json.dumps({
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "legacy answer"}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    })
+
+    result = parse_log(log, "opencode")
+    assert result.text == "legacy answer"
+    assert result.tokens_input == 10
+    assert result.tokens_output == 5
+
+
 def _pi_message(role, content, usage=None):
     msg = {"role": role, "content": content}
     if usage is not None:

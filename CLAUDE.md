@@ -90,10 +90,7 @@ CoderFleet's job is to let one operator run more AI-coding-CLI work than any sin
 
 ## Iron rules
 
-<!-- map-init placeholder — no incident yet shows a process step (test
-     invocation, release step) being skipped and causing a break. Add one
-     here only after that happens once; don't promote the `uv run --with
-     pytest pytest -q` line under Key commands on speculation alone. -->
+- **Run the full test suite after every change, before reporting the work done.** `uv run --with pytest pytest -q`. Correct form: treat a change as incomplete until the full suite has been run and passes (or any failures are understood and called out) — not just the tests touching the edited file.
 
 ## Reference map
 

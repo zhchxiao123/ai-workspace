@@ -12,6 +12,7 @@ class ChatLogRenderer {
     // 的 Task/Agent 工具是两码事）的累加快照：CC 分配的数字 id(string) → {subject, status, activeForm}。
     // 单次 TaskCreate/TaskUpdate 调用只改动其中一条，但每次渲染都展示整份看板的当前状态。
     this.taskBoard = new Map();
+    this.taskBoardEl = null; this.taskBoardIconEl = null; this.taskBoardLabelEl = null; this.taskBoardCountEl = null; this.taskBoardListEl = null;
     this._buf = '';          // SSE 行缓冲
     this._jsonLineBuffer = ''; // 跨行 JSON 事件缓冲
     this._footerRendered = false;
@@ -147,6 +148,7 @@ class ChatLogRenderer {
     this.subagentRenderers = {};
     this.activeMonitorTasks = {};
     this.taskBoard = new Map();
+    this.taskBoardEl = null; this.taskBoardIconEl = null; this.taskBoardLabelEl = null; this.taskBoardCountEl = null; this.taskBoardListEl = null;
     this._buf = '';
     this._jsonLineBuffer = '';
     this._footerRendered = false;
@@ -302,6 +304,7 @@ class ChatLogRenderer {
       this.subagentRenderers = {};
       this.activeMonitorTasks = {};
       this.taskBoard = new Map();
+      this.taskBoardEl = null; this.taskBoardIconEl = null; this.taskBoardLabelEl = null; this.taskBoardCountEl = null; this.taskBoardListEl = null;
       this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
@@ -321,6 +324,7 @@ class ChatLogRenderer {
       this.subagentRenderers = {};
       this.activeMonitorTasks = {};
       this.taskBoard = new Map();
+      this.taskBoardEl = null; this.taskBoardIconEl = null; this.taskBoardLabelEl = null; this.taskBoardCountEl = null; this.taskBoardListEl = null;
       this._jsonLineBuffer = '';
       this._footerRendered = false;
       this.processWrapper = null;
@@ -405,9 +409,16 @@ class ChatLogRenderer {
       case 'message': return this._codexMessage(d);
       case 'tool_call': return this._codexToolCall(d);
       case 'tool_result': return this._codexToolResult(d);
-      case 'reasoning': return this._thinking(d.text || d.thinking || '');
+      // OpenCode 的 reasoning 事件把文本包在 d.part.text 里（跟它的 text 事件一样），
+      // Codex 的是扁平 d.text/d.thinking——按顺序试探两种取值即可共用一个 case。
+      case 'reasoning': return this._thinking(d.part?.text || d.text || d.thinking || '');
       case 'item.started': return this._codexItemStarted(d.item);
+      case 'item.updated': return this._codexItemUpdated(d.item);
       case 'item.completed': return this._codexItemCompleted(d.item);
+      // Codex/OpenCode 共用：CLI 级终止错误（限流、鉴权失败、进程崩溃等）。
+      // 之前没有这个 case，会掉进 default 变成一坨原始 JSON。
+      case 'turn.failed': return this._agentError(d);
+      case 'error': return this._agentError(d);
       // OpenCode
       case 'step_start': return this._opencodeStepStart(d);
       case 'tool_use': return this._opencodeToolUse(d);
@@ -648,7 +659,22 @@ class ChatLogRenderer {
         name: 'Bash',
         input: { command: displayCmd }
       });
+    } else if (item.type === 'todo_list') {
+      this._codexTodoList(item);
+    } else if (this._isCodexGenericToolItem(item)) {
+      this._toolUse({
+        id: item.id,
+        name: this._codexToolItemName(item),
+        input: this._codexToolItemInput(item),
+      });
     }
+  }
+
+  // item.updated 目前只有 Codex 的 todo_list（计划工具)会在 completed 之前
+  // 多次推送进度快照——其余 item 类型没有这个生命周期阶段。
+  _codexItemUpdated(item) {
+    if (!item || item.type !== 'todo_list') return;
+    this._codexTodoList(item);
   }
 
   _codexItemCompleted(item) {
@@ -693,7 +719,177 @@ class ChatLogRenderer {
     `;
         this._appendNode(el);
       }
+    } else if (item.type === 'todo_list') {
+      this._codexTodoList(item);
+      const failed = item.status === 'cancelled' || item.status === 'error' || item.status === 'failed';
+      this._fillTool(item.id, '', failed);
+    } else if (this._isCodexGenericToolItem(item)) {
+      const id = item.id;
+      if (!this.toolMap[id]) this._codexItemStarted(item);
+      const isSuccess = item.status !== 'cancelled' && item.status !== 'error' && item.status !== 'failed';
+      this._fillTool(id, this._codexToolItemResultText(item, isSuccess), !isSuccess);
     }
+  }
+
+  // ── Codex: 计划工具（todo_list）── 跟 Claude 的 TodoWrite 是同一个概念，
+  // 但生命周期不同：TodoWrite 每次调用都是全新的 tool_use id，todo_list 是
+  // 同一个 item.id 反复经历 started → updated(0次或多次) → completed，所以
+  // 复用 TodoWrite 的卡片外观，但首次创建后走原地更新而不是重新建卡。
+  _codexTodoList(item) {
+    const todos = this._codexTodoItemsToTodoWriteShape(item);
+    const id = item.id;
+    if (!this.toolMap[id]) {
+      this._toolUseTodoWrite({ id, name: 'TodoWrite', input: { todos } });
+      return;
+    }
+    this._updateTodoWriteBody(id, todos);
+  }
+
+  // Codex 的 todo 条目只有 { text, completed } 布尔态，没有 Claude
+  // TodoWrite 的三态 status——按跟 lobehub 同样的规则合成：第一条未完成的
+  // 算"进行中"，其余未完成的算"待办"，点亮同一套进度 UI。
+  _codexTodoItemsToTodoWriteShape(item) {
+    const raw = Array.isArray(item.items) ? item.items : [];
+    let assignedProcessing = false;
+    return raw
+      .map(t => ({ completed: !!t?.completed, content: (t?.text || '').trim() }))
+      .filter(t => t.content)
+      .map(t => {
+        if (t.completed) return { content: t.content, status: 'completed', activeForm: t.content };
+        if (!assignedProcessing) {
+          assignedProcessing = true;
+          return { content: t.content, status: 'in_progress', activeForm: t.content };
+        }
+        return { content: t.content, status: 'pending', activeForm: t.content };
+      });
+  }
+
+  _updateTodoWriteBody(id, todos) {
+    const e = this.toolMap[id];
+    if (!e || !e.isTodoWrite || !e.bodyEl) return;
+    const total = todos.length;
+    const completed = todos.filter(t => t.status === 'completed').length;
+    const inProgress = todos.find(t => t.status === 'in_progress');
+    const allDone = total > 0 && completed === total;
+    const headerIcon = inProgress ? '▶' : (allDone ? '✓' : '☰');
+    const headerLabel = inProgress ? '当前步骤' : (allDone ? '全部完成' : '待办事项');
+    const headerDetailText = inProgress ? (inProgress.activeForm || inProgress.content || '') : '';
+    const headerEl = e.bodyEl.querySelector('.todo-header');
+    const listEl = e.bodyEl.querySelector('.todo-list');
+    if (headerEl) headerEl.innerHTML = `
+    <span class="todo-header-icon">${headerIcon}</span>
+    <span class="todo-header-label">${esc(headerLabel)}${headerDetailText ? `: <span class="todo-header-detail">${esc(headerDetailText)}</span>` : ''}</span>
+    <span class="todo-header-count">${completed}/${total}</span>`;
+    if (listEl) listEl.innerHTML = todos.map(t => this._renderTaskRowHtml(t.content, t.status, t.activeForm)).join('');
+  }
+
+  // ── Codex: 除 command_execution/todo_list/file_change/agent_message 外的
+  // item 类型（MCP 工具调用、网络搜索、多agent协作 spawn_agent/wait）——
+  // 之前这些类型完全没有分支，item.started/completed 直接被忽略，UI 上连
+  // 一条记录都不会出现。走通用工具卡片路径，不需要为每种都定制展示。
+  _isCodexGenericToolItem(item) {
+    return item.type === 'mcp_tool_call' || item.type === 'web_search' || item.type === 'collab_tool_call';
+  }
+
+  _codexToolItemName(item) {
+    if (item.type === 'web_search') return 'WebSearch';
+    if (item.type === 'mcp_tool_call') return item.tool || 'MCP';
+    return item.tool || 'Collab';
+  }
+
+  _codexToolItemInput(item) {
+    if (item.type === 'web_search') {
+      const action = item.action;
+      const query = (typeof item.query === 'string' && item.query.trim())
+        ? item.query.trim()
+        : (action && typeof action === 'object' ? (action.query || (Array.isArray(action.queries) ? action.queries[0] : '')) : '');
+      return { query: query || '' };
+    }
+    if (item.type === 'mcp_tool_call') {
+      return { server: item.server, tool: item.tool, arguments: item.arguments };
+    }
+    return { tool: item.tool, prompt: item.prompt, agents: item.receiver_thread_ids };
+  }
+
+  _codexToolItemResultText(item, isSuccess) {
+    if (item.type === 'web_search') return isSuccess ? '已完成网络搜索。' : '网络搜索失败。';
+    if (item.type === 'mcp_tool_call') return this._codexMcpResultText(item, isSuccess);
+    if (item.type === 'collab_tool_call') return this._codexCollabResultText(item, isSuccess);
+    return '';
+  }
+
+  // MCP 结果的信封形状不固定（{Ok:...}/{Err:...}/{ok:...}/裸值），尽量拆出
+  // 人可读的文本，拆不出来就退回 JSON 字符串，不留空白。
+  _codexMcpResultUnwrap(v) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      if ('Ok' in v) return v.Ok;
+      if ('Err' in v) return v.Err;
+      if ('ok' in v) return v.ok;
+    }
+    return v;
+  }
+
+  _codexMcpResultText(item, isSuccess) {
+    if (!isSuccess) {
+      // item.error may be absent even on failure — MCP tool failures are as
+      // often reported via an {Err:...} envelope on item.result as via a
+      // dedicated item.error field, so fall back to unwrapping the same way
+      // the success path does rather than reporting a content-free message.
+      const err = item.error || this._codexMcpResultUnwrap(item.result);
+      if (err && typeof err === 'object') return err.message || err.error || JSON.stringify(err);
+      if (typeof err === 'string' && err) return err;
+      return 'MCP 工具调用失败。';
+    }
+    const contentItemText = c => {
+      if (typeof c === 'string') return c;
+      if (c && typeof c === 'object') return c.text || c.content || JSON.stringify(c);
+      return String(c ?? '');
+    };
+    const result = this._codexMcpResultUnwrap(item.result);
+    if (Array.isArray(result)) return result.map(contentItemText).filter(Boolean).join('\n\n');
+    if (result && typeof result === 'object') {
+      if (Array.isArray(result.content)) return result.content.map(contentItemText).filter(Boolean).join('\n\n');
+      if (result.text || result.output) return result.text || result.output;
+    }
+    return typeof result === 'string' ? result : JSON.stringify(result ?? '');
+  }
+
+  _codexCollabResultText(item, isSuccess) {
+    const tool = item.tool || 'collaboration';
+    if (!isSuccess) return `${tool} ${item.status === 'cancelled' ? '已取消' : '失败'}。`;
+    const states = Object.values(item.agents_states || {});
+    const agentCount = (item.receiver_thread_ids || []).length || states.length;
+    if (tool === 'spawn_agent') {
+      return agentCount > 0 ? `已派生 ${agentCount} 个子agent。` : '已派生子agent。';
+    }
+    if (tool === 'wait') {
+      const done = states.find(s => s.status === 'completed' && s.message);
+      if (done) return `等待完成：${done.message}`;
+      return agentCount > 0 ? `${agentCount} 个子agent已完成等待。` : '等待完成。';
+    }
+    return `${tool} 已完成。`;
+  }
+
+  // ── Codex/OpenCode: CLI 级终止错误（限流、鉴权失败、进程崩溃）─────────
+  // 之前没有专门处理，会掉进 default 的 JSON 转储；这里只做展示，不重放
+  // lobehub 那套带时区数学的精确重试时间解析——原始错误文本本身通常已经
+  // 带了"try again at HH:MM"这类可读信息，直接展示比重新解析更不容易出错。
+  _agentError(d) {
+    const message =
+      (typeof d.message === 'string' && d.message) ||
+      (d.error && typeof d.error === 'object' && (d.error.message || d.error.type)) ||
+      (typeof d.error === 'string' && d.error) ||
+      (typeof d.result === 'string' && d.result) ||
+      'Agent 执行出错';
+
+    const isRateLimit = /usage limit|purchase more credits|rate limit/i.test(message);
+    const isAuth = /not authenticated|unauthorized|invalid.*(credential|token|key)|authentication/i.test(message)
+      || d.error?.name === 'ProviderAuthError' || d.error?.data?.statusCode === 401;
+
+    const label = isRateLimit ? '⚠ 触发限流' : (isAuth ? '⚠ 需要重新登录' : '✗ 执行出错');
+    this._pill(label, message);
+
+    if (!this._footerRendered) this._renderFooter('failed');
   }
 
   // ── Pi Agent ──────────────────────────────────────────────
@@ -1256,11 +1452,76 @@ class ChatLogRenderer {
     };
   }
 
-  // ── TaskUpdate：更新任务看板并展示这一次更新做了什么 ─────────
+  // ── 任务看板：全局唯一的 sticky 面板，原地更新而不是每次追加新卡片 ─────
+  // 之前每次 TaskUpdate 都整块重画一遍清单——8 项任务、更新十几次，时间线里
+  // 就是同一份清单被复制十几遍，只有标题那一行不一样。现在改成：整个会话只建
+  // 一个看板 DOM 节点（第一次出现 Task* 事件时创建），position:sticky 贴在
+  // 聊天区顶部，之后所有 TaskCreate/TaskUpdate/TaskList 都只原地改这一个节点
+  // 的内容；每次 TaskUpdate/TaskList 在时间线原本发生的位置只留一行 _pill()
+  // 叙事标记（"已完成: xxx"），不再带完整清单。
+  //
+  // 不用 _appendNode 挂载——要是恰好处于 foldProcess 的"任务执行过程"折叠区里，
+  // 会被 display:none 隐藏掉，直接违背"这块面板要一直看得见"的初衷。
+  _ensureTaskBoardEl() {
+    if (this.taskBoardEl) return;
+    const idp = this.idPrefix;
+    const wrap = document.createElement('div');
+    wrap.className = 'task-board-sticky is-muted';
+    wrap.innerHTML = `
+  <div class="todo-header task-board-header">
+    <span class="todo-header-icon" id="tbrd-icon-${idp}">☰</span>
+    <span class="todo-header-label" id="tbrd-label-${idp}">任务看板</span>
+    <span class="todo-header-count" id="tbrd-count-${idp}">0/0</span>
+    <button class="tool-toggle" id="tbrd-toggle-${idp}">收起</button>
+  </div>
+  <div class="todo-list" id="tbrd-list-${idp}"></div>`;
+
+    this.inner.appendChild(wrap);
+    this.taskBoardEl = wrap;
+    this.taskBoardIconEl = document.getElementById(`tbrd-icon-${idp}`);
+    this.taskBoardLabelEl = document.getElementById(`tbrd-label-${idp}`);
+    this.taskBoardCountEl = document.getElementById(`tbrd-count-${idp}`);
+    this.taskBoardListEl = document.getElementById(`tbrd-list-${idp}`);
+
+    const listEl = this.taskBoardListEl;
+    const toggleBtn = document.getElementById(`tbrd-toggle-${idp}`);
+    toggleBtn.addEventListener('click', () => {
+      const collapsed = listEl.classList.toggle('collapsed');
+      toggleBtn.textContent = collapsed ? '展开' : '收起';
+    });
+  }
+
+  // headerOverride 为 null 时展示标准聚合头（当前步骤 / 全部完成 / 任务看板 +
+  // 完成数/总数）；传 {icon, label, detail} 时展示"这一次操作做了什么"。
+  _updateTaskBoardEl(headerOverride) {
+    this._ensureTaskBoardEl();
+
+    const items = [...this.taskBoard.entries()]
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([taskId, t]) => ({ id: taskId, ...t }));
+
+    const total = items.length;
+    const completed = items.filter(t => t.status === 'completed').length;
+    const inProgress = items.find(t => t.status === 'in_progress');
+    const allDone = total > 0 && completed === total;
+
+    const headerIcon = headerOverride ? headerOverride.icon : (inProgress ? '▶' : (allDone ? '✓' : '☰'));
+    const headerLabel = headerOverride
+      ? (headerOverride.detail ? `${headerOverride.label}: ${headerOverride.detail}` : headerOverride.label)
+      : (inProgress ? `当前步骤: ${inProgress.activeForm || inProgress.subject || ''}` : (allDone ? '全部完成' : '任务看板'));
+
+    this.taskBoardIconEl.textContent = headerIcon;
+    this.taskBoardLabelEl.textContent = headerLabel;
+    this.taskBoardCountEl.textContent = `${completed}/${total}`;
+    this.taskBoardListEl.innerHTML = items.length
+      ? items.map(t => this._renderTaskRowHtml(t.subject, t.status, t.activeForm)).join('')
+      : `<div class="todo-row"><span class="todo-row-text" style="opacity:.6">(暂无任务)</span></div>`;
+  }
+
+  // ── TaskUpdate：更新看板状态 + 留一行叙事小药丸 ─────────────────
   // input = {taskId, status?, subject?, activeForm?, ...}。status:'deleted' 直接从
-  // this.taskBoard 里摘掉，其余状态合并进已有条目（没有就新建一条只有 id 的占位）。
-  // 卡片头部显示"这一次更新"本身（已完成/已开始/已重置/已删除 + 主题），body 里展示
-  // 整份看板此刻的最新状态——不是只显示这一条，这样连续几次 TaskUpdate 才能看出进度。
+  // this.taskBoard 里摘掉（看板的完成数/总数跟着变，不是留一行加删除线摆着）；
+  // 其余状态合并进已有条目（没有就新建一条）。
   _toolUseTaskUpdate(block) {
     const { input } = block;
     const taskId = input?.taskId != null ? String(input.taskId) : null;
@@ -1288,86 +1549,14 @@ class ChatLogRenderer {
     };
     const meta = STATUS_META[input?.status] || { icon: '☰', verb: '更新任务' };
 
-    this._renderTaskBoardCard(block, { icon: meta.icon, label: meta.verb, detail: subjectForHeader });
+    this._pill(meta.verb, subjectForHeader);
+    this._updateTaskBoardEl({ icon: meta.icon, label: meta.verb, detail: subjectForHeader });
   }
 
   // ── TaskList：不改动看板状态，只是把当前快照重新展示一遍 ───────
   _toolUseTaskList(block) {
-    this._renderTaskBoardCard(block, null);
-  }
-
-  // TaskUpdate/TaskList 共用的任务看板卡片。headerOverride 为 null 时展示标准聚合头
-  // （当前步骤 / 全部完成 / 任务看板 + 完成数/总数）；TaskUpdate 传入
-  // {icon, label, detail} 描述"这一次更新做了什么"，覆盖掉聚合头。
-  _renderTaskBoardCard(block, headerOverride) {
-    const { id, name, input } = block;
-    const items = [...this.taskBoard.entries()]
-      .sort((a, b) => Number(a[0]) - Number(b[0]))
-      .map(([taskId, t]) => ({ id: taskId, ...t }));
-
-    const total = items.length;
-    const completed = items.filter(t => t.status === 'completed').length;
-    const inProgress = items.find(t => t.status === 'in_progress');
-    const allDone = total > 0 && completed === total;
-
-    const icon = toolIcon(name);
-    const headerIcon = headerOverride ? headerOverride.icon : (inProgress ? '▶' : (allDone ? '✓' : '☰'));
-    const headerLabel = headerOverride ? headerOverride.label : (inProgress ? '当前步骤' : (allDone ? '全部完成' : '任务看板'));
-    const headerDetailText = headerOverride
-      ? (headerOverride.detail || '')
-      : (inProgress ? (inProgress.activeForm || inProgress.subject || '') : '');
-    const summary = headerDetailText || headerLabel;
-
-    const rows = items.length
-      ? items.map(t => this._renderTaskRowHtml(t.subject, t.status, t.activeForm)).join('')
-      : `<div class="todo-row"><span class="todo-row-text" style="opacity:.6">(暂无任务)</span></div>`;
-
-    const wrap = document.createElement('div');
-    wrap.className = 'chat-tool-wrap';
-    wrap.classList.add('timeline-node');
-    wrap.dataset.toolId = id;
-
-    const card = document.createElement('div');
-    card.className = 'chat-tool-card';
-    card.innerHTML = `
-  <div class="chat-tool-header">
-    <span class="tool-status" id="ts-${id}">⏳</span>
-    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
-    <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
-    <button class="tool-toggle" id="tt-${id}">收起</button>
-  </div>
-  <div class="tool-body" id="tbody-${id}">
-    <div class="todo-header">
-      <span class="todo-header-icon">${headerIcon}</span>
-      <span class="todo-header-label">${esc(headerLabel)}${headerDetailText ? `: <span class="todo-header-detail">${esc(headerDetailText)}</span>` : ''}</span>
-      <span class="todo-header-count">${completed}/${total}</span>
-    </div>
-    <div class="todo-list">${rows}</div>
-  </div>`;
-
-    wrap.appendChild(card);
-    this._appendNode(wrap);
-
-    const header = card.querySelector('.chat-tool-header');
-    const body = document.getElementById(`tbody-${id}`);
-    const btn = document.getElementById(`tt-${id}`);
-    header.addEventListener('click', () => {
-      const collapsed = body.classList.toggle('collapsed');
-      btn.textContent = collapsed ? '展开' : '收起';
-    });
-    btn.addEventListener('click', e => { e.stopPropagation(); header.click(); });
-
-    this.toolMap[id] = {
-      statusEl: document.getElementById(`ts-${id}`),
-      badgeEl: document.getElementById(`tb-${id}`),
-      outputEl: null,
-      outputLabelEl: null,
-      exitEl: null,
-      bodyEl: body,
-      btnEl: btn,
-      wrap, name, input,
-      isTaskBoard: true,
-    };
+    this._pill('任务列表已同步', '');
+    this._updateTaskBoardEl(null);
   }
 
   // 单条工具输出直接塞进 textContent 的字符上限：少数工具（Bash 里 cat 大文件、Read 整份
@@ -1442,16 +1631,19 @@ class ChatLogRenderer {
       return;
     }
 
-    // TodoWrite/TaskUpdate/TaskList 的卡片已经从 tool_use.input / this.taskBoard 渲染
-    // 完整——tool_result 只是一句确认文本，没有 outputEl/exitEl 可填
-    // （两者的 toolMap 条目里都是 null），到这就结束。
-    if (e.isTodoWrite || e.isTaskBoard) return;
+    // TodoWrite 的卡片已经从 tool_use.input 渲染完整——tool_result 只是一句确认
+    // 文本，没有 outputEl/exitEl 可填（toolMap 条目里两者都是 null），到这就结束。
+    // TaskUpdate/TaskList 现在走独立的 sticky 看板（_updateTaskBoardEl），压根不
+    // 在 toolMap 里注册条目，所以它们的 tool_result 到这里 `e` 早已是 undefined，
+    // 在方法开头就已经 return 了，不需要在这里再判断一次。
+    if (e.isTodoWrite) return;
 
     // TaskCreate 的 tool_result 是 CC 自己确认成功创建的文本："Task #<N> created
     // successfully: <subject>"——数字 id 只有这时候才揭晓（tool_use.input 里没有，
     // 是 CC 分配的），要靠正则从这句话里抠出来才能把它登记进任务看板供后续
     // TaskUpdate/TaskList 引用。TaskCreate 本身仍然走通用卡片正常展示这行输出，
-    // 不提前 return——这里只是顺带把状态记下来。
+    // 不提前 return——这里只是顺带把状态记下来，并同步一下 sticky 看板
+    // （如果这是会话里第一个 Task* 事件，看板这时候才第一次出现）。
     if (e.name === 'TaskCreate' && ok) {
       const m = /Task #(\d+) created successfully/.exec(text || '');
       if (m) {
@@ -1460,6 +1652,7 @@ class ChatLogRenderer {
           activeForm: e.input?.activeForm || '',
           status: 'pending',
         });
+        this._updateTaskBoardEl(null);
       }
     }
 

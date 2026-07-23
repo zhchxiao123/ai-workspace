@@ -1557,6 +1557,11 @@ async function renderChatWorkspace(conv) {
     let _lastLocalRenderer = null;
     eagerTasks.forEach((task, idx) => {
       _lastLocalRenderer = _renderChatTaskTurn(chatContent, task, logs[idx]);
+      const logWrap = chatContent.lastElementChild;
+      const isLastTask = idx === eagerTasks.length - 1;
+      _selfHealStuckToolStatus(task, logWrap).then(healedRenderer => {
+        if (healedRenderer && isLastTask) chatRenderer = healedRenderer;
+      });
     });
     if (_lastLocalRenderer) chatRenderer = _lastLocalRenderer;
 
@@ -1585,6 +1590,26 @@ async function renderChatWorkspace(conv) {
 // 打开会话时 eager 拉取渲染的最近任务条数，更早的任务折叠懒加载（issue #42）
 const CHAT_EAGER_LOG_COUNT = 8;
 
+// 判断一份任务日志是不是"真的收尾了"——跟 renderer.js render() 里 isFooterSeparator
+// 用的是同一套约定：一行 "======" 之后（跳过空行）紧跟 finished: 或 usage status:。
+// 这两行只有 scheduler.py 的 _append_usage_status/_append_log_footer 真正跑完才会
+// 写进日志文件，而 task.status 翻成 done/failed/killed 发生在这之前（中间隔着一次
+// 可能耗时的 docker exec）。用它当"这份日志是否可以放心长期缓存"的信号——宁可因为
+// 判定过严多拉几次，也不要把一份还没收尾的半成品当成定论存进 IndexedDB 里出不来。
+function _looksLikeCompleteTaskLog(text) {
+  const lines = (text || '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim().startsWith('======')) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trim();
+      if (!next) continue;
+      if (next.startsWith('finished:') || next.startsWith('usage status:')) return true;
+      break;
+    }
+  }
+  return false;
+}
+
 // 拉取单条任务日志；done/failed/killed 任务的日志内容不会再变，命中缓存直接复用。
 // 缓存分两层：内存 Map（当前会话页面内最快）+ IndexedDB（跨页面刷新持久化，issue #43）。
 async function _fetchTaskLogCached(task) {
@@ -1597,11 +1622,36 @@ async function _fetchTaskLogCached(task) {
     }
   }
   const text = await fetch(`${API}/api/tasks/${task.id}/logs?light=1`).then(r => r.text()).catch(() => '');
-  if (task.status !== 'running') {
+  if (task.status !== 'running' && _looksLikeCompleteTaskLog(text)) {
     _finishedLogCache.set(task.id, text);
     logCacheSet(task.id, text);
   }
   return text;
+}
+
+// 自愈：任务已经确定结束（done/failed/killed），日志里却还有工具调用卡片停在 ⏳——
+// 说明当初写进缓存的那份日志被抓取时还没真正收尾（见 _looksLikeCompleteTaskLog 的
+// 注释），是这次修复之前就已经写进某个用户 IndexedDB 里的坏缓存，光靠"以后不再写
+// 坏数据"救不回来。这里检测到这种卡死状态就清掉缓存、强制重新拉一次、重新渲染，
+// 用户不用手动刷新好几轮或者清浏览器数据才能恢复。
+async function _selfHealStuckToolStatus(task, logWrap) {
+  if (task.status === 'running' || task.status === 'pending' || task.status === 'scheduled') return;
+  const stuckPending = [...logWrap.querySelectorAll('.tool-status')]
+    .some(el => el.textContent.trim() === '⏳');
+  if (!stuckPending) return;
+
+  _finishedLogCache.delete(task.id);
+  await logCacheDelete(task.id).catch(() => {});
+  const freshText = await fetch(`${API}/api/tasks/${task.id}/logs?light=1`).then(r => r.text()).catch(() => '');
+  if (!freshText || !_looksLikeCompleteTaskLog(freshText)) return; // 服务端也还没收尾，下次再自愈
+
+  _finishedLogCache.set(task.id, freshText);
+  logCacheSet(task.id, freshText);
+
+  logWrap.innerHTML = '';
+  const healedRenderer = new ChatLogRenderer(logWrap, false, true, task.project_name || null);
+  healedRenderer.render(freshText, task.type);
+  return healedRenderer;
 }
 
 // 渲染单个任务的完整问答回合（用户气泡 + 日志渲染），返回对应的 ChatLogRenderer

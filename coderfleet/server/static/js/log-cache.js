@@ -52,6 +52,19 @@ async function logCacheGet(taskId) {
   }
 }
 
+// 清掉某个任务的持久缓存条目——发现缓存里是一份没收尾的半成品（工具调用状态卡死）
+// 时用来自愈，逼下一次 _fetchTaskLogCached 老老实实重新拉一遍。
+async function logCacheDelete(taskId) {
+  const db = await _openLogCacheDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(LOG_CACHE_STORE, 'readwrite');
+    tx.objectStore(LOG_CACHE_STORE).delete(taskId);
+  } catch (e) {
+    return;
+  }
+}
+
 // 写入某个任务的日志正文；失败（配额满/被禁用）静默忽略，不影响页面功能
 async function logCacheSet(taskId, text) {
   const db = await _openLogCacheDb();

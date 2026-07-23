@@ -383,6 +383,18 @@ body.sysllm-ready .bubble-translate-btn { display: flex; }
 .subagent-thread .chat-log.timeline::before { left: 4px; }
 .subagent-thread .timeline-node::before { left: -16px; }
 
+/* 任务看板：全局唯一、sticky 贴顶的实时面板（见 renderer.js 的 _ensureTaskBoardEl） */
+.task-board-sticky {
+  position: sticky; top: 8px; z-index: 5;
+  border-radius: var(--radius); overflow: hidden;
+  border: 1px solid rgba(45,212,191,.32);
+  background: var(--log-card);
+  box-shadow: 0 6px 20px rgba(0,0,0,.32);
+  margin: 4px 0 12px;
+}
+.task-board-sticky .todo-header { cursor: default; }
+.task-board-sticky .todo-list.collapsed { display: none; }
+
 /* TodoWrite 待办清单 */
 .todo-header {
   display: flex; align-items: center; gap: 8px;

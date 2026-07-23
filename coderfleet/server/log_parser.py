@@ -155,6 +155,19 @@ def _parse_codex_line(
         for block in d.get("content", []):
             if isinstance(block, dict) and block.get("type") == "text":
                 chunks.append(block["text"])
+    elif t == "item.completed":
+        # `codex exec --json` (the format account_type_registry.py actually
+        # invokes, and what renderer.js's _codexItemCompleted already parses)
+        # reports the final assistant text on an item.completed event whose
+        # item.type is "agent_message" -- not on a top-level "message" event.
+        # Without this branch every codex task's text/usage silently fell
+        # through to _parse_text_fallback (a raw JSONL dump) instead of the
+        # real answer.
+        item = d.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if text:
+                chunks.append(text)
     elif t in ("usage", "response.usage"):
         result.tokens_input += int(
             d.get("prompt_tokens", 0) or d.get("input_tokens", 0)
@@ -162,12 +175,39 @@ def _parse_codex_line(
         result.tokens_output += int(
             d.get("completion_tokens", 0) or d.get("output_tokens", 0)
         )
+    elif t == "turn.completed":
+        # turn.completed's `usage` is a cumulative total for the whole thread
+        # (confirmed against Codex's own --json schema), not a per-turn delta
+        # -- overwrite rather than accumulate, so a multi-turn thread ends up
+        # with the final total instead of double-counting overlapping
+        # snapshots.
+        usage = d.get("usage")
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            if input_tokens is not None:
+                result.tokens_input = int(input_tokens)
+            if output_tokens is not None:
+                result.tokens_output = int(output_tokens)
 
 
 def _parse_opencode_line(
     d: dict, t: str, chunks: list[str], result: TaskOutputData
 ) -> None:
-    if d.get("role") == "assistant" or t in ("message", "assistant"):
+    # Current OpenCode CLI output nests everything under a `part` object
+    # (matching renderer.js's _opencodeText/_opencodeStepFinish, which read
+    # d.part.text / d.part.tokens) -- the flat top-level `content`/`usage`
+    # fields below never appear in a real log, so without this branch every
+    # opencode task's text/usage silently fell through to
+    # _parse_text_fallback (a raw JSONL dump).
+    part = d.get("part")
+    part = part if isinstance(part, dict) else {}
+
+    if t == "text" and part.get("type") == "text":
+        text = part.get("text")
+        if text:
+            chunks.append(text)
+    elif d.get("role") == "assistant" or t in ("message", "assistant"):
         content = d.get("content", [])
         if isinstance(content, list):
             for block in content:
@@ -175,6 +215,21 @@ def _parse_opencode_line(
                     chunks.append(block["text"])
         elif isinstance(content, str):
             chunks.append(content)
+
+    if t == "step_finish" and part.get("type") == "step-finish":
+        tokens = part.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
+        cache = tokens.get("cache")
+        cache = cache if isinstance(cache, dict) else {}
+        result.tokens_input += int(tokens.get("input", 0) or 0)
+        result.tokens_input += int(cache.get("read", 0) or 0)
+        result.tokens_input += int(cache.get("write", 0) or 0)
+        result.tokens_output += int(tokens.get("output", 0) or 0)
+        result.tokens_output += int(tokens.get("reasoning", 0) or 0)
+        cost = part.get("cost")
+        if cost:
+            result.cost_usd += float(cost)
+
     usage = d.get("usage", {})
     if isinstance(usage, dict) and usage:
         result.tokens_input = max(
