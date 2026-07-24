@@ -182,19 +182,20 @@ function resetForm(clearMsg = true) {
 
 // ── 终止任务 ──────────────────────────────────────────────
 async function killTask(id) {
-  if (!confirm(`确认终止任务 ${id}？`)) return;
+  if (!await confirmDialog(`确认终止任务 ${id}？`, { danger: true })) return;
   try { await fetch(`${API}/api/tasks/${id}`, { method: 'DELETE' }); loadTasks(); }
   catch (e) { alert('终止失败：' + e.message); }
 }
 
 async function killCurrentTask() {
-  if (!currentTaskId || !confirm(`确认终止任务 ${currentTaskId}？`)) return;
+  if (!currentTaskId) return;
+  if (!await confirmDialog(`确认终止任务 ${currentTaskId}？`, { danger: true })) return;
   try { await fetch(`${API}/api/tasks/${currentTaskId}`, { method: 'DELETE' }); closeLogModal(); loadTasks(); }
   catch (e) { alert('终止失败：' + e.message); }
 }
 
 async function cleanTasks() {
-  if (!confirm('清理旧记录（保留最近30条）？')) return;
+  if (!await confirmDialog('清理旧记录（保留最近30条）？', { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/tasks/clean`, { method: 'POST' }).then(r => r.json());
     alert(`已清理 ${r.cleaned} 条`); loadTasks();

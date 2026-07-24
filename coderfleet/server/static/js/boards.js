@@ -113,7 +113,7 @@ async function deleteActiveBoard() {
     alert('当前没有可删除的看板');
     return;
   }
-  if (!confirm(`确认删除看板「${board.name}」？该看板下的专题卡片也会被删除。`)) return;
+  if (!await confirmDialog(`确认删除看板「${board.name}」？该看板下的专题卡片也会被删除。`, { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/boards/${activeBoardId}`, { method: 'DELETE' });
     if (!r.ok) {
@@ -317,7 +317,7 @@ async function submitBoardCard() {
 async function archiveBoardCard(cardId) {
   const card = boardCardsCache.find(c => c.id === cardId);
   if (!card) return;
-  if (!confirm(`确认归档专题「${card.title}」？`)) return;
+  if (!await confirmDialog(`确认归档专题「${card.title}」？`)) return;
   try {
     const r = await fetch(`${API}/api/board-cards/${cardId}`, {
       method: 'PATCH',

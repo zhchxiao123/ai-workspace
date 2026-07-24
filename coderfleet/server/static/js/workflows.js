@@ -571,7 +571,7 @@ function _hideToolbar() {
 async function confirmDeletePipeline() {
   if (!activePipelineId) return;
   const p = pipelinesCache.find(p => p.id === activePipelineId);
-  if (!confirm(`确定要删除工作流「${p?.name || activePipelineId}」？任务本身不会被删除。`)) return;
+  if (!await confirmDialog(`确定要删除工作流「${p?.name || activePipelineId}」？任务本身不会被删除。`, { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/workflow-runs/${activePipelineId}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) throw new Error(r.statusText);
@@ -624,7 +624,7 @@ async function approveWorkflowRun() {
 async function cancelWorkflowRun() {
   if (!activePipelineId) return;
   const p = pipelinesCache.find(p => p.id === activePipelineId);
-  if (!confirm(`确定要取消工作流「${p?.name || activePipelineId}」？所有运行中的节点都会被终止。`)) return;
+  if (!await confirmDialog(`确定要取消工作流「${p?.name || activePipelineId}」？所有运行中的节点都会被终止。`, { danger: true })) return;
   const btn = document.getElementById('dag-cancel-btn');
   if (btn) { btn.disabled = true; btn.textContent = '取消中...'; }
   try {
@@ -1635,8 +1635,8 @@ function _refreshDrawflowNodeHtml(dfId, data) {
   if (contentEl) contentEl.innerHTML = _buildDrawflowNodeHtml(data);
 }
 
-function confirmRemoveNode(dfId) {
-  if (!confirm('确定移除此节点？相关连线也会一并删除。')) return;
+async function confirmRemoveNode(dfId) {
+  if (!await confirmDialog('确定移除此节点？相关连线也会一并删除。', { danger: true })) return;
   dfEditor?.removeNodeId(`node-${dfId}`);
   _closeNodeDetail();
   markTemplateDirty();
@@ -1683,7 +1683,7 @@ async function saveTemplate() {
 async function confirmDeleteTemplate() {
   if (!activeTemplateId) return;
   const t = templatesCache.find(t => t.id === activeTemplateId);
-  if (!confirm(`确定要删除模板「${t?.name || activeTemplateId}」？`)) return;
+  if (!await confirmDialog(`确定要删除模板「${t?.name || activeTemplateId}」？`, { danger: true })) return;
   const delId = activeTemplateId;
   try {
     await fetch(`${API}/api/workflow-templates/${delId}`, { method: 'DELETE' });

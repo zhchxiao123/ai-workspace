@@ -353,7 +353,7 @@ function toggleProjectIdePort() {
 }
 
 async function deleteProjectConfirm(name) {
-  if (!confirm(`确认删除项目「${name}」？容器不会自动销毁，配置从 projects.conf 中移除。`)) return;
+  if (!await confirmDialog(`确认删除项目「${name}」？容器不会自动销毁，配置从 projects.conf 中移除。`, { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!r.ok) {
@@ -897,7 +897,7 @@ async function stopProjectImageBuild() {
 
 async function clearProjectImage() {
   if (!projectContext) return;
-  if (!confirm('确认恢复使用共享镜像？执行 apply 后生效。')) return;
+  if (!await confirmDialog('确认恢复使用共享镜像？执行 apply 后生效。')) return;
   try {
     const r = await fetch(`${API}/api/projects/${encodeURIComponent(projectContext.name)}/image`, {
       method: 'DELETE',

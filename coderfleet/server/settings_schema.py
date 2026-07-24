@@ -88,6 +88,16 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
         ),
     ),
     SettingGroup(
+        "digest", "日报",
+        help="AI 日报摘要通过向某个活跃项目提交一个真实任务来生成，"
+             "会在该项目的容器/工作目录中运行，可能产生文件改动。"
+             "默认关闭；开启后才会在设置页与「生成日报摘要」按钮响应生成请求，"
+             "以及每晚 23:30 自动生成前一天的日报。改动即时生效。",
+        fields=(
+            SettingField("DIGEST_ENABLED", "AI 摘要生成", options=("off", "on")),
+        ),
+    ),
+    SettingGroup(
         "server", "服务",
         fields=(
             SettingField("CODERFLEET_PORT", "监听端口", placeholder="8765", requires_apply=True),

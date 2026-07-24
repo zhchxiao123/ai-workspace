@@ -57,6 +57,16 @@ def test_api_key_is_secret():
     assert not field_for("SYSTEM_LLM_MODEL").secret
 
 
+def test_digest_toggle_defaults_off_and_is_live_effect():
+    # 日报 AI 摘要生成会向某个活跃项目提交真实任务，可能改动其代码——
+    # 默认必须关闭，且是一个即时生效的开关（不需要 apply）。
+    field = field_for("DIGEST_ENABLED")
+    assert field is not None
+    assert field.options == ("off", "on")
+    assert not field.requires_apply
+    assert load_config(Path("/nonexistent-workspace")).get("DIGEST_ENABLED", "off") == "off"
+
+
 # ── 密钥脱敏 ────────────────────────────────────────────────
 
 def test_mask_secret_never_leaks_full_value():

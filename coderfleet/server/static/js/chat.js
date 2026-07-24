@@ -2038,7 +2038,7 @@ async function archiveConversation(convId) {
 }
 
 async function deleteConversation(convId) {
-  if (!confirm('确定要永久删除该对话吗？任务记录将保留，但对话链不可恢复。')) return;
+  if (!await confirmDialog('确定要永久删除该对话吗？任务记录将保留，但对话链不可恢复。', { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/conversations/${convId}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) { const d = await r.json(); throw new Error(d.detail || r.statusText); }
@@ -2108,7 +2108,7 @@ function _syncChatSendButton(runningTaskId, isQueueFull) {
 }
 
 async function killChatTask(taskId) {
-  if (!confirm('确定要终止当前 AI 任务的执行吗？')) return;
+  if (!await confirmDialog('确定要终止当前 AI 任务的执行吗？', { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/tasks/${taskId}`, { method: 'DELETE' });
     if (!r.ok) {
@@ -2144,7 +2144,7 @@ async function archiveOneOff(itemId) {
 }
 
 async function deleteOneOff(itemId) {
-  if (!confirm('确定要永久删除该一次性任务吗？任务记录与日志将全部被清除且不可恢复。')) return;
+  if (!await confirmDialog('确定要永久删除该一次性任务吗？任务记录与日志将全部被清除且不可恢复。', { danger: true })) return;
   const taskId = itemId.replace('task-', '');
   try {
     const r = await fetch(`${API}/api/tasks/${taskId}/record`, { method: 'DELETE' });

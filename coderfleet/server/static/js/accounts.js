@@ -321,7 +321,7 @@ async function saveSkill() {
 }
 
 async function deleteSkill(slug) {
-  if (!confirm(`确认删除技能 /${slug}？此操作不可撤销。`)) return;
+  if (!await confirmDialog(`确认删除技能 /${slug}？此操作不可撤销。`, { danger: true })) return;
   await fetch(
     `${API}/api/accounts/${encodeURIComponent(accountContext.name)}/skills/${encodeURIComponent(slug)}`,
     { method: 'DELETE' }
@@ -717,7 +717,7 @@ async function saveEnvVars(name) {
 }
 
 async function deleteAccount(name) {
-  if (!confirm(`确认删除账号「${name}」？此操作只删除配置，容器不会自动销毁。`)) return;
+  if (!await confirmDialog(`确认删除账号「${name}」？此操作只删除配置，容器不会自动销毁。`, { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!r.ok) {
@@ -766,9 +766,9 @@ function closeApplyModal(event) {
   document.getElementById('apply-modal').style.display = 'none';
 }
 
-function startApply() {
+async function startApply() {
   const full = document.getElementById('apply-full-checkbox').checked;
-  if (full && !confirm('全量重建会销毁并重建所有容器，所有正在运行的会话都会被中断，确认继续吗？')) {
+  if (full && !await confirmDialog('全量重建会销毁并重建所有容器，所有正在运行的会话都会被中断，确认继续吗？', { danger: true })) {
     return;
   }
   document.getElementById('apply-options').style.display = 'none';

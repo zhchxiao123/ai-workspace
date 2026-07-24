@@ -622,6 +622,96 @@ function showToast(message, type = 'info', onClick) {
   return el;
 }
 
+// ── 自定义确认弹窗（替代原生 confirm()） ─────────────────────
+let _cfConfirmStylesInjected = false;
+function _ensureConfirmStyles() {
+  if (_cfConfirmStylesInjected) return;
+  _cfConfirmStylesInjected = true;
+  const style = document.createElement('style');
+  style.id = 'cf-confirm-styles';
+  style.textContent = `
+    .cf-confirm-backdrop {
+      position: fixed; inset: 0; z-index: 10000;
+      background: rgba(4, 12, 20, .55);
+      display: flex; align-items: center; justify-content: center;
+      padding: 18px;
+      animation: cf-confirm-fade .15s ease;
+    }
+    .cf-confirm-box {
+      background: var(--surface);
+      border: 1px solid var(--border-md);
+      border-radius: var(--radius-lg);
+      width: min(420px, 100%);
+      box-shadow: 0 24px 60px rgba(0,0,0,.35);
+      padding: 20px;
+      animation: cf-confirm-pop .15s ease;
+    }
+    .cf-confirm-title {
+      font-size: 15px; font-weight: 700; color: var(--text);
+      margin-bottom: 8px;
+    }
+    .cf-confirm-msg {
+      font-size: 13.5px; color: var(--text-2); line-height: 1.55;
+      white-space: pre-wrap;
+    }
+    .cf-confirm-actions {
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
+    }
+    .cf-confirm-btn {
+      appearance: none; border: 1px solid var(--border-md); background: var(--surface-2);
+      color: var(--text); font-size: 13px; font-weight: 600;
+      border-radius: var(--radius); padding: 8px 16px; cursor: pointer;
+      transition: filter .12s ease, transform .1s ease;
+    }
+    .cf-confirm-btn:hover { filter: brightness(1.06); }
+    .cf-confirm-btn:active { transform: scale(.97); }
+    .cf-confirm-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .cf-confirm-btn.cf-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .cf-confirm-btn.cf-danger { background: var(--red); border-color: var(--red); color: #fff; }
+    @keyframes cf-confirm-fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes cf-confirm-pop { from { opacity: 0; transform: scale(.96) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  `;
+  document.head.appendChild(style);
+}
+
+/**
+ * 自定义确认弹窗，替代原生 confirm()。返回 Promise<boolean>，需 await。
+ * danger: true 时确认按钮使用警示色（用于删除 / 终止等破坏性操作）。
+ */
+function confirmDialog(message, { title = '请确认', okText = '确定', cancelText = '取消', danger = false } = {}) {
+  _ensureConfirmStyles();
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'cf-confirm-backdrop';
+    backdrop.innerHTML = `
+      <div class="cf-confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="cf-confirm-title">
+        <div class="cf-confirm-title" id="cf-confirm-title">${esc(title)}</div>
+        <div class="cf-confirm-msg">${esc(message)}</div>
+        <div class="cf-confirm-actions">
+          <button type="button" class="cf-confirm-btn" data-act="cancel">${esc(cancelText)}</button>
+          <button type="button" class="cf-confirm-btn ${danger ? 'cf-danger' : 'cf-primary'}" data-act="ok">${esc(okText)}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    const finish = (result) => {
+      document.removeEventListener('keydown', onKeydown);
+      backdrop.remove();
+      resolve(result);
+    };
+    const onKeydown = (e) => {
+      if (e.key === 'Escape') finish(false);
+      else if (e.key === 'Enter') finish(true);
+    };
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) finish(false); });
+    backdrop.querySelector('[data-act="cancel"]').onclick = () => finish(false);
+    backdrop.querySelector('[data-act="ok"]').onclick = () => finish(true);
+    document.addEventListener('keydown', onKeydown);
+    backdrop.querySelector('[data-act="ok"]').focus();
+  });
+}
+
 /**
  * 移动友好相对时间（与桌面 fmtTime 风格略有差异）
  */

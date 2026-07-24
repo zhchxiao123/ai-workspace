@@ -1293,10 +1293,15 @@ class Scheduler:
             await asyncio.sleep(1.0)
 
     async def _check_auto_digest(self) -> None:
-        """Auto-generate the previous day's digest at 23:30 each night."""
+        """Auto-generate the previous day's digest at 23:30 each night, gated by DIGEST_ENABLED."""
+        from coderfleet.config import load_config, truthy
+        if not truthy(load_config(self.workspace_dir).get("DIGEST_ENABLED", "off")):
+            return
+
         now = datetime.now()
         if now.hour != 23 or now.minute != 30:
             return
+
         yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         if self._last_auto_digest_date == yesterday:
             return

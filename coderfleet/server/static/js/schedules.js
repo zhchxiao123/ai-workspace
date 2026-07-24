@@ -350,7 +350,7 @@ async function toggleSchedule(schedId) {
 
 async function runScheduleNow(schedId) {
   const s = schedulesCache.find(x => x.id === schedId);
-  if (!confirm(`立即执行「${s?.name || schedId}」？`)) return;
+  if (!await confirmDialog(`立即执行「${s?.name || schedId}」？`)) return;
   try {
     const r = await fetch(`${API}/api/schedules/${schedId}/run-now`, { method: 'POST' });
     if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || '执行失败');
@@ -368,7 +368,7 @@ async function runScheduleNow(schedId) {
 
 async function deleteSchedule(schedId) {
   const s = schedulesCache.find(x => x.id === schedId);
-  if (!confirm(`确认删除「${s?.name || schedId}」？此操作不可恢复。`)) return;
+  if (!await confirmDialog(`确认删除「${s?.name || schedId}」？此操作不可恢复。`, { danger: true })) return;
   try {
     const r = await fetch(`${API}/api/schedules/${schedId}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) throw new Error('删除失败');

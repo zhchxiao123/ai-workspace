@@ -2085,6 +2085,28 @@ def test_notify_skips_non_terminal_status(tmp_path) -> None:
 
     assert calls == []
 
+
+def test_check_auto_digest_skips_when_digest_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DIGEST_ENABLED default 是 off；关闭时绝不能提交摘要任务——它会作为一个
+    真实任务运行在某个活跃项目的容器里，可能改动该项目的代码（这正是要 gate 的行为）。"""
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched, "get_projects",
+        lambda: [Project(name="repo", account="alice", path=str(tmp_path))],
+    )
+
+    async def fail_submit(**kwargs):
+        raise AssertionError("digest task must not be submitted while DIGEST_ENABLED=off")
+
+    monkeypatch.setattr(sched, "submit", fail_submit)
+
+    asyncio.run(sched._check_auto_digest())
+
+    assert not sched.digests_dir.exists() or list(sched.digests_dir.glob("*.json")) == []
+
+
 # ── Intervention：非 auto 任务 CLI 主动暂停问人（issue #69） ──────────────────
 
 def test_wait_for_intervention_answer_unblocks_on_resolve(tmp_path: Path) -> None:

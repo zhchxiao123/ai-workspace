@@ -95,7 +95,7 @@ from coderfleet.server.translate import translate_text
 from coderfleet.server.translation_cache import TranslationCache
 from coderfleet.server.summarize_title import summarize_title
 from coderfleet.server.settings_schema import SETTINGS_GROUPS, field_for, mask_secret
-from coderfleet.config import load_config as _load_config, set_config as _set_config
+from coderfleet.config import load_config as _load_config, set_config as _set_config, truthy as _truthy
 from coderfleet.server.search import SCOPES, SearchResponse, rank_paths, search_records
 from coderfleet.server.terminal import (
     TerminalSession,
@@ -2712,6 +2712,13 @@ async def get_digest(date: str):
 async def trigger_digest_generation(date: str):
     if not _DATE_RE.match(date):
         raise HTTPException(status_code=400, detail="日期格式必须为 YYYY-MM-DD")
+
+    if not _truthy(_load_config(WORKSPACE_DIR).get("DIGEST_ENABLED", "off")):
+        raise HTTPException(
+            status_code=403,
+            detail="AI 日报摘要功能已关闭：生成会向某个活跃项目提交真实任务并可能改动其代码，"
+                   "请先在「设置 → 日报」中开启后再试",
+        )
 
     stats = compute_daily_stats(date, scheduler.tasks_dir)
     if stats.total_done + stats.total_failed + stats.total_killed == 0:

@@ -1701,7 +1701,7 @@ function mobileTaskStatusLabel(status) {
 }
 
 async function killMobileTask(taskId) {
-  if (!confirm('确认终止这个任务？')) return;
+  if (!await confirmDialog('确认终止这个任务？', { danger: true })) return;
   try {
     const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
     if (!r.ok) throw new Error(await r.text());
@@ -1950,7 +1950,7 @@ async function deleteActionTarget() {
   const msg = type === 'one-off'
     ? '确认永久删除这个一次性任务？日志也会被删除。'
     : '确认永久删除这个对话？任务记录会保留。';
-  if (!confirm(msg)) return;
+  if (!await confirmDialog(msg, { danger: true })) return;
   try {
     const url = type === 'one-off'
       ? `/api/tasks/${encodeURIComponent(id)}/record`
