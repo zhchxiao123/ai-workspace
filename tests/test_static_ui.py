@@ -799,8 +799,8 @@ def test_mobile_renders_cf_send_download_cards() -> None:
     source = read_mobile()
     renderer_css = read_renderer_css()
 
-    assert "new ChatLogRenderer(wrap, false, true, task.project_name || null)" in source
-    assert "new ChatLogRenderer(wrap, true, true, task.project_name || null)" in source
+    assert "new ChatLogRenderer(wrap, false, true, task.project_name || null, task.id)" in source
+    assert "new ChatLogRenderer(wrap, true, true, task.project_name || null, task.id)" in source
     assert ".cf-download-card" in renderer_css
     assert ".cf-dl-btn" in renderer_css
 

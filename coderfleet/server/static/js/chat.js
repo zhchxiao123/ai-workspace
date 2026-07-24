@@ -1649,7 +1649,7 @@ async function _selfHealStuckToolStatus(task, logWrap) {
   logCacheSet(task.id, freshText);
 
   logWrap.innerHTML = '';
-  const healedRenderer = new ChatLogRenderer(logWrap, false, true, task.project_name || null);
+  const healedRenderer = new ChatLogRenderer(logWrap, false, true, task.project_name || null, task.id);
   healedRenderer.render(freshText, task.type);
   return healedRenderer;
 }
@@ -1677,7 +1677,7 @@ function _renderChatTaskTurn(container, task, logText) {
 
   // 3. 构建局部的 ChatLogRenderer 并进行渲染
   // 每一个任务在渲染时，均传入 foldProcess=true，把中间执行步骤折叠起来，把回复直接展现
-  const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null);
+  const localRenderer = new ChatLogRenderer(logWrap, task.status === 'running', true, task.project_name || null, task.id);
   localRenderer.render(logText, task.type);
   return localRenderer;
 }
@@ -1766,7 +1766,7 @@ function _appendOptimisticUserMessage(promptText, snapshotPaths, taskId, isPendi
     logWrap.style.marginBottom = '24px';
     chatContent.appendChild(logWrap);
 
-    const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName);
+    const localRenderer = new ChatLogRenderer(logWrap, true, true, currentChatProjectName, taskId);
     localRenderer.accountType = accountType || (tasksCache || []).find(t => t.id === taskId)?.type || '';
     localRenderer.renderExecuting();
     chatRenderer = localRenderer;
@@ -1991,6 +1991,11 @@ function startChatFollow(taskId, skipBytes = 0, tail = 0) {
   sseChatSource = new EventSource(sseUrl(`${API}/api/tasks/${taskId}/logs/stream?${qs}`));
   sseChatSource.onmessage = e => {
     if (e.data === '[DONE]') {
+      // 任务结束时如果还留着未作答的 Intervention 实时表单，先禁用掉——虽然接下来
+      // 的 selectConversation 全量重载会用 isRunning=false 重新渲染整个工作区（届时
+      // 这类表单本来就不会再生成），但重载完成前这一小段时间不该让用户看到"看起来
+      // 还能点"的表单。
+      if (chatRenderer) chatRenderer.deactivatePendingInterventions();
       stopChatFollow();
       if (activeConversationId) {
         // 任务完成后刷新（会更新队列面板和头部按钮）

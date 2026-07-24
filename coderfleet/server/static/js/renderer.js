@@ -2,8 +2,16 @@
 //  ChatLogRenderer — 把 JSONL 日志渲染成对话
 // ══════════════════════════════════════════════════════════════
 class ChatLogRenderer {
-  constructor(container, isRunning = false, foldProcess = false, projectName = null) {
+  // MCP 全名，Claude 侧看到的 Intervention 工具（issue #69 Slice 1 的 ask_user_question
+  // 桥接工具）——跟 CC 原生的 'AskUserQuestion' 是两个不同的 tool_use.name，但共用同一套
+  // 问答卡片渲染（_toolUseAskUserQuestion），区别只在于：这个工具的卡片在任务运行中、
+  // 还没等到 tool_result 时会渲染成可提交的实时表单，原生那个不会（它由 CLI 自己的终端
+  // 交互作答，不是 CoderFleet 能代答的东西）。
+  static INTERVENTION_TOOL_NAME = 'mcp__coderfleet__ask_user_question';
+
+  constructor(container, isRunning = false, foldProcess = false, projectName = null, taskId = null) {
     this.container = container;   // #log-content div
+    this.taskId = taskId;       // 提交 Intervention 答案时要 POST 去哪个任务
     this.inner = null;        // .chat-log div
     this.toolMap = {};          // tool_use_id → { headerEl, badgeEl, outputEl, exitEl, toolName, input, wrap }
     this.subagentRenderers = {}; // Task/Agent 工具的 tool_use_id → { renderer, toggleRowEl, revealed }
@@ -1150,7 +1158,10 @@ class ChatLogRenderer {
   // ── 工具调用卡片 ──────────────────────────────────────────
   _toolUse(block) {
     const { id, name, input } = block;
-    if (name === 'AskUserQuestion') { this._toolUseAskUserQuestion(block); return; }
+    if (name === 'AskUserQuestion' || name === ChatLogRenderer.INTERVENTION_TOOL_NAME) {
+      this._toolUseAskUserQuestion(block, name === ChatLogRenderer.INTERVENTION_TOOL_NAME);
+      return;
+    }
     if (name === 'TodoWrite') { this._toolUseTodoWrite(block); return; }
     if (name === 'TaskUpdate') { this._toolUseTaskUpdate(block); return; }
     if (name === 'TaskList') { this._toolUseTaskList(block); return; }
@@ -1254,12 +1265,26 @@ class ChatLogRenderer {
   // 交互式提问工具，input 是 1-4 道题（question/header/options/multiSelect）；
   // tool_result 到达前先渲染"等待作答"占位，到达后按题目匹配已选项打勾，
   // 匹配不上（纯文本/自由回复）就整卡底部加一行"回复"，而不是硬套成 JSON 转储。
-  _toolUseAskUserQuestion(block) {
+  // isIntervention: 这张卡是不是 issue #69 的 Intervention 桥接工具（而不是 CC 原生
+  // AskUserQuestion）——只有它、且任务仍在运行、且还没等到 tool_result 时，才渲染成可
+  // 提交的实时表单；CC 原生那个没有 CoderFleet 能代答的后端，永远只是只读占位。
+  _toolUseAskUserQuestion(block, isIntervention = false) {
     const { id, name, input } = block;
     const questions = normalizeAskUserQuestions(input);
     const multiple = questions.length > 1;
-    const icon = toolIcon(name);
+    // Intervention 走 MCP 全名（丑），卡片上显示统一成跟原生一样的名字，用户不需要
+    // 关心背后是哪条工具调用协议。
+    const displayName = name === ChatLogRenderer.INTERVENTION_TOOL_NAME ? 'AskUserQuestion' : name;
+    const icon = toolIcon(displayName);
     const summary = questions.length === 1 ? questions[0].question : `${questions.length} 个问题`;
+    // 只用 isIntervention + isRunning（还没等到这条 tool_use 的 tool_result）判断是否
+    // 实时可答，不额外去读 Task.pending_intervention——后端一个 Task 同一时间只会有
+    // 一条未完成的 Intervention（scheduler.py 的 Future 机制保证这点），所以"这条卡片
+    // 对应的 tool_result 还没来"跟"这条 Intervention 还在 pending"是等价的，不用为
+    // 了在渲染这一刻确认这件事再多打一次 GET。真正要紧的校验（token 对不对、这条
+    // 问题是不是已经被别处答过/超时）留到点提交按钮那一刻再问后端，那才是答案真正
+    // 要生效的时刻。
+    const isLive = isIntervention && this.isRunning;
 
     const wrap = document.createElement('div');
     wrap.className = 'chat-tool-wrap';
@@ -1274,21 +1299,30 @@ class ChatLogRenderer {
         <span class="askq-question">${esc(q.question)}</span>
         ${multiple && q.header ? `<span class="askq-header-chip">${esc(q.header)}</span>` : ''}
       </div>
-      <div class="askq-answer" id="askq-ans-${id}-${i}"><span class="askq-unanswered">等待作答…</span></div>
+      <div class="askq-answer" id="askq-ans-${id}-${i}">${
+        isLive ? this._buildLiveAskqInputs(id, i, q) : `<span class="askq-unanswered">等待作答…</span>`
+      }</div>
     </div>
   </div>`).join('');
+
+    const submitRowHtml = isLive ? `
+  <div class="askq-submit-row" id="askq-submit-row-${id}">
+    <button class="askq-submit-btn" id="askq-submit-btn-${id}">提交回答</button>
+    <span class="askq-submit-status" id="askq-submit-status-${id}"></span>
+  </div>` : '';
 
     const card = document.createElement('div');
     card.className = 'chat-tool-card';
     card.innerHTML = `
   <div class="chat-tool-header">
     <span class="tool-status" id="ts-${id}">⏳</span>
-    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(name)}</span>
+    <span class="tool-badge pending" id="tb-${id}">${esc(icon)} ${esc(displayName)}</span>
     <span class="tool-cmd" title="${esc(summary)}">${esc(summary)}</span>
     <button class="tool-toggle" id="tt-${id}">收起</button>
   </div>
   <div class="tool-body" id="tbody-${id}">
     <div class="tool-input tool-askq" id="tiq-${id}">${qBlocks}</div>
+    ${submitRowHtml}
     <div class="tool-exit" id="te-${id}" style="display:none"></div>
   </div>`;
 
@@ -1312,9 +1346,120 @@ class ChatLogRenderer {
       exitEl: document.getElementById(`te-${id}`),
       bodyEl: body,
       btnEl: btn,
-      wrap, name, input,
+      wrap, name: displayName, input,
       askQuestions: questions,
+      isLive,
     };
+
+    if (isLive) {
+      const submitBtn = document.getElementById(`askq-submit-btn-${id}`);
+      submitBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        this._submitIntervention(id);
+      });
+    }
+  }
+
+  // 单个问题的实时输入控件：有 options 就单选/多选，没有就自由文本。
+  _buildLiveAskqInputs(id, i, q) {
+    const groupName = `askq-radio-${id}-${i}`;
+    if (q.options && q.options.length) {
+      const inputType = q.multiSelect ? 'checkbox' : 'radio';
+      return `<div class="askq-live-options" id="askq-opts-${id}-${i}">${
+        q.options.map((o, j) => `
+    <label class="askq-live-option">
+      <input type="${inputType}" name="${groupName}" value="${esc(o.label)}" id="askq-opt-${id}-${i}-${j}">
+      <span class="askq-live-option-label">${esc(o.label)}</span>
+      ${o.description ? `<span class="askq-live-option-desc">${esc(o.description)}</span>` : ''}
+    </label>`).join('')
+      }</div>`;
+    }
+    return `<input type="text" class="askq-live-text" id="askq-text-${id}-${i}" placeholder="输入回答…">`;
+  }
+
+  // 从实时表单里读出每道题的答案，{question文本: label 或 [label,...] 或自由文本}。
+  _collectAskqAnswers(id, questions) {
+    const answers = {};
+    questions.forEach((q, i) => {
+      if (q.options && q.options.length) {
+        const checked = [...document.querySelectorAll(`input[name="askq-radio-${id}-${i}"]:checked`)]
+          .map(el => el.value);
+        if (!checked.length) return;
+        answers[q.question] = q.multiSelect ? checked : checked[0];
+      } else {
+        const val = (document.getElementById(`askq-text-${id}-${i}`)?.value || '').trim();
+        if (val) answers[q.question] = val;
+      }
+    });
+    return answers;
+  }
+
+  // 这是 ChatLogRenderer 目前唯一会主动发网络请求的地方——它本来是纯粹的
+  // JSONL→DOM 渲染器，不碰 fetch。这里破例是因为桌面 chat.js 和移动端 mobile.html
+  // 各自维护一份完全独立的会话/任务管理代码，只共享这一个渲染器类；如果把提交逻辑
+  // 挪去调用方，就要在两边各写一份、各自处理错误态，等于把同一件事拆成两份易失联
+  // 的实现。放在渲染器这一层，靠构造函数传入的 this.taskId 就能自给自足，桌面和
+  // 移动端零改动地共享同一套提交/失败/重试逻辑。
+  async _submitIntervention(id) {
+    const e = this.toolMap[id];
+    if (!e || !e.isLive) return;
+    const answers = this._collectAskqAnswers(id, e.askQuestions || []);
+    if (Object.keys(answers).length === 0) {
+      this._setAskqSubmitStatus(id, '请至少回答一个问题', true);
+      return;
+    }
+
+    const submitBtn = document.getElementById(`askq-submit-btn-${id}`);
+    if (submitBtn) submitBtn.disabled = true;
+    this._setAskqSubmitStatus(id, '提交中…', false);
+
+    try {
+      if (!this.taskId) throw new Error('缺少 task id，无法提交');
+      const detailResp = await fetch(`${API}/api/tasks/${this.taskId}`);
+      if (!detailResp.ok) throw new Error(`获取任务详情失败（HTTP ${detailResp.status}）`);
+      const detail = await detailResp.json();
+      const pending = detail.pending_intervention;
+      if (!pending || pending.tool_call_id !== id) {
+        throw new Error('这个问题已经不再等待回答了（可能已被回答或已超时）');
+      }
+
+      const answerResp = await fetch(`${API}/api/tasks/${this.taskId}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_call_id: id, token: pending.token, answers }),
+      });
+      if (!answerResp.ok) {
+        const detailErr = await answerResp.json().catch(() => ({}));
+        throw new Error(detailErr.detail || `提交失败（HTTP ${answerResp.status}）`);
+      }
+
+      e.isLive = false;
+      this._setAskqSubmitStatus(id, '✓ 已提交，等待任务处理…', false);
+      const row = document.getElementById(`askq-submit-row-${id}`);
+      if (row) row.querySelectorAll('input, button').forEach(el => { el.disabled = true; });
+    } catch (err) {
+      this._setAskqSubmitStatus(id, `✗ ${err.message || '提交失败'}`, true);
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  _setAskqSubmitStatus(id, text, isError) {
+    const statusEl = document.getElementById(`askq-submit-status-${id}`);
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.className = `askq-submit-status${isError ? ' is-error' : ''}`;
+  }
+
+  // 任务日志流结束（[DONE]）时调用：还留着未作答实时表单的卡片，禁用输入并提示任务已
+  // 结束——不能让它们继续看着像"还能点"，其实这个任务已经没有 CLI 进程在等这个答案了。
+  deactivatePendingInterventions() {
+    for (const [id, e] of Object.entries(this.toolMap)) {
+      if (!e.isLive) continue;
+      e.isLive = false;
+      const row = document.getElementById(`askq-submit-row-${id}`);
+      if (row) row.querySelectorAll('input, button').forEach(el => { el.disabled = true; });
+      this._setAskqSubmitStatus(id, '任务已结束，未作答', true);
+    }
   }
 
   _fillAskUserAnswers(id, e, text) {
@@ -1331,14 +1476,22 @@ class ChatLogRenderer {
       } catch { /* 非 JSON：走自由回复分支 */ }
     }
 
-    const matchedAny = !!answers && questions.some(
+    // Intervention（issue #69）超时的哨兵答案——不是"用户打了这段自由文本"，是
+    // Slice 1 后端在没等到回答时塞进 tool_result 的固定形状。混进下面通用的
+    // JSON-parse/自由文本兜底逻辑会被当成自由回复整段原样显示（连着 JSON 大括号
+    // 一起冒出来，看着像用户真答了这么一句话），所以在那之前单独拦一下。
+    const isTimeout = !!answers && answers.timed_out === true;
+
+    const matchedAny = !isTimeout && !!answers && questions.some(
       q => Object.prototype.hasOwnProperty.call(answers, q.question)
     );
 
     questions.forEach((q, i) => {
       const slot = document.getElementById(`askq-ans-${id}-${i}`);
       if (!slot) return;
-      if (matchedAny) {
+      if (isTimeout) {
+        slot.innerHTML = `<span class="askq-unanswered">⏱ 未在时限内回应</span>`;
+      } else if (matchedAny) {
         const val = answers[q.question];
         const labels = Array.isArray(val) ? val : (val != null ? [val] : []);
         slot.innerHTML = labels.length
@@ -1356,7 +1509,7 @@ class ChatLogRenderer {
       }
     });
 
-    if (!matchedAny && raw) {
+    if (!isTimeout && !matchedAny && raw) {
       const wrap = document.getElementById(`tiq-${id}`);
       if (wrap) {
         const fr = document.createElement('div');
@@ -1365,6 +1518,8 @@ class ChatLogRenderer {
         wrap.appendChild(fr);
       }
     }
+
+    return isTimeout;
   }
 
   // 待办/任务面板的单行渲染，TodoWrite 和下面的 TaskCreate/Update/List 任务看板共用——
@@ -1624,10 +1779,13 @@ class ChatLogRenderer {
     e.badgeEl.textContent = `${toolIcon(e.name)} ${e.name}`;
 
     if (e.name === 'AskUserQuestion' && e.askQuestions) {
-      this._fillAskUserAnswers(id, e, text);
+      const isTimeout = this._fillAskUserAnswers(id, e, text);
+      e.isLive = false;
+      const submitRow = document.getElementById(`askq-submit-row-${id}`);
+      if (submitRow) submitRow.style.display = 'none';
       e.exitEl.style.display = '';
-      e.exitEl.className = `tool-exit ${ok ? 'ok-exit' : 'fail-exit'}`;
-      e.exitEl.textContent = ok ? '✓  已作答' : '✗  未作答';
+      e.exitEl.className = `tool-exit ${isTimeout ? 'fail-exit' : (ok ? 'ok-exit' : 'fail-exit')}`;
+      e.exitEl.textContent = isTimeout ? '⏱  超时未回应' : (ok ? '✓  已作答' : '✗  未作答');
       return;
     }
 

@@ -1477,19 +1477,19 @@ async function loadAiContent(task) {
     return;
   }
   if (task.status === 'pending') {
-    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null, task.id);
     renderer.renderPending();
     return;
   }
   if (task.status === 'scheduled') {
-    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null, task.id);
     renderer.renderScheduled(task.execute_at);
     return;
   }
 
   try {
     const txt = await fetch(`/api/tasks/${task.id}/logs`).then(r => r.text());
-    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null);
+    const renderer = new ChatLogRenderer(wrap, false, true, task.project_name || null, task.id);
     renderer.render(stripAnsi(txt), task.type);
   } catch { wrap.textContent = '加载失败'; }
 }
@@ -1521,7 +1521,7 @@ function bindMobileChatScroll() {
 async function streamAiContent(task, wrap) {
   const id = task.id;
   if (liveStream) { liveStream.close(); liveStream = null; }
-  const renderer = new ChatLogRenderer(wrap, true, true, task.project_name || null);
+  const renderer = new ChatLogRenderer(wrap, true, true, task.project_name || null, task.id);
   let skipBytes = 0;
   try {
     const txt = await fetch(`/api/tasks/${id}/logs`).then(r => r.ok ? r.text() : '');
@@ -1540,7 +1540,7 @@ async function streamAiContent(task, wrap) {
   es.taskId = id;
   liveStream = es;
   es.onmessage = e => {
-    if (e.data === '[DONE]') { es.close(); liveStream = null; bgRefresh(); return; }
+    if (e.data === '[DONE]') { renderer.deactivatePendingInterventions(); es.close(); liveStream = null; bgRefresh(); return; }
     renderer.push(stripAnsi(e.data));
     if (!mobileUserScrolledUp) body.scrollTop = body.scrollHeight;
   };
