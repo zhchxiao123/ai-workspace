@@ -76,6 +76,94 @@ def test_list_tasks_without_conversation_id_returns_everything(
     assert {r.id for r in result} == {"t1", "t2"}
 
 
+def test_answer_task_intervention_resolves_pending_waiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _use_scheduler(monkeypatch, ws)
+    _task("ask-1").save(server_main.scheduler.tasks_dir)
+
+    async def _run():
+        waiter = asyncio.create_task(
+            server_main.scheduler.wait_for_intervention_answer(
+                "ask-1", [{"question": "ok?"}], timeout_seconds=5,
+            )
+        )
+        await asyncio.sleep(0)
+        pending = server_main.scheduler.get_task("ask-1").pending_intervention
+        assert pending is not None
+
+        result = await server_main.answer_task_intervention(
+            "ask-1",
+            server_main.TaskAnswerRequest(
+                tool_call_id=pending.tool_call_id, token=pending.token, answers={"ok?": "yes"},
+            ),
+        )
+        answers = await waiter
+        return result, answers
+
+    result, answers = asyncio.run(_run())
+    assert result == {"ok": True}
+    assert answers == {"ok?": "yes"}
+
+
+def test_answer_task_intervention_404_when_no_pending_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _use_scheduler(monkeypatch, ws)
+    _task("ask-2").save(server_main.scheduler.tasks_dir)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(server_main.answer_task_intervention(
+            "ask-2",
+            server_main.TaskAnswerRequest(tool_call_id="x", token="y", answers={}),
+        ))
+    assert exc_info.value.status_code == 404
+
+
+def test_answer_task_intervention_409_on_wrong_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _use_scheduler(monkeypatch, ws)
+    _task("ask-3").save(server_main.scheduler.tasks_dir)
+
+    async def _run():
+        waiter = asyncio.create_task(
+            server_main.scheduler.wait_for_intervention_answer(
+                "ask-3", [{"question": "ok?"}], timeout_seconds=5,
+            )
+        )
+        await asyncio.sleep(0)
+        pending = server_main.scheduler.get_task("ask-3").pending_intervention
+        assert pending is not None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await server_main.answer_task_intervention(
+                "ask-3",
+                server_main.TaskAnswerRequest(
+                    tool_call_id=pending.tool_call_id, token="wrong-token", answers={},
+                ),
+            )
+        assert exc_info.value.status_code == 409
+
+        # Clean up the still-open waiter so the test doesn't leak a pending task.
+        server_main.scheduler.resolve_intervention(
+            "ask-3", pending.tool_call_id, pending.token, {"ok?": "yes"}
+        )
+        await waiter
+
+    asyncio.run(_run())
+
+
 def test_manual_pipeline_creation_endpoints_removed() -> None:
     """v1 手动创建流水线/加任务端点已下线（见 #17）。"""
     from coderfleet.server import main as m

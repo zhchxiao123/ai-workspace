@@ -6,6 +6,7 @@ CODERFLEET_API 环境变量可覆盖服务地址（默认 http://localhost:8765�
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -32,6 +33,13 @@ def _require_server() -> str:
             f"（或设置 CODERFLEET_API=<地址> 指向远端服务）"
         )
     return api
+
+
+def _http_error_detail(resp: httpx.Response) -> str:
+    """从一个非 2xx 响应里抠出 detail 字段；不是 JSON 就原样返回响应体文本。"""
+    if "json" in resp.headers.get("content-type", ""):
+        return resp.json().get("detail", resp.text)
+    return resp.text
 
 
 def _resolve_project_field(prefer_project: str) -> tuple[str, str]:
@@ -136,8 +144,7 @@ def cmd_task_run(
         raise click.ClickException(f"请求失败：{e}")
 
     if r.status_code != 201:
-        detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
-        raise click.ClickException(f"提交失败（HTTP {r.status_code}）：{detail}")
+        raise click.ClickException(f"提交失败（HTTP {r.status_code}）：{_http_error_detail(r)}")
 
     d = r.json()
     conv = d.get("conversation_id", "")
@@ -248,6 +255,13 @@ def cmd_task_status(task_id: str) -> None:
     if d.get("native_session_id"):
         click.echo(f"  会话ID：  {d['native_session_id']}")
     click.echo(f"  任务描述：{d['prompt']}")
+    pending = d.get("pending_intervention")
+    if pending:
+        click.echo()
+        click.secho("  ⏸ 待回答：", fg="yellow")
+        for q in pending.get("questions", []):
+            click.echo(f"    - {q.get('question', '')}")
+        click.echo(f"    （coderfleet task answer {task_id} --json '<回答 JSON>'）")
     click.echo()
 
 
@@ -308,8 +322,54 @@ def cmd_task_kill(task_id: str) -> None:
     elif r.status_code == 404:
         raise click.ClickException(f"任务 '{task_id}' 不存在")
     else:
-        detail = r.json().get("detail", r.text) if "json" in r.headers.get("content-type", "") else r.text
-        raise click.ClickException(f"终止失败（HTTP {r.status_code}）：{detail}")
+        raise click.ClickException(f"终止失败（HTTP {r.status_code}）：{_http_error_detail(r)}")
+
+
+# ── task answer（Intervention，见 issue #69） ────────────────
+
+@task_group.command("answer")
+@click.argument("task_id")
+@click.option("--json", "answers_json", required=True,
+              help='JSON 格式的回答，形如 \'{"问题原文": "选项label"}\'')
+def cmd_task_answer(task_id: str, answers_json: str) -> None:
+    """Answer a task's pending Intervention question."""
+    api = _require_server()
+
+    try:
+        answers = json.loads(answers_json)
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"--json 不是合法的 JSON：{e}")
+
+    try:
+        r = httpx.get(f"{api}/api/tasks/{task_id}", timeout=10)
+    except httpx.RequestError as e:
+        raise click.ClickException(f"请求失败：{e}")
+
+    if r.status_code == 404:
+        raise click.ClickException(f"任务 '{task_id}' 不存在")
+    if r.status_code != 200:
+        raise click.ClickException(f"查询失败（HTTP {r.status_code}）")
+
+    pending = r.json().get("pending_intervention")
+    if not pending:
+        raise click.ClickException(f"任务 '{task_id}' 当前没有待回答的问题")
+
+    try:
+        r2 = httpx.post(
+            f"{api}/api/tasks/{task_id}/answer", timeout=10,
+            json={
+                "tool_call_id": pending["tool_call_id"],
+                "token": pending["token"],
+                "answers": answers,
+            },
+        )
+    except httpx.RequestError as e:
+        raise click.ClickException(f"请求失败：{e}")
+
+    if r2.status_code == 200:
+        click.secho("✓ 已提交回答", fg="green")
+    else:
+        raise click.ClickException(f"提交失败（HTTP {r2.status_code}）：{_http_error_detail(r2)}")
 
 
 # ── task clean ────────────────────────────────────────────

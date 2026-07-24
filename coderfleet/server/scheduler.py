@@ -46,6 +46,7 @@ from coderfleet.server.models import (
     LogicalProject,
     LogicalProjectEntry,
     NodeType,
+    PendingIntervention,
     Pipeline,
     PipelineNodeRun,
     Project,
@@ -69,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 # 每个会话最多允许的 pending/scheduled 排队任务数（API 与 Telegram 入口共用）
 MAX_PENDING_PER_CONV = 5
+
+# Intervention 默认超时（秒）：CLI 主动暂停问人，人没在这个时限内回答就自动放行，
+# 不无限期挂起（见 issue #69）。
+DEFAULT_INTERVENTION_TIMEOUT_SECONDS = 600
 
 
 class Scheduler:
@@ -111,6 +116,9 @@ class Scheduler:
         self._usage_cache: dict[str, AccountUsage] = {}
         self._usage_loop_task: Optional[asyncio.Task] = None
         self._load_cached_usage()
+        # Intervention：f"{task_id}:{tool_call_id}" → 等待人工作答的 Future。
+        # 进程内内存态——调度器重启会丢失，是已知的可接受边界（见 issue #69）。
+        self._pending_intervention_futures: dict[str, "asyncio.Future"] = {}
 
     def register_notifier(self, notifier: "Callable[[Task], Awaitable[None]]") -> None:
         """注册一个任务终态通知渠道。"""
@@ -4092,6 +4100,115 @@ class Scheduler:
         run.updated                  = now_iso()
         run.save(self.workflow_runs_dir)
         return run
+
+    # ── Intervention：非 auto 任务 CLI 主动暂停问人（issue #69） ──────────
+    #
+    # 跟 _wait_for_approval/approve_workflow_run 是同一类"暂停等人"机制，但等待方
+    # 不一样：_wait_for_approval 是调度器自己的协程等调度器自己的磁盘状态，轮询没问题；
+    # 这里真正在等的是（未来接入的）MCP 请求处理协程本身，答案由另一个请求
+    # （resolve_intervention）直接塞进同一个 asyncio.Future，轮询只会白白增加延迟。
+
+    async def wait_for_intervention_answer(
+        self,
+        task_id: str,
+        questions: list[dict],
+        timeout_seconds: float = DEFAULT_INTERVENTION_TIMEOUT_SECONDS,
+    ) -> dict:
+        """
+        在指定 Task 上登记一个待回答的问题，推送通知，阻塞直到人工作答或超时。
+
+        返回值：正常作答时是提交的 answers dict；超时则是 {"timed_out": True}——
+        调用方（未来的 MCP 工具 handler）据此构造"用户未及时回应，请自行判断"这样的
+        tool_result，而不是让 CLI 端挂死或报错。
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+
+        tool_call_id = uuid.uuid4().hex
+        token = uuid.uuid4().hex
+        deadline = (utc_now() + timedelta(seconds=timeout_seconds)).isoformat(timespec="seconds")
+
+        intervention = PendingIntervention(
+            tool_call_id=tool_call_id,
+            questions=[q if isinstance(q, dict) else dict(q) for q in questions],
+            token=token,
+            deadline=deadline,
+        )
+        task.pending_intervention = intervention
+        task.save(self.tasks_dir)
+
+        key = f"{task_id}:{tool_call_id}"
+        future: "asyncio.Future" = asyncio.get_running_loop().create_future()
+        self._pending_intervention_futures[key] = future
+
+        if self._push_manager:
+            try:
+                q_count = len(intervention.questions)
+                await self._push_manager.send_all(
+                    "❓ 任务等待您的回答",
+                    f"任务 {task_id} 有 {q_count} 个问题等待回答",
+                )
+            except Exception as exc:
+                logger.warning("Intervention 推送通知失败 [task=%s]: %s", task_id, exc)
+
+        try:
+            answers = await asyncio.wait_for(future, timeout=timeout_seconds)
+            logger.info("Intervention 已回答 [task=%s, tool_call_id=%s]", task_id, tool_call_id)
+        except asyncio.TimeoutError:
+            answers = {"timed_out": True}
+            # 目前只落进程日志，不是持久化历史——一个 Intervention 超时/被答后不会
+            # 在 Task 记录上留下任何痕迹，只是清空 pending_intervention。完整的可
+            # 审计历史（PRD story 5/23）计划由 Web UI 的时间线 pill 承担（issue #69
+            # 的 Slice 3），这里先给个最小的、非阻塞的兜底信号。
+            logger.info("Intervention 超时未回答 [task=%s, tool_call_id=%s]", task_id, tool_call_id)
+        finally:
+            # 故意不从 _pending_intervention_futures 里 pop——一个已完成（resolved/
+            # timed-out）的 Future 的 done()==True 就是 resolve_intervention() 区分
+            # "从没存在过"(404) 和 "存在过但已经处理完"(409/迟到应答) 的唯一依据。
+            # Task.pending_intervention 才是"当前是否还在等"的准绳，这里清空它；
+            # Future 本身留在内存字典里（每个 Intervention 一条，随进程生命周期，
+            # 调度器重启即清空——量级上可接受，见 issue #69 的 restart 边界说明）。
+            #
+            # 原子读改写：重新加载，只在这条 intervention 仍然是当前这条时才清空——
+            # 避免覆盖掉这段等待期间可能发生的其他并发写入。
+            t2 = self.get_task(task_id)
+            if (
+                t2 is not None
+                and t2.pending_intervention is not None
+                and t2.pending_intervention.tool_call_id == tool_call_id
+            ):
+                t2.pending_intervention = None
+                t2.save(self.tasks_dir)
+
+        return answers
+
+    def resolve_intervention(
+        self, task_id: str, tool_call_id: str, token: str, answers: dict,
+    ) -> None:
+        """人工提交答案，解锁对应的 wait_for_intervention_answer() 调用。
+
+        token 校验失败在这里用 RuntimeError（main.py 里映射成 409），跟
+        approve_workflow_run 对同一类"token 不匹配"用 ValueError（映射成 400）不是
+        同一个约定——这是有意的，不是抄漏了：issue #69 的 PRD 明确把"token 不匹配"
+        和"这个问题已经被回答过/已超时"归成同一类"409 冲突"语义（都是"这个操作曾经
+        有效，但现在提交晚了/提交错了"），而不是"400 请求本身有问题"。
+        """
+        if self.get_task(task_id) is None:
+            raise ValueError(f"任务 '{task_id}' 不存在")
+
+        key = f"{task_id}:{tool_call_id}"
+        future = self._pending_intervention_futures.get(key)
+        if future is None:
+            raise ValueError(f"任务 '{task_id}' 当前没有待回答的问题")
+        if future.done():
+            raise RuntimeError("这个问题已经被回答过或已超时")
+
+        task = self.get_task(task_id)
+        if task is None or task.pending_intervention is None or task.pending_intervention.token != token:
+            raise RuntimeError("token 不匹配")
+
+        future.set_result(answers)
 
     @staticmethod
     def _eval_condition_branches(node: "TemplateNode", node_outputs: dict[str, str]) -> list[str]:

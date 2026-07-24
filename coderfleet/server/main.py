@@ -2065,6 +2065,24 @@ async def update_task(task_id: str, body: TaskUpdate):
     raise HTTPException(status_code=400, detail="请提供 archived 或 prompt 字段")
 
 
+class TaskAnswerRequest(BaseModel):
+    tool_call_id: str
+    token:        str
+    answers:      dict
+
+
+@app.post("/api/tasks/{task_id}/answer")
+async def answer_task_intervention(task_id: str, body: TaskAnswerRequest):
+    """人工回答一个 Intervention（非 auto 任务 CLI 主动暂停问的问题），见 issue #69。"""
+    try:
+        scheduler.resolve_intervention(task_id, body.tool_call_id, body.token, body.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"ok": True}
+
+
 @app.post("/api/tasks/{task_id}/retry", response_model=TaskResponse)
 async def retry_task(task_id: str):
     """重试一个 failed 或 killed 状态的任务，克隆原任务重新提交。"""

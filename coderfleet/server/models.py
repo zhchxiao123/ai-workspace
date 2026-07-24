@@ -285,6 +285,38 @@ class BoardCard(BaseModel):
         self.save(cards_dir)
 
 
+# ── Intervention：非 auto 任务里 CLI 主动暂停问人 ─────────────
+#
+# 结构跟 Claude Code 原生 AskUserQuestion 工具的输入 schema 完全一致（question/
+# header/multiSelect/options[label,description]），这样渲染层不用做任何格式转换
+# 就能复用已有的 AskUserQuestion 问答卡片——但这是 issue #69 Slice 3（Web UI
+# 实时问答卡片）的工作，renderer.js/chat.js 目前还没有接。当前只有读写这个字段的
+# API/CLI 是完整的（GET 任务详情、POST /api/tasks/{id}/answer、
+# coderfleet task answer），Web UI 侧暂时只能通过通用 MCP 工具卡片或完全看不到
+# 的方式呈现，是有意分期、不是漏接。
+
+class InterventionOption(BaseModel):
+    label:       str
+    description: str = ""
+
+
+class InterventionQuestion(BaseModel):
+    question:    str
+    header:      str = ""
+    multiSelect: bool = False
+    options:     list[InterventionOption] = Field(default_factory=list)
+
+
+class PendingIntervention(BaseModel):
+    tool_call_id: str
+    questions:    list[InterventionQuestion]
+    # 一次性 token，跟 WorkflowRun.approval_token 是同一套信任模型——防误触/防串号
+    # 的一致性保护，不是防外部攻击的秘密。
+    token:        str
+    created_at:   str = Field(default_factory=now_iso)
+    deadline:     str
+
+
 class Task(BaseModel):
     id:           str
     status:       TaskStatus
@@ -320,6 +352,8 @@ class Task(BaseModel):
     ephemeral_ttl_minutes: int = 120
     ephemeral_container_name: str = ""
     task_secrets: dict = Field(default_factory=dict)
+    # Intervention：非 auto 任务里 CLI 主动暂停问人，见 PendingIntervention
+    pending_intervention: Optional[PendingIntervention] = None
 
     # ── 持久化 ────────────────────────────────────────────
 
@@ -439,6 +473,7 @@ class TaskResponse(BaseModel):
     ephemeral_retention: str = "release_on_finish"
     ephemeral_ttl_minutes: int = 120
     ephemeral_container_name: str = ""
+    pending_intervention: Optional[PendingIntervention] = None
 
     @classmethod
     def from_task(cls, t: Task) -> "TaskResponse":
@@ -473,6 +508,7 @@ class TaskResponse(BaseModel):
             ephemeral_retention = getattr(t, "ephemeral_retention", "release_on_finish"),
             ephemeral_ttl_minutes = getattr(t, "ephemeral_ttl_minutes", 120),
             ephemeral_container_name = getattr(t, "ephemeral_container_name", ""),
+            pending_intervention = getattr(t, "pending_intervention", None),
         )
 
 

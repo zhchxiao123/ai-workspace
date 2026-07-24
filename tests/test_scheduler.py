@@ -2084,3 +2084,190 @@ def test_notify_skips_non_terminal_status(tmp_path) -> None:
     asyncio.run(sched._notify(_notify_task(status=TaskStatus.running)))
 
     assert calls == []
+
+# ── Intervention：非 auto 任务 CLI 主动暂停问人（issue #69） ──────────────────
+
+def test_wait_for_intervention_answer_unblocks_on_resolve(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-1", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        questions = [{"question": "which color?", "options": [{"label": "red"}, {"label": "blue"}]}]
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer("ask-1", questions, timeout_seconds=5)
+        )
+        # Let the waiter run far enough to register the PendingIntervention before we answer it.
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-1").pending_intervention
+        assert pending is not None, "waiter should have written pending_intervention onto the task"
+        sched.resolve_intervention(
+            "ask-1", pending.tool_call_id, pending.token, {"which color?": "red"}
+        )
+        return await waiter
+
+    result = asyncio.run(_run())
+    assert result == {"which color?": "red"}
+    assert sched.get_task("ask-1").pending_intervention is None
+
+
+def test_resolve_intervention_rejects_wrong_token_without_unblocking_waiter(
+    tmp_path: Path,
+) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-2", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        questions = [{"question": "proceed?"}]
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer("ask-2", questions, timeout_seconds=5)
+        )
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-2").pending_intervention
+        assert pending is not None
+
+        with pytest.raises(RuntimeError, match="token"):
+            sched.resolve_intervention("ask-2", pending.tool_call_id, "wrong-token", {"proceed?": "yes"})
+
+        # The waiter must still be pending — a bad token must not resolve it.
+        assert not waiter.done()
+
+        # Correct token still works afterwards, so the wrong attempt didn't corrupt state.
+        sched.resolve_intervention("ask-2", pending.tool_call_id, pending.token, {"proceed?": "yes"})
+        return await waiter
+
+    result = asyncio.run(_run())
+    assert result == {"proceed?": "yes"}
+
+
+def test_resolve_intervention_rejects_missing_task_or_no_pending_question(
+    tmp_path: Path,
+) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-3", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    with pytest.raises(ValueError, match="不存在"):
+        sched.resolve_intervention("does-not-exist", "tc", "tok", {})
+
+    with pytest.raises(ValueError, match="没有待回答的问题"):
+        sched.resolve_intervention("ask-3", "tc", "tok", {})
+
+
+def test_wait_for_intervention_answer_times_out_and_clears_pending_state(
+    tmp_path: Path,
+) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-4", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    result = asyncio.run(
+        sched.wait_for_intervention_answer("ask-4", [{"question": "still there?"}], timeout_seconds=0.05)
+    )
+
+    assert result == {"timed_out": True}
+    assert sched.get_task("ask-4").pending_intervention is None
+
+
+def test_resolve_intervention_rejects_answer_after_timeout(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-5", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        questions = [{"question": "still there?"}]
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer("ask-5", questions, timeout_seconds=0.05)
+        )
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-5").pending_intervention
+        assert pending is not None
+
+        timed_out_result = await waiter
+        assert timed_out_result == {"timed_out": True}
+
+        with pytest.raises(RuntimeError, match="已经被回答过或已超时"):
+            sched.resolve_intervention("ask-5", pending.tool_call_id, pending.token, {"still there?": "no"})
+
+    asyncio.run(_run())
+
+
+class _FakePushManager:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def send_all(self, title: str, body: str) -> None:
+        self.calls.append((title, body))
+
+
+def test_wait_for_intervention_answer_pushes_notification(tmp_path: Path) -> None:
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-6", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+    push = _FakePushManager()
+    sched._push_manager = push
+
+    async def _run():
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer(
+                "ask-6", [{"question": "a?"}, {"question": "b?"}], timeout_seconds=5,
+            )
+        )
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-6").pending_intervention
+        sched.resolve_intervention("ask-6", pending.tool_call_id, pending.token, {"a?": "x", "b?": "y"})
+        await waiter
+
+    asyncio.run(_run())
+
+    assert len(push.calls) == 1
+    title, body = push.calls[0]
+    assert "ask-6" in body
+    assert "2" in body  # 两个问题
+
+
+def test_wait_for_intervention_answer_survives_push_manager_failure(tmp_path: Path) -> None:
+    """推送渠道失败不该拖垮整个 Intervention 流程——问题该等还是等，该被回答还是能被回答。"""
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-7", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    class _BoomPushManager:
+        async def send_all(self, title, body):
+            raise RuntimeError("push channel down")
+
+    sched._push_manager = _BoomPushManager()
+
+    async def _run():
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer("ask-7", [{"question": "a?"}], timeout_seconds=5)
+        )
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-7").pending_intervention
+        sched.resolve_intervention("ask-7", pending.tool_call_id, pending.token, {"a?": "x"})
+        return await waiter
+
+    result = asyncio.run(_run())
+    assert result == {"a?": "x"}
