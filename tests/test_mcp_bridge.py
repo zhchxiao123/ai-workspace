@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+from coderfleet.server.auth import AuthMiddleware
 from coderfleet.server.mcp_bridge import build_intervention_mcp
 from coderfleet.server.models import AccountType, Task, TaskStatus
 from coderfleet.server.scheduler import Scheduler
@@ -127,3 +128,52 @@ def test_ask_user_question_tool_rejects_missing_task_id_header(tmp_path: Path) -
     result = asyncio.run(_run())
     assert result.isError
     assert "X-CoderFleet-Task-Id" in result.content[0].text
+
+
+def test_auth_middleware_exempts_mcp_but_still_protects_everything_else() -> None:
+    # Real bug, found against a real running deployment (not caught by the tests
+    # above): main.py wraps the whole app in AuthMiddleware, which requires the
+    # coderfleet server's own API key on every request — but Claude's MCP client
+    # has no way to know that key (and shouldn't; it's a much broader-scoped
+    # secret than the one narrow capability /mcp exposes). The tests above use a
+    # bare FastAPI() with no AuthMiddleware at all, so they never exercised this
+    # interaction. This test mirrors main.py's real construction order
+    # (middleware wraps the mount) with a live, non-empty api_key to prove /mcp
+    # is exempt while confirming the middleware is still genuinely active
+    # elsewhere (an unrelated path with no credential must still be rejected).
+    app = FastAPI()
+
+    @app.get("/api/whatever")
+    async def _whatever():
+        return {"ok": True}
+
+    intervention_mcp = build_intervention_mcp(Scheduler(Path("/tmp/unused-for-this-test")))
+    app.mount("/mcp", intervention_mcp.streamable_http_app())
+    app.add_middleware(AuthMiddleware, api_key="real-secret-key")
+
+    async def _run():
+        session_ctx = intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+            ) as client:
+                protected = await client.get("/api/whatever")
+                mcp_resp = await client.post(
+                    "/mcp/",
+                    headers={
+                        "accept": "application/json, text/event-stream",
+                        "content-type": "application/json",
+                    },
+                    json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                )
+                return protected, mcp_resp
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    protected_resp, mcp_resp = asyncio.run(_run())
+    assert protected_resp.status_code == 401, "AuthMiddleware must still protect non-/mcp paths"
+    assert mcp_resp.status_code != 401, (
+        f"/mcp must be exempt from the app's own API key — Claude's MCP client can't "
+        f"provide it; got {mcp_resp.status_code}: {mcp_resp.text}"
+    )

@@ -5,7 +5,7 @@ auth.py — API Key 认证中间件
   HTTP 请求：  Authorization: Bearer <key>
   WebSocket / SSE：?token=<key> 查询参数
 
-豁免路径：/  /m  /sw.js  /api/health  /static/*
+豁免路径：/  /m  /sw.js  /api/health  /static/*  /mcp/*
 
 Key 加载顺序：
   1. 环境变量 CODERFLEET_API_KEY（空字符串 = 禁用认证）
@@ -24,7 +24,14 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 _KEY: str | None = None
 
 _EXEMPT_PATHS = frozenset({"/", "/m", "/sw.js", "/api/health"})
-_EXEMPT_PREFIXES = ("/static/",)
+# /mcp/*（issue #69 Slice 2 的 Intervention 桥接）：调用方是容器里的 Claude 自己的
+# MCP client，它不知道、也不该知道这把保护全站的 API Key——那把 key 的信任范围是
+# "这是操作者本人的 Web UI/CLI"，把它塞进每个项目容器的环境变量里当凭证反而是更
+# 严重的暴露（等于让任何一个容器都能拿它冒充操作者调用全站任何接口，而不只是
+# /mcp 这一个范围很窄的能力）。/mcp 自己的认领机制是 X-CoderFleet-Task-Id
+#（见 mcp_bridge.py），信任边界本来就比全站 API Key 窄，这里豁免不是放宽这道
+# 认证，是承认它一直就该走另一套更窄的认证。
+_EXEMPT_PREFIXES = ("/static/", "/mcp/")
 
 
 def load_api_key(workspace_dir: Path) -> str:
