@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from coderfleet.account_type_registry import env_auth_type_ids
 from coderfleet.config import parse_optional_int, truthy
@@ -298,6 +298,20 @@ class BoardCard(BaseModel):
 class InterventionOption(BaseModel):
     label:       str
     description: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_bare_string(cls, data):
+        # 真实出现过的失败：模型第一次猜 options 形状时,直接传纯字符串数组
+        # （["男","女","不愿透露"]）而不是 {label, description} 对象——对一个没见过
+        # 这份 schema 的模型来说是个合理的猜测,Pydantic 严格校验会直接报 5 条
+        # validation error，模型看到错误后能自己纠正重试,但每猜错一次就是一轮
+        # 白跑的往返，还会在聊天记录里冒出一大段原始 Pydantic 报错。纯字符串在
+        # 语义上没有歧义——就是 label，这里直接兼容，不强制模型第一次就猜对完整
+        # 对象形状。
+        if isinstance(data, str):
+            return {"label": data}
+        return data
 
 
 class InterventionQuestion(BaseModel):

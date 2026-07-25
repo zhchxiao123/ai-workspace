@@ -57,6 +57,65 @@ def _make_app_and_scheduler(tmp_path: Path) -> tuple[FastAPI, Scheduler]:
     return app, sched
 
 
+def test_ask_user_question_tool_accepts_bare_string_options(tmp_path: Path) -> None:
+    # Real failure, found against a live deployment: Claude's first guess at the
+    # tool call passed options as bare strings (["男", "女", "非二元性别 / 性别酷儿",
+    # "不愿透露", "其他（可补充说明）"]) instead of {label, description} objects — a
+    # completely reasonable guess for a model that's never seen this exact schema
+    # before. Pydantic correctly rejected it with 5 validation errors, and Claude
+    # read the error and retried correctly, so the feature technically still
+    # worked — but every such guess costs a wasted round-trip and shows the human
+    # an ugly raw Pydantic traceback in the chat log for no real reason, since a
+    # bare string unambiguously means "this is the label." InterventionOption
+    # should accept both forms transparently.
+    app, sched = _make_app_and_scheduler(tmp_path)
+    task = Task(
+        id="ask-bare-str", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async def call():
+                async with streamablehttp_client(
+                    "http://testserver/mcp/",
+                    headers={"x-coderfleet-task-id": "ask-bare-str"},
+                    httpx_client_factory=_asgi_httpx_factory(app),
+                ) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        return await session.call_tool(
+                            "ask_user_question",
+                            {"questions": [{"question": "你的性别是什么？", "options": ["男", "女", "不愿透露"]}]},
+                        )
+
+            call_task = asyncio.create_task(call())
+
+            for _ in range(100):
+                await asyncio.sleep(0.02)
+                t = sched.get_task("ask-bare-str")
+                if t and t.pending_intervention:
+                    break
+            else:
+                raise AssertionError("pending_intervention never appeared on the task")
+
+            pending = sched.get_task("ask-bare-str").pending_intervention
+            assert [o.label for o in pending.questions[0].options] == ["男", "女", "不愿透露"]
+
+            sched.resolve_intervention(
+                "ask-bare-str", pending.tool_call_id, pending.token, {"你的性别是什么？": "女"},
+            )
+            return await call_task
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    result = asyncio.run(_run())
+    assert not result.isError, result.content
+
+
 def test_ask_user_question_tool_blocks_then_resolves_via_scheduler(tmp_path: Path) -> None:
     app, sched = _make_app_and_scheduler(tmp_path)
     task = Task(
