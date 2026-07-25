@@ -108,6 +108,97 @@ def test_ask_user_question_tool_blocks_then_resolves_via_scheduler(tmp_path: Pat
     assert sched.get_task("ask-real").pending_intervention is None
 
 
+def test_ask_user_question_tool_uses_claude_codes_own_tool_use_id_from_meta(tmp_path: Path) -> None:
+    # Real bug, found against a live deployment: without this, PendingIntervention
+    # got a freshly-minted random tool_call_id that never matched the Web UI card's
+    # id (CC's own tool_use.id from the JSONL log) — every real answer submission
+    # failed with "this question is no longer waiting", not just on timeout/races.
+    # Claude Code sends its own tool_use id via the MCP request's `_meta` field
+    # under the key "claudecode/toolUseId" (per Anthropic's own MCP integration
+    # convention) — this must flow through to PendingIntervention.tool_call_id.
+    #
+    # The request below is built as a raw dict, NOT via mcp.types.CallToolRequestParams
+    # — that class has `model_config = ConfigDict(extra="allow")` on a field that's
+    # ALSO `Field(alias="_meta")`, and pydantic 2.9.2 (this project's pinned version)
+    # has a real bug where that combination silently serializes the value under the
+    # plain field name ("meta") instead of the alias ("_meta"), so a request built
+    # through the SDK's own model never actually puts it on the wire correctly.
+    # Confirmed in isolation: an `extra="allow"` model with an aliased field drops
+    # the alias on `model_dump_json(by_alias=True)` in 2.9.2; the same model without
+    # `extra="allow"` serializes correctly. This only affects *this Python test
+    # client* — real Claude Code isn't built on this SDK/pydantic combination — so
+    # sending the raw JSON-RPC body directly here tests the actual thing this test
+    # needs to prove: that the *server's* deserialization + extraction is correct.
+    app, sched = _make_app_and_scheduler(tmp_path)
+    task = Task(
+        id="ask-meta", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with streamablehttp_client(
+                "http://testserver/mcp/",
+                headers={"x-coderfleet-task-id": "ask-meta"},
+                httpx_client_factory=_asgi_httpx_factory(app),
+            ) as (read, write, get_session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    session_id = get_session_id()
+
+                async def call_raw():
+                    async with _asgi_httpx_factory(app)() as client:
+                        async with client.stream(
+                            "POST", "/mcp/",
+                            headers={
+                                "accept": "application/json, text/event-stream",
+                                "content-type": "application/json",
+                                "mcp-session-id": session_id,
+                                "mcp-protocol-version": "2025-06-18",
+                                "x-coderfleet-task-id": "ask-meta",
+                            },
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": 999,
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "ask_user_question",
+                                    "arguments": {"questions": [{"question": "ok?"}]},
+                                    "_meta": {"claudecode/toolUseId": "toolu_from_cc_real"},
+                                },
+                            },
+                        ) as resp:
+                            resp.raise_for_status()
+                            async for line in resp.aiter_lines():
+                                if line.startswith("data: "):
+                                    return json.loads(line[len("data: "):])
+
+                call_task = asyncio.create_task(call_raw())
+
+                for _ in range(100):
+                    await asyncio.sleep(0.02)
+                    t = sched.get_task("ask-meta")
+                    if t and t.pending_intervention:
+                        break
+                else:
+                    raise AssertionError("pending_intervention never appeared on the task")
+
+                pending = sched.get_task("ask-meta").pending_intervention
+                assert pending.tool_call_id == "toolu_from_cc_real"
+
+                sched.resolve_intervention("ask-meta", "toolu_from_cc_real", pending.token, {"ok?": "yes"})
+                return await call_task
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    result = asyncio.run(_run())
+    assert "error" not in result, result
+    assert json.loads(result["result"]["content"][0]["text"]) == {"ok?": "yes"}
+
+
 def test_ask_user_question_tool_rejects_missing_task_id_header(tmp_path: Path) -> None:
     app, sched = _make_app_and_scheduler(tmp_path)
 

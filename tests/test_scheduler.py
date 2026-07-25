@@ -2322,3 +2322,35 @@ def test_wait_for_intervention_answer_survives_push_manager_failure(tmp_path: Pa
 
     result = asyncio.run(_run())
     assert result == {"a?": "x"}
+
+
+def test_wait_for_intervention_answer_uses_caller_supplied_tool_call_id(tmp_path: Path) -> None:
+    # Real bug found against a live deployment: the Web UI card is keyed by CC's own
+    # tool_use.id (from the JSONL log stream), but wait_for_intervention_answer
+    # previously always minted its own random uuid as tool_call_id — the two would
+    # never match, so GET /api/tasks/{id}'s pending_intervention.tool_call_id could
+    # never equal the id the renderer submits against, and every real submit failed
+    # with "this question is no longer waiting" regardless of timing. The MCP
+    # handler (mcp_bridge.py) must be able to pass CC's own id through so the two
+    # stay correlated.
+    sched = Scheduler(tmp_path)
+    task = Task(
+        id="ask-8", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="hello", project=str(tmp_path / "repo"),
+    )
+    task.save(sched.tasks_dir)
+
+    async def _run():
+        waiter = asyncio.create_task(
+            sched.wait_for_intervention_answer(
+                "ask-8", [{"question": "a?"}], timeout_seconds=5, tool_call_id="toolu_from_cc_01",
+            )
+        )
+        await asyncio.sleep(0)
+        pending = sched.get_task("ask-8").pending_intervention
+        assert pending.tool_call_id == "toolu_from_cc_01"
+        sched.resolve_intervention("ask-8", "toolu_from_cc_01", pending.token, {"a?": "y"})
+        return await waiter
+
+    result = asyncio.run(_run())
+    assert result == {"a?": "y"}

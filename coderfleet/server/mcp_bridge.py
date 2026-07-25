@@ -49,8 +49,21 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         task_id = request.headers.get("x-coderfleet-task-id", "").strip() if request else ""
         if not task_id:
             raise ValueError("missing X-CoderFleet-Task-Id header")
+
+        # 尽量把这次调用的 CC 自己的 tool_use.id 传下去，这样 Web UI 问答卡片（按
+        # tool_use.id 认领）跟 PendingIntervention.tool_call_id 才能对上——否则
+        # wait_for_intervention_answer 会自己另铸一个随机 id，人工提交答案时前端
+        # 拿到的 pending_intervention.tool_call_id 永远不等于卡片自己的 id，每次
+        # 提交都会必现"这个问题已经不再等待回答了"（这是一次真实复现过的 bug，
+        # 不是猜测）。Claude Code 通过 MCP 请求的 `_meta` 字段带这个 id，键名固定
+        # 是 "claudecode/toolUseId"（含斜杠，不是合法 Python 属性名，取不到就
+        # 说明这个 MCP 客户端没有对应字段或者字段名变了，退化成随机 id，至少这次
+        # 请求内部依然自洽，只是前端没法精确认领）。
+        meta = ctx.request_context.meta
+        cc_tool_use_id = (meta.model_extra or {}).get("claudecode/toolUseId") if meta else None
+
         return await scheduler.wait_for_intervention_answer(
-            task_id, [q.model_dump() for q in questions],
+            task_id, [q.model_dump() for q in questions], tool_call_id=cc_tool_use_id,
         )
 
     return mcp_server

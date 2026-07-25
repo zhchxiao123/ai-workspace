@@ -4118,6 +4118,7 @@ class Scheduler:
         task_id: str,
         questions: list[dict],
         timeout_seconds: float = DEFAULT_INTERVENTION_TIMEOUT_SECONDS,
+        tool_call_id: str | None = None,
     ) -> dict:
         """
         在指定 Task 上登记一个待回答的问题，推送通知，阻塞直到人工作答或超时。
@@ -4125,12 +4126,20 @@ class Scheduler:
         返回值：正常作答时是提交的 answers dict；超时则是 {"timed_out": True}——
         调用方（未来的 MCP 工具 handler）据此构造"用户未及时回应，请自行判断"这样的
         tool_result，而不是让 CLI 端挂死或报错。
+
+        tool_call_id：调用方（mcp_bridge.py）应该尽量传入 CC 自己这次 MCP 工具调用的
+        tool_use id（从 MCP 请求的 `_meta` 里取，真实存在过的 bug：Web UI 的问答卡片
+        是按 CC 自己的 tool_use.id 认领的，如果这里另外发一个随机 id，两边永远对不上，
+        人工提交答案时 GET 到的 pending_intervention.tool_call_id 永远不等于卡片自己的
+        id，每次提交都会被判定成"问题已经不再等待回答"，不是超时/竞态才触发，是必现。
+        传不进来（比如某个 MCP 客户端没有对应的 _meta 字段）就退化成随机 id，至少这次
+        请求内部自洽，只是前端没法精确对上卡片。
         """
         task = self.get_task(task_id)
         if task is None:
             raise ValueError(f"任务 '{task_id}' 不存在")
 
-        tool_call_id = uuid.uuid4().hex
+        tool_call_id = tool_call_id or uuid.uuid4().hex
         token = uuid.uuid4().hex
         deadline = (utc_now() + timedelta(seconds=timeout_seconds)).isoformat(timespec="seconds")
 
