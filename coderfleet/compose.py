@@ -55,25 +55,46 @@ def _gost_config_with_bypass(
     upstream_host: str,
     upstream_port: str,
     bypass_matchers: list[str],
+    bridge_relay_port: str | None = None,
+    bridge_target: str | None = None,
 ) -> dict[str, Any]:
     """Return a gost v3 config dict that forwards HTTP + DNS to upstream via the
-    same chain, bypassing listed targets for HTTP."""
+    same chain, bypassing listed targets for HTTP.
+
+    bridge_relay_port/bridge_target (issue #69 Slice 2, both optional): a plain TCP
+    forwarder service to the host's own `coderfleet server` process (which the
+    Intervention MCP bridge is mounted into at `/mcp`), so project containers can
+    reach it without opening a second network path out of `intnet` — same
+    "everything goes through the relay" invariant the HTTP/DNS services above
+    already enforce. Deliberately has NO `chain` reference (unlike service-dns) —
+    this must go straight to the host, never through the upstream internet proxy
+    chain, which is the wrong destination entirely for reaching the host machine.
+    """
+    services: list[dict[str, Any]] = [
+        {
+            "name": "service-0",
+            "addr": f":{relay_port}",
+            "handler": {"type": "http", "chain": "chain-0"},
+            "listener": {"type": "tcp"},
+        },
+        {
+            "name": "service-dns",
+            "addr": f":{dns_port}",
+            "handler": {"type": "dns", "chain": "chain-0"},
+            "listener": {"type": "dns"},
+            "forwarder": {"nodes": [{"name": "dns-upstream", "addr": dns_upstream}]},
+        },
+    ]
+    if bridge_relay_port and bridge_target:
+        services.append({
+            "name": "service-bridge",
+            "addr": f":{bridge_relay_port}",
+            "handler": {"type": "tcp"},
+            "listener": {"type": "tcp"},
+            "forwarder": {"nodes": [{"name": "bridge", "addr": bridge_target}]},
+        })
     return {
-        "services": [
-            {
-                "name": "service-0",
-                "addr": f":{relay_port}",
-                "handler": {"type": "http", "chain": "chain-0"},
-                "listener": {"type": "tcp"},
-            },
-            {
-                "name": "service-dns",
-                "addr": f":{dns_port}",
-                "handler": {"type": "dns", "chain": "chain-0"},
-                "listener": {"type": "dns"},
-                "forwarder": {"nodes": [{"name": "dns-upstream", "addr": dns_upstream}]},
-            },
-        ],
+        "services": services,
         "chains": [{
             "name": "chain-0",
             "hops": [{
@@ -114,6 +135,12 @@ def generate_compose(ws: Path) -> dict[str, Any]:
     relay_image    = cfg.get("RELAY_IMAGE", "gogost/gost:3")
     dns_port       = cfg.get("DNS_LISTEN_PORT", "53")
     dns_upstream   = cfg.get("DNS_UPSTREAM", "https://1.1.1.1/dns-query")
+    # Intervention MCP bridge（issue #69 Slice 2）：project 容器连 relay 的这个端口，
+    # relay 直接转发到宿主机自己的 coderfleet server 进程（CODERFLEET_PORT，MCP
+    # 工具就挂在它的 /mcp 路径下）——复用同一个 host.docker.internal，跟现有代理
+    # 转发同一套机制，不是新开一条容器→宿主机的路。
+    mcp_bridge_relay_port = cfg.get("MCP_BRIDGE_RELAY_PORT", "8766")
+    coderfleet_server_port = cfg.get("CODERFLEET_PORT", "8765")
     ide_proxy_image = cfg.get("IDE_PROXY_IMAGE", "alpine/socat:latest")
     build_platform = cfg.get("BUILD_PLATFORM", "linux/amd64")
     timezone       = container_timezone(cfg)
@@ -216,6 +243,13 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "no_proxy":              no_proxy,
                 "CODERFLEET_RELAY_IP":   relay_ip,
                 "CODERFLEET_RELAY_PORT": relay_port,
+                # Intervention MCP bridge（issue #69 Slice 2）：account_type_registry.py 的
+                # _claude_mcp_bridge_arg 通过 Claude 自己的 ${VAR} 配置展开语法引用这两个变量
+                # 拼 --mcp-config 的 url，而不是在这里把值直接嵌进命令行——同一份 --mcp-config
+                # 字符串在所有任务间保持不变，真正变化的只有这里的容器环境。PROXY=off 的账号
+                # 不在这个分支里，也就没有这两个变量——那类账号目前用不了 Intervention，因为
+                # 它们的容器本来就不在能连到 relay 的 intnet 网络上。
+                "CODERFLEET_MCP_BRIDGE_PORT": mcp_bridge_relay_port,
             })
 
         project_image = p.get("IMAGE") or image
@@ -367,9 +401,16 @@ def generate_compose(ws: Path) -> dict[str, Any]:
 
         # Always write a gost config file: it carries the DNS-forwarding service
         # (project containers point their `dns:` at the relay) alongside the HTTP
-        # proxy service, with bypass rules (if any) applied at the HTTP hop level.
+        # proxy service, with bypass rules (if any) applied at the HTTP hop level,
+        # plus the Intervention MCP bridge forwarder (issue #69 Slice 2). The bridge
+        # target is always the literal host machine, not `upstream_host`/`proxy_host`
+        # (which may be repointed at xray or an overridden PROXY_HOST) — coderfleet
+        # server always runs on the actual host regardless of where the upstream
+        # internet proxy is configured to live.
         gost_cfg = _gost_config_with_bypass(
             relay_port, dns_port, dns_upstream, upstream_host, upstream_port, bypass_list,
+            bridge_relay_port=mcp_bridge_relay_port,
+            bridge_target=f"host.docker.internal:{coderfleet_server_port}",
         )
         gost_cfg_path = ws / "proxy-relay-config.yaml"
         gost_cfg_path.write_text(

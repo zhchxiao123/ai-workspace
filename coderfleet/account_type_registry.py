@@ -52,6 +52,35 @@ _CF_SEND_SYSTEM_HINT = (
 )
 
 
+def _claude_mcp_bridge_arg() -> str:
+    """issue #69 Slice 2：Intervention 桥接工具的 --mcp-config + --allowedTools 参数
+    片段。这段字符串在所有任务、所有账号间字面完全相同——不接受任何参数——真正
+    会变化的东西（relay 地址/端口、task id）全部由 Claude 自己的 ${VAR} 配置展开
+    语法在容器里解析：CODERFLEET_RELAY_IP/CODERFLEET_MCP_BRIDGE_PORT 由
+    compose.py 注入，CODERFLEET_TASK_ID 是 _build_claude 命令行本身已经在设置的
+    同一个环境变量（见下面 exec 前缀），不必再单独插值一次任务 id 进 JSON 里。
+    `${VAR:-default}` 兜底默认值是有意的：PROXY=off 的账号压根不会有
+    CODERFLEET_RELAY_IP/CODERFLEET_MCP_BRIDGE_PORT 这两个环境变量（见
+    compose.py），留空档位会让 Claude 在解析 --mcp-config 时直接报错、可能连
+    带整个任务都起不来；有默认值时 Claude 正常启动，只有模型真的尝试调用这个
+    工具时才会拿到一个连不通的地址、干净地报一次工具执行失败——比"整个任务开局
+    就崩"这种后果轻得多，同时这也是为什么 Standards 复核里"PROXY=off 账号用不了
+    Intervention"这条只是已知限制而不是需要另外报警的失败：调用会失败得很明显，
+    不是静默"看起来成功了"。
+    """
+    mcp_config = {
+        "mcpServers": {
+            "coderfleet": {
+                "type": "http",
+                "url": "http://${CODERFLEET_RELAY_IP:-127.0.0.1}:${CODERFLEET_MCP_BRIDGE_PORT:-0}/mcp/",
+                "headers": {"X-CoderFleet-Task-Id": "${CODERFLEET_TASK_ID}"},
+            },
+        },
+    }
+    config_json = shlex.quote(json.dumps(mcp_config))
+    return f" --mcp-config {config_json} --allowedTools mcp__coderfleet__ask_user_question"
+
+
 def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
     p  = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep = shlex.quote(p)
@@ -59,11 +88,13 @@ def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, m
     resume = f" --resume {shlex.quote(session_id)}" if session_id else ""
     model_arg = f" --model {shlex.quote(model)}" if model else ""
     sys_hint = shlex.quote(_CF_SEND_SYSTEM_HINT)
+    # auto 模式的承诺是"自己判断，别问"——绝不能给它挂一个能暂停等人的工具。
+    mcp_bridge = "" if auto else _claude_mcp_bridge_arg()
     return (
         f"printf '%s\\n' {ep} | "
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
         f"claude -p {perm} --output-format stream-json --verbose"
-        f"{model_arg} --append-system-prompt {sys_hint}{resume}"
+        f"{model_arg} --append-system-prompt {sys_hint}{resume}{mcp_bridge}"
     )
 
 

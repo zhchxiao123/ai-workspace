@@ -92,6 +92,62 @@ def test_generate_compose_defaults_container_timezone(tmp_path: Path) -> None:
     assert compose["services"]["codex-project-repo"]["environment"]["TZ"] == "Asia/Shanghai"
 
 
+def test_generate_compose_writes_mcp_bridge_forwarder_in_gost_config(tmp_path: Path) -> None:
+    """Issue #69 Slice 2: project containers must reach the Intervention MCP
+    bridge (mounted into coderfleet server's own /mcp path) through the same
+    relay everything else goes through, not a new network path."""
+    import yaml
+
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    _write_minimal_workspace(tmp_path, project_path)
+
+    generate_compose(tmp_path)
+
+    gost_cfg = yaml.safe_load((tmp_path / "proxy-relay-config.yaml").read_text())
+    services = {s["name"]: s for s in gost_cfg["services"]}
+    bridge = services["service-bridge"]
+
+    assert bridge["addr"] == ":8766"
+    assert bridge["handler"] == {"type": "tcp"}
+    assert bridge["listener"] == {"type": "tcp"}
+    assert bridge["forwarder"]["nodes"][0]["addr"] == "host.docker.internal:8765"
+    # Must NOT route through the upstream internet proxy chain like service-0 does.
+    assert "chain" not in bridge["handler"]
+
+
+def test_generate_compose_respects_configured_mcp_bridge_and_server_ports(tmp_path: Path) -> None:
+    import yaml
+
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    _write_minimal_workspace(tmp_path, project_path)
+    (tmp_path / "config.conf").write_text(
+        "MCP_BRIDGE_RELAY_PORT=9001\nCODERFLEET_PORT=9002\n", encoding="utf-8",
+    )
+
+    generate_compose(tmp_path)
+
+    gost_cfg = yaml.safe_load((tmp_path / "proxy-relay-config.yaml").read_text())
+    services = {s["name"]: s for s in gost_cfg["services"]}
+    bridge = services["service-bridge"]
+
+    assert bridge["addr"] == ":9001"
+    assert bridge["forwarder"]["nodes"][0]["addr"] == "host.docker.internal:9002"
+
+
+def test_generate_compose_injects_mcp_bridge_port_env_var(tmp_path: Path) -> None:
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    _write_minimal_workspace(tmp_path, project_path)
+
+    compose = generate_compose(tmp_path)
+
+    env = compose["services"]["codex-project-repo"]["environment"]
+    assert env["CODERFLEET_MCP_BRIDGE_PORT"] == "8766"
+    assert env["CODERFLEET_RELAY_IP"] == "172.21.0.2"
+
+
 def test_project_docker_socket_off_overrides_global_socket(tmp_path: Path) -> None:
     project_path = tmp_path / "repo"
     project_path.mkdir()

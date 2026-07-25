@@ -90,6 +90,7 @@ from coderfleet.server.image_builds import ImageBuildRegistry
 from coderfleet.server.image_build_runner import run_image_build
 from coderfleet.server.marketplace import MarketplaceManager
 from coderfleet.server.scheduler import MAX_PENDING_PER_CONV, Scheduler
+from coderfleet.server.mcp_bridge import build_intervention_mcp
 from coderfleet.server.system_llm import SystemLLM, SystemLLMError
 from coderfleet.server.translate import translate_text
 from coderfleet.server.translation_cache import TranslationCache
@@ -271,6 +272,17 @@ app.add_middleware(AuthMiddleware, api_key=_api_key)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# ── Intervention MCP bridge（issue #69 Slice 2）──────────────────────────────
+#
+# 非 auto 任务的 Claude 进程用这个工具主动暂停问人，而不是走原生的、CoderFleet
+# 没法代答的 CLI 权限弹窗。Server 名 "coderfleet" + 工具名 "ask_user_question"
+# 拼成 Claude 侧看到的 wire 全名 mcp__coderfleet__ask_user_question——
+# renderer.js（Slice 3）已经在认这个具体的字符串，改这里的 server/tool 名字
+# 必须同步改那边。工具本体注册在 mcp_bridge.py（不带这个文件顶部的
+# `from __future__ import annotations`，见那边模块 docstring 的原因）。
+intervention_mcp = build_intervention_mcp(scheduler)
+app.mount("/mcp", intervention_mcp.streamable_http_app())
+
 
 @app.on_event("startup")
 async def reconcile_tasks_on_startup():
@@ -282,6 +294,21 @@ async def reconcile_tasks_on_startup():
     await scheduler.reconcile_running_tasks()
     scheduler.start_scheduling_loop()
     scheduler.start_usage_polling_loop()
+
+    # Mounting intervention_mcp.streamable_http_app() via app.mount() does NOT run
+    # its lifespan — Starlette doesn't propagate a mounted sub-app's lifespan to the
+    # parent automatically, so the MCP session manager's task group would otherwise
+    # never start and every request into /mcp would hang. Enter it manually here,
+    # exit it in the matching shutdown handler below.
+    app.state.intervention_mcp_session_ctx = intervention_mcp.session_manager.run()
+    await app.state.intervention_mcp_session_ctx.__aenter__()
+
+
+@app.on_event("shutdown")
+async def _stop_intervention_mcp_session():
+    ctx = getattr(app.state, "intervention_mcp_session_ctx", None)
+    if ctx is not None:
+        await ctx.__aexit__(None, None, None)
 
 
 @app.get("/", include_in_schema=False)
