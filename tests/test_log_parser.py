@@ -16,6 +16,55 @@ def test_extract_kimi_stream_json_output() -> None:
     assert extract_task_output(log, "kimi") == "I will inspect the repo.Done."
 
 
+def test_extract_claude_assistant_usage_maxes_input_and_sums_output() -> None:
+    # Characterization test: claude parsing had no direct coverage in this
+    # file before this PRD's refactor. Captures today's real behavior so the
+    # upcoming account_type_registry.py-driven rewrite has a byte-identical
+    # regression proof, not just an aspiration.
+    log = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": "Hello"}],
+                "usage": {"input_tokens": 50, "output_tokens": 10},
+            },
+        }),
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": " there"}],
+                "usage": {"input_tokens": 30, "output_tokens": 5},
+            },
+        }),
+        json.dumps({"type": "usage", "input_tokens": 5, "output_tokens": 2, "cost_usd": 0.01}),
+        json.dumps({"type": "result", "result": "Hello there", "cost_usd": 0.02, "session_id": "s1"}),
+    ])
+
+    result = parse_log(log, "claude")
+    assert result.text == "Hello there"
+    # input_tokens is a running max across assistant turns (50, then 30 -> 50
+    # stays), then the standalone "usage" event's 5 is additive on top.
+    assert result.tokens_input == 55
+    # output_tokens is additive across every reading: 10 + 5 + 2.
+    assert result.tokens_output == 17
+    # The "result" event's cost_usd always overwrites, unlike the "usage"
+    # event's cost_usd which only sets if not already set.
+    assert result.cost_usd == 0.02
+
+
+def test_extract_claude_falls_back_to_accumulated_text_without_result_event() -> None:
+    # No explicit "result" event (e.g. a killed/truncated task) -- final text
+    # is reconstructed from accumulated assistant text chunks instead.
+    log = "\n".join([
+        json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "partial"}]},
+        }),
+    ])
+
+    assert extract_task_output(log, "claude") == "partial"
+
+
 def test_extract_grok_streaming_text_data_output() -> None:
     log = "\n".join([
         '{"type":"text","data":"ta"}',

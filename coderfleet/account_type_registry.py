@@ -16,7 +16,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List
+from typing import Callable, List, Optional, Union
 
 
 # ── 函数类型别名 ──────────────────────────────────────────────
@@ -31,9 +31,100 @@ from typing import Callable, List
 # ExtractFn: 从任务日志文本中提取 native_session_id
 #   参数：log_text
 #   返回：session_id 字符串，未找到时返回 ""
+#
+# EventsFn: 把一行已解码的任务输出 JSON 归一化成零或多个 OutputEvent
+#   参数：line（单行 json.loads 后的 dict）
+#   返回：OutputEvent 列表（纯函数，无 I/O，同 InnerCmdFn/ExtractFn 的约束一致）
 
 InnerCmdFn = Callable[[str, bool, str, str, str, str, List[str], str], str]
 ExtractFn  = Callable[[str], str]
+
+
+# ── 归一化输出事件（issue #70）──────────────────────────────────
+#
+# log_parser.py 过去为每种账号类型各自维护一份 _parse_<type>_line，
+# 六份实现各自编码"文本怎么拼、用量怎么算"的规则，且不从 ACCOUNT_TYPES
+# 派生——这正是 pi 上线时静默漏挂输出解析、codex/opencode 事件形状各自
+# 独立漂移两次都没有测试兜住的根因（见 issue #70 PRD）。
+#
+# 这里把"文本"和"用量/花费"归纳成一个只有 8 种成员、封闭的事件小词表；
+# 每种事件都对应真实日志里已经出现过的、且只有这一种的合并规则——
+# 规则本身只在 log_parser.py 的通用 reducer 里写一次，每种账号类型的
+# `_events_<type>` 函数只负责"把一行判成哪些事件"，不重新决定合并方式。
+#
+# 文本：
+#   TextChunk  —— 追加进累积缓冲区（大多数类型逐轮拼接的正常情况）。
+#   FinalText  —— 直接覆盖最终文本，不经过缓冲区（目前只有 claude 的
+#                 "result" 事件带有这种权威的最终答案）。
+#
+# 用量（token 计数），对应当前六种格式里实际出现过、且只有这三种的合并方式：
+#   UsageDelta    —— 两个计数都累加（如 claude 的 "usage" 事件、
+#                     codex 的 "usage"/"response.usage"）。
+#   UsageProgress —— input 取历史最大值、output 累加（如 claude/
+#                     opencode 的 assistant/usage 字段、pi 的 message_end）。
+#   UsageTotal    —— 两个计数都被最新读数整体覆盖（如 codex 的
+#                     "turn.completed"、grok 的 "end"）；某一侧字段缺失时
+#                     传 None，reducer 只覆盖非 None 的那一侧——这保留了
+#                     codex "turn.completed" 逐字段判断是否存在的原有行为，
+#                     与 grok "end" 事件缺字段时默认为 0（而非 None，因此
+#                     总是整体覆盖两侧）的行为是两回事，各自由分类函数自
+#                     行决定传什么值，reducer 的合并规则本身保持通用。
+#
+# 花费（cost_usd），同样只有三种已出现的合并方式：
+#   CostDelta     —— 累加（opencode 的 step_finish.cost）。
+#   CostFirstSeen —— 只在当前还未设置时才生效（claude 的 "usage" 事件）。
+#   CostTotal     —— 总是被最新读数整体覆盖（claude 的 "result" 事件、
+#                     pi 的 usage.cost.total）。
+
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
+
+
+@dataclass(frozen=True)
+class FinalText:
+    text: str
+
+
+@dataclass(frozen=True)
+class UsageDelta:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class UsageProgress:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class UsageTotal:
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class CostDelta:
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class CostFirstSeen:
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class CostTotal:
+    cost_usd: float
+
+
+OutputEvent = Union[
+    TextChunk, FinalText,
+    UsageDelta, UsageProgress, UsageTotal,
+    CostDelta, CostFirstSeen, CostTotal,
+]
+EventsFn = Callable[[dict], List[OutputEvent]]
 
 
 # ── per-type inner command builders ──────────────────────────
@@ -182,6 +273,191 @@ def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model
     )
 
 
+# ── per-type output-event classifiers (issue #70) ──────────────
+# 一行 json.loads 后的输出 → 零或多个 OutputEvent。纯函数，无 I/O，与
+# _build_<type>/_extract_<type> 的约束一致，同样直接单测，不需要 Docker。
+
+def _events_kimi(d: dict) -> List[OutputEvent]:
+    if d.get("role") != "assistant":
+        return []
+    content = d.get("content", "")
+    if isinstance(content, str):
+        return [TextChunk(content)]
+    events: List[OutputEvent] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                events.append(TextChunk(str(block.get("text", ""))))
+    return events
+
+
+def _events_grok(d: dict) -> List[OutputEvent]:
+    t = d.get("type", "")
+    if t == "text_delta":
+        return [TextChunk(d.get("text", ""))]
+    if t == "text":
+        return [TextChunk(d.get("data", d.get("text", "")))]
+    if t == "end":
+        usage = d.get("usage", {})
+        if isinstance(usage, dict):
+            return [UsageTotal(
+                int(usage.get("input_tokens", 0)),
+                int(usage.get("output_tokens", 0)),
+            )]
+    return []
+
+
+def _events_pi(d: dict) -> List[OutputEvent]:
+    # `--mode json` emits one `message_end` per completed message; the final
+    # answer is whichever assistant message_end(s) land last, since pi has
+    # no single dedicated "result" event like claude's `type=="result"`.
+    # `agent_end` re-lists the same messages, so it's intentionally not read
+    # here to avoid double-counting text/usage across duplicate coverage of
+    # the same turn.
+    if d.get("type") != "message_end":
+        return []
+    msg = d.get("message", {})
+    if msg.get("role") != "assistant":
+        return []
+    events: List[OutputEvent] = [
+        TextChunk(block.get("text", ""))
+        for block in msg.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    usage = msg.get("usage", {})
+    if isinstance(usage, dict) and usage:
+        events.append(UsageProgress(int(usage.get("input", 0)), int(usage.get("output", 0))))
+        cost = usage.get("cost", {})
+        if isinstance(cost, dict) and cost.get("total"):
+            events.append(CostTotal(float(cost["total"])))
+    return events
+
+
+def _events_claude(d: dict) -> List[OutputEvent]:
+    t = d.get("type", "")
+    events: List[OutputEvent] = []
+    if t == "result":
+        # {"type":"result","result":"...","cost_usd":0.02,"session_id":"..."}
+        # This event's cost always overwrites (CostTotal) -- distinct from
+        # the "usage" event below, whose cost only sets if not already set
+        # (CostFirstSeen). Claude's cost accounting is genuinely these two
+        # different rules depending on which event carries it, not one rule.
+        r = d.get("result", "")
+        if r:
+            events.append(FinalText(str(r)))
+        for key in ("cost_usd", "total_cost_usd"):
+            c = d.get(key)
+            if c:
+                events.append(CostTotal(float(c)))
+                break
+    elif t == "assistant":
+        msg = d.get("message", {})
+        for block in msg.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                events.append(TextChunk(block["text"]))
+        usage = msg.get("usage", {})
+        if usage:
+            events.append(UsageProgress(int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))))
+    elif t == "usage":
+        events.append(UsageDelta(int(d.get("input_tokens", 0)), int(d.get("output_tokens", 0))))
+        c = d.get("cost_usd") or d.get("total_cost_usd", 0)
+        if c:
+            events.append(CostFirstSeen(float(c)))
+    return events
+
+
+def _events_codex(d: dict) -> List[OutputEvent]:
+    t = d.get("type", "")
+    if t == "message" and d.get("role") == "assistant":
+        return [
+            TextChunk(block["text"])
+            for block in d.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+    if t == "item.completed":
+        item = d.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if text:
+                return [TextChunk(text)]
+        return []
+    if t in ("usage", "response.usage"):
+        return [UsageDelta(
+            int(d.get("prompt_tokens", 0) or d.get("input_tokens", 0)),
+            int(d.get("completion_tokens", 0) or d.get("output_tokens", 0)),
+        )]
+    if t == "turn.completed":
+        # turn.completed's usage is a cumulative total for the whole thread
+        # (confirmed against Codex's own --json schema), not a per-turn
+        # delta -- UsageTotal overwrites rather than accumulates, so a
+        # multi-turn thread ends up with the final total instead of
+        # double-counting overlapping snapshots. Each field is passed
+        # through as None when absent so the reducer leaves that side
+        # untouched rather than zeroing it out.
+        usage = d.get("usage")
+        if isinstance(usage, dict):
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            return [UsageTotal(
+                int(input_tokens) if input_tokens is not None else None,
+                int(output_tokens) if output_tokens is not None else None,
+            )]
+        return []
+    return []
+
+
+def _events_opencode(d: dict) -> List[OutputEvent]:
+    # Current OpenCode CLI output nests everything under a `part` object
+    # (matching renderer.js's _opencodeText/_opencodeStepFinish, which read
+    # d.part.text / d.part.tokens) -- the flat top-level `content`/`usage`
+    # legacy-shape handling below is a defensive fallback for older-format
+    # logs still on disk, not the primary path.
+    #
+    # Two independent checks below (text-vs-legacy-content, then
+    # step_finish, then generic top-level usage) -- not an if/elif chain --
+    # because real OpenCode logs can carry more than one of these on the
+    # same line and the original parser accumulated across all of them.
+    t = d.get("type", "")
+    part = d.get("part")
+    part = part if isinstance(part, dict) else {}
+    events: List[OutputEvent] = []
+
+    if t == "text" and part.get("type") == "text":
+        text = part.get("text")
+        if text:
+            events.append(TextChunk(text))
+    elif d.get("role") == "assistant" or t in ("message", "assistant"):
+        content = d.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    events.append(TextChunk(block["text"]))
+        elif isinstance(content, str):
+            events.append(TextChunk(content))
+
+    if t == "step_finish" and part.get("type") == "step-finish":
+        tokens = part.get("tokens")
+        tokens = tokens if isinstance(tokens, dict) else {}
+        cache = tokens.get("cache")
+        cache = cache if isinstance(cache, dict) else {}
+        input_tokens = (
+            int(tokens.get("input", 0) or 0)
+            + int(cache.get("read", 0) or 0)
+            + int(cache.get("write", 0) or 0)
+        )
+        output_tokens = int(tokens.get("output", 0) or 0) + int(tokens.get("reasoning", 0) or 0)
+        events.append(UsageDelta(input_tokens, output_tokens))
+        cost = part.get("cost")
+        if cost:
+            events.append(CostDelta(float(cost)))
+
+    usage = d.get("usage", {})
+    if isinstance(usage, dict) and usage:
+        events.append(UsageProgress(int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))))
+
+    return events
+
+
 # ── per-type session ID extractors ────────────────────────────
 
 def _extract_claude(text):
@@ -311,6 +587,10 @@ class AccountTypeSpec:
     build_inner_cmd:    InnerCmdFn      # 构建 inner_cmd 的函数
     extract_session_id: ExtractFn       # 从日志文本提取 native_session_id 的函数
     usage_status_cmd:   str = ""        # 任务完成后查询用量的 shell 命令（空=跳过）
+    parse_output_events: Optional[EventsFn] = None
+    # 把一行任务输出 JSON 归一化成 OutputEvent 列表的纯函数；None 表示该类型
+    # 没有结构化的逐行输出格式（目前只有 hermes——纯文本，走 log_parser.py
+    # 通用的 _parse_text_fallback，不参与这里的事件归一化）。
 
 
 # ── 注册表 ────────────────────────────────────────────────────
@@ -330,6 +610,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="var(--amber-bg)", badge_color="var(--amber)",
         build_inner_cmd=_build_claude,
         extract_session_id=_extract_claude,
+        parse_output_events=_events_claude,
     ),
     "codex": AccountTypeSpec(
         id="codex", label="Codex CLI",
@@ -342,6 +623,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         build_inner_cmd=_build_codex,
         extract_session_id=_extract_codex,
         usage_status_cmd="coderfleet-usage-status codex 2>&1",
+        parse_output_events=_events_codex,
     ),
     "opencode": AccountTypeSpec(
         id="opencode", label="OpenCode",
@@ -358,6 +640,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="var(--green-bg)", badge_color="var(--green)",
         build_inner_cmd=_build_opencode,
         extract_session_id=_extract_opencode,
+        parse_output_events=_events_opencode,
     ),
     "hermes": AccountTypeSpec(
         id="hermes", label="Hermes Agent",
@@ -391,6 +674,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="#0f1923", badge_color="#38bdf8",
         build_inner_cmd=_build_grok,
         extract_session_id=_extract_grok,
+        parse_output_events=_events_grok,
     ),
     "kimi": AccountTypeSpec(
         id="kimi", label="Kimi Code",
@@ -411,6 +695,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="#101820", badge_color="#7dd3fc",
         build_inner_cmd=_build_kimi,
         extract_session_id=_extract_kimi,
+        parse_output_events=_events_kimi,
     ),
     "pi": AccountTypeSpec(
         id="pi", label="Pi Agent",
@@ -430,6 +715,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         badge_bg="#1a2e1a", badge_color="#7ee787",
         build_inner_cmd=_build_pi,
         extract_session_id=_extract_pi,
+        parse_output_events=_events_pi,
     ),
 }
 

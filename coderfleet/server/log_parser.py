@@ -15,6 +15,19 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from coderfleet.account_type_registry import (
+    ACCOUNT_TYPES,
+    CostDelta,
+    CostFirstSeen,
+    CostTotal,
+    FinalText,
+    OutputEvent,
+    TextChunk,
+    UsageDelta,
+    UsageProgress,
+    UsageTotal,
+)
+
 ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 _HEADER_SEP_RE = re.compile(r"^={10,}\s*$", re.MULTILINE)
 
@@ -66,12 +79,13 @@ def parse_log(log_text: str, acc_type: str = "claude") -> TaskOutputData:
     Parse a completed task log, returning text output and token usage.
 
     acc_type should match AccountType.value (e.g. "claude", "codex", "opencode",
-    "hermes", "grok", "kimi").  Defaults to "claude" for unknown types.
+    "hermes", "grok", "kimi", "pi"). Unknown types, and types with no registered
+    `parse_output_events` (currently only "hermes", which is plain text, not
+    JSONL), fall straight through to the plain-text fallback below.
     """
     result = TaskOutputData()
 
-    if acc_type in ("claude", "codex", "opencode", "grok", "kimi", "pi"):
-        _parse_jsonl_log(log_text, result, acc_type)
+    _parse_jsonl_log(log_text, result, acc_type)
 
     # Fallback / supplement: plain-text extraction when JSONL gave no text
     if not result.text:
@@ -85,11 +99,31 @@ def extract_task_output(log_text: str, acc_type: str = "claude") -> str:
     return parse_log(log_text, acc_type).text
 
 
-# ── per-format parsers ────────────────────────────────────────────────────────
+# ── per-format parsing (account_type_registry.py-driven) ───────────────────────
+#
+# Each account type's `AccountTypeSpec.parse_output_events` (a pure function
+# owned by account_type_registry.py) classifies one decoded JSON line into
+# normalized OutputEvents; this module owns only the generic fold from events
+# into TaskOutputData, via `_apply_event`'s one fixed rule per event kind.
+# Adding or fixing an account type's output parsing therefore means editing
+# exactly one function in account_type_registry.py, not this dispatch table
+# (see issue #70 — this replaces six independently-drifting
+# `_parse_<type>_line` functions that did not derive from ACCOUNT_TYPES).
 
 def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> None:
-    text_chunks: list[str] = []
+    # Deliberately ACCOUNT_TYPES.get(acc_type), not account_type_registry's
+    # get_spec() -- get_spec() raises KeyError for an unrecognized acc_type,
+    # which would turn an unknown/legacy acc_type string into a hard crash
+    # here instead of the graceful fall-through to _parse_text_fallback that
+    # parse_log() has always had. This function's caller passes acc_type
+    # straight through from a Task record, which can predate a type's
+    # removal or simply be malformed input.
+    spec = ACCOUNT_TYPES.get(acc_type)
+    events_fn = spec.parse_output_events if spec else None
+    if events_fn is None:
+        return
 
+    text_chunks: list[str] = []
     for line in log_text.splitlines():
         s = line.strip()
         if not s.startswith("{"):
@@ -99,194 +133,44 @@ def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> No
         except json.JSONDecodeError:
             continue
 
-        t = d.get("type", "")
-
-        if acc_type == "claude":
-            _parse_claude_line(d, t, text_chunks, result)
-        elif acc_type == "codex":
-            _parse_codex_line(d, t, text_chunks, result)
-        elif acc_type == "opencode":
-            _parse_opencode_line(d, t, text_chunks, result)
-        elif acc_type == "grok":
-            _parse_grok_line(d, t, text_chunks, result)
-        elif acc_type == "kimi":
-            _parse_kimi_line(d, text_chunks)
-        elif acc_type == "pi":
-            _parse_pi_line(d, t, text_chunks, result)
+        for event in events_fn(d):
+            _apply_event(event, result, text_chunks)
 
     if not result.text and text_chunks:
         result.text = "".join(text_chunks).strip()
 
 
-def _parse_claude_line(
-    d: dict, t: str, chunks: list[str], result: TaskOutputData
-) -> None:
-    if t == "result":
-        # {"type":"result","result":"...","cost_usd":0.02,"session_id":"..."}
-        r = d.get("result", "")
-        if r:
-            result.text = str(r)
-        for key in ("cost_usd", "total_cost_usd"):
-            c = d.get(key)
-            if c:
-                result.cost_usd = float(c)
-                break
-    elif t == "assistant":
-        msg = d.get("message", {})
-        for block in msg.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
-                chunks.append(block["text"])
-        usage = msg.get("usage", {})
-        if usage:
-            result.tokens_input = max(result.tokens_input, int(usage.get("input_tokens", 0)))
-            result.tokens_output += int(usage.get("output_tokens", 0))
-    elif t == "usage":
-        result.tokens_input += int(d.get("input_tokens", 0))
-        result.tokens_output += int(d.get("output_tokens", 0))
-        c = d.get("cost_usd") or d.get("total_cost_usd", 0)
-        if c and not result.cost_usd:
-            result.cost_usd = float(c)
+def _apply_event(event: OutputEvent, result: TaskOutputData, chunks: list[str]) -> None:
+    """
+    Fold one normalized OutputEvent into the running (result, chunks) accumulator.
 
-
-def _parse_codex_line(
-    d: dict, t: str, chunks: list[str], result: TaskOutputData
-) -> None:
-    if t == "message" and d.get("role") == "assistant":
-        for block in d.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
-                chunks.append(block["text"])
-    elif t == "item.completed":
-        # `codex exec --json` (the format account_type_registry.py actually
-        # invokes, and what renderer.js's _codexItemCompleted already parses)
-        # reports the final assistant text on an item.completed event whose
-        # item.type is "agent_message" -- not on a top-level "message" event.
-        # Without this branch every codex task's text/usage silently fell
-        # through to _parse_text_fallback (a raw JSONL dump) instead of the
-        # real answer.
-        item = d.get("item")
-        if isinstance(item, dict) and item.get("type") == "agent_message":
-            text = item.get("text")
-            if text:
-                chunks.append(text)
-    elif t in ("usage", "response.usage"):
-        result.tokens_input += int(
-            d.get("prompt_tokens", 0) or d.get("input_tokens", 0)
-        )
-        result.tokens_output += int(
-            d.get("completion_tokens", 0) or d.get("output_tokens", 0)
-        )
-    elif t == "turn.completed":
-        # turn.completed's `usage` is a cumulative total for the whole thread
-        # (confirmed against Codex's own --json schema), not a per-turn delta
-        # -- overwrite rather than accumulate, so a multi-turn thread ends up
-        # with the final total instead of double-counting overlapping
-        # snapshots.
-        usage = d.get("usage")
-        if isinstance(usage, dict):
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            if input_tokens is not None:
-                result.tokens_input = int(input_tokens)
-            if output_tokens is not None:
-                result.tokens_output = int(output_tokens)
-
-
-def _parse_opencode_line(
-    d: dict, t: str, chunks: list[str], result: TaskOutputData
-) -> None:
-    # Current OpenCode CLI output nests everything under a `part` object
-    # (matching renderer.js's _opencodeText/_opencodeStepFinish, which read
-    # d.part.text / d.part.tokens) -- the flat top-level `content`/`usage`
-    # fields below never appear in a real log, so without this branch every
-    # opencode task's text/usage silently fell through to
-    # _parse_text_fallback (a raw JSONL dump).
-    part = d.get("part")
-    part = part if isinstance(part, dict) else {}
-
-    if t == "text" and part.get("type") == "text":
-        text = part.get("text")
-        if text:
-            chunks.append(text)
-    elif d.get("role") == "assistant" or t in ("message", "assistant"):
-        content = d.get("content", [])
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    chunks.append(block["text"])
-        elif isinstance(content, str):
-            chunks.append(content)
-
-    if t == "step_finish" and part.get("type") == "step-finish":
-        tokens = part.get("tokens")
-        tokens = tokens if isinstance(tokens, dict) else {}
-        cache = tokens.get("cache")
-        cache = cache if isinstance(cache, dict) else {}
-        result.tokens_input += int(tokens.get("input", 0) or 0)
-        result.tokens_input += int(cache.get("read", 0) or 0)
-        result.tokens_input += int(cache.get("write", 0) or 0)
-        result.tokens_output += int(tokens.get("output", 0) or 0)
-        result.tokens_output += int(tokens.get("reasoning", 0) or 0)
-        cost = part.get("cost")
-        if cost:
-            result.cost_usd += float(cost)
-
-    usage = d.get("usage", {})
-    if isinstance(usage, dict) and usage:
-        result.tokens_input = max(
-            result.tokens_input, int(usage.get("input_tokens", 0))
-        )
-        result.tokens_output += int(usage.get("output_tokens", 0))
-
-
-def _parse_grok_line(
-    d: dict, t: str, chunks: list[str], result: TaskOutputData
-) -> None:
-    if t == "text_delta":
-        chunks.append(d.get("text", ""))
-    elif t == "text":
-        chunks.append(d.get("data", d.get("text", "")))
-    elif t == "end":
-        usage = d.get("usage", {})
-        if isinstance(usage, dict):
-            result.tokens_input = int(usage.get("input_tokens", 0))
-            result.tokens_output = int(usage.get("output_tokens", 0))
-
-
-def _parse_pi_line(
-    d: dict, t: str, chunks: list[str], result: TaskOutputData
-) -> None:
-    # `--mode json` emits one `message_end` per completed message; the final
-    # answer is whichever assistant message_end(s) land last (accumulated the
-    # same way opencode/kimi are, since pi has no single dedicated "result"
-    # event like claude's `type=="result"`). `agent_end` re-lists the same
-    # messages, so it's intentionally not parsed here to avoid double-counting.
-    if t != "message_end":
-        return
-    msg = d.get("message", {})
-    if msg.get("role") != "assistant":
-        return
-    for block in msg.get("content", []):
-        if isinstance(block, dict) and block.get("type") == "text":
-            chunks.append(block.get("text", ""))
-    usage = msg.get("usage", {})
-    if isinstance(usage, dict) and usage:
-        result.tokens_input = max(result.tokens_input, int(usage.get("input", 0)))
-        result.tokens_output += int(usage.get("output", 0))
-        cost = usage.get("cost", {})
-        if isinstance(cost, dict) and cost.get("total"):
-            result.cost_usd = float(cost["total"])
-
-
-def _parse_kimi_line(d: dict, chunks: list[str]) -> None:
-    if d.get("role") != "assistant":
-        return
-    content = d.get("content", "")
-    if isinstance(content, str):
-        chunks.append(content)
-    elif isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                chunks.append(str(block.get("text", "")))
+    Each event kind has exactly one fixed combination rule, applied the same
+    way regardless of which account type produced the event — see
+    account_type_registry.py's OutputEvent section for why these are the only
+    combination rules observed across the real formats today.
+    """
+    if isinstance(event, TextChunk):
+        chunks.append(event.text)
+    elif isinstance(event, FinalText):
+        result.text = event.text
+    elif isinstance(event, UsageDelta):
+        result.tokens_input += event.input_tokens
+        result.tokens_output += event.output_tokens
+    elif isinstance(event, UsageProgress):
+        result.tokens_input = max(result.tokens_input, event.input_tokens)
+        result.tokens_output += event.output_tokens
+    elif isinstance(event, UsageTotal):
+        if event.input_tokens is not None:
+            result.tokens_input = event.input_tokens
+        if event.output_tokens is not None:
+            result.tokens_output = event.output_tokens
+    elif isinstance(event, CostDelta):
+        result.cost_usd += event.cost_usd
+    elif isinstance(event, CostFirstSeen):
+        if not result.cost_usd:
+            result.cost_usd = event.cost_usd
+    elif isinstance(event, CostTotal):
+        result.cost_usd = event.cost_usd
 
 
 # ── plain-text fallback ───────────────────────────────────────────────────────
