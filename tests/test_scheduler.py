@@ -126,10 +126,9 @@ def test_build_cli_command_uses_headless_claude_permission_modes() -> None:
     assert "claude -p --dangerously-skip-permissions" in auto_command
 
 
-def test_build_cli_command_wires_intervention_mcp_bridge_for_non_auto_claude() -> None:
-    """Issue #69 Slice 2: a non-auto Claude task gets the Intervention MCP tool
-    registered and pre-approved; an auto task must never get it (auto's contract
-    is "decide on your own, don't ask")."""
+def test_build_cli_command_scopes_coderfleet_mcp_tools_by_auto_mode() -> None:
+    """Both modes get Continuation; auto mode alone explicitly denies the
+    human-blocking ask_user_question tool."""
     command = Scheduler.build_cli_command(
         AccountType.claude, "edit files", auto=False, task_id="task-mcp-1",
     )
@@ -139,8 +138,15 @@ def test_build_cli_command_wires_intervention_mcp_bridge_for_non_auto_claude() -
 
     assert "--mcp-config" in command
     assert "--allowedTools mcp__coderfleet__ask_user_question" in command
-    assert "--mcp-config" not in auto_command
-    assert "mcp__coderfleet__ask_user_question" not in auto_command
+    assert "mcp__coderfleet__schedule_continuation" in command
+    assert "--disallowedTools" not in command
+
+    assert "--mcp-config" in auto_command
+    assert "--allowedTools mcp__coderfleet__schedule_continuation" in auto_command
+    assert (
+        "--disallowedTools mcp__coderfleet__ask_user_question"
+        in auto_command
+    )
 
     # The whole --mcp-config fragment must stay byte-identical across every
     # invocation — the real relay address/port/task-id all come from the
@@ -153,6 +159,12 @@ def test_build_cli_command_wires_intervention_mcp_bridge_for_non_auto_claude() -
     mcp_config_start = command.index("--mcp-config")
     mcp_config_end = command.index("--allowedTools")
     assert "task-mcp-1" not in command[mcp_config_start:mcp_config_end]
+    assert (
+        command[mcp_config_start:mcp_config_end]
+        == auto_command[
+            auto_command.index("--mcp-config"):auto_command.index("--allowedTools")
+        ]
+    )
 
 
 def test_build_cli_command_passes_claude_model() -> None:

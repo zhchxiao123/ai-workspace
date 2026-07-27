@@ -7,6 +7,58 @@ const MINUTE_OPTIONS = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '4
 let schedulesCache = [];
 let editingScheduleId = null;
 let scheduleTemplatesCache = [];
+let continuationsCache = [];
+
+async function loadContinuations() {
+  const grid = document.getElementById('continuations-grid');
+  if (!grid) return;
+  try {
+    const r = await fetch(`${API}/api/continuations`);
+    if (!r.ok) throw new Error('加载失败');
+    continuationsCache = await r.json();
+    if (!continuationsCache.length) {
+      grid.innerHTML = '<div class="empty">暂无会话后续动作</div>';
+      return;
+    }
+    grid.innerHTML = continuationsCache.map(c => {
+      const trigger = (c.triggers || []).map(t =>
+        t.type === 'timer' ? `定时 ${fmtDatetime(t.fire_at)}` :
+        t.type === 'github_pr_checks_completed'
+          ? `GitHub ${esc(t.repository)}#${t.pull_request} · ${esc((t.head_sha || '').slice(0, 8))}`
+          : '一次性 Webhook'
+      ).join(' / ');
+      const actionable = c.status === 'armed' || c.status === 'firing';
+      return `<div class="account-card">
+        <div style="display:flex;justify-content:space-between;gap:8px">
+          <div style="font-weight:700">${esc(c.id)}</div>
+          <span class="status-badge ${c.status === 'armed' ? 'running' : 'killed'}">${esc(c.status)}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text-2);margin-top:8px">${trigger}</div>
+        <div style="font-size:12px;color:var(--text-3);margin-top:6px">${esc(c.prompt)}</div>
+        <div style="display:flex;gap:6px;margin-top:10px">
+          ${actionable ? `<button class="btn primary" style="font-size:11px" onclick="triggerContinuation('${c.id}')">立即触发</button>
+          <button class="btn danger" style="font-size:11px" onclick="cancelContinuation('${c.id}')">取消</button>` : ''}
+          ${c.result_task_id ? `<button class="btn" style="font-size:11px" onclick="openLogModal('${c.result_task_id}')">查看任务</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    grid.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function triggerContinuation(id) {
+  const r = await fetch(`${API}/api/continuations/${id}/trigger`, {method: 'POST'});
+  if (!r.ok) return alert((await r.json().catch(()=>({}))).detail || '触发失败');
+  await loadContinuations();
+}
+
+async function cancelContinuation(id) {
+  if (!await confirmDialog(`确认取消后续动作 ${id}？`, {danger: true})) return;
+  const r = await fetch(`${API}/api/continuations/${id}`, {method: 'DELETE'});
+  if (!r.ok) return alert((await r.json().catch(()=>({}))).detail || '取消失败');
+  await loadContinuations();
+}
 
 async function loadSchedules() {
   try {
@@ -589,4 +641,5 @@ async function initSchedulesPage() {
   _initScheduleModal();
   await _populateScheduleTemplateSelect('');
   await loadSchedules();
+  await loadContinuations();
 }

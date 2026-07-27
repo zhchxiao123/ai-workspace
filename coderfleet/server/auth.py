@@ -31,7 +31,12 @@ _EXEMPT_PATHS = frozenset({"/", "/m", "/sw.js", "/api/health"})
 # /mcp 这一个范围很窄的能力）。/mcp 自己的认领机制是 X-CoderFleet-Task-Id
 #（见 mcp_bridge.py），信任边界本来就比全站 API Key 窄，这里豁免不是放宽这道
 # 认证，是承认它一直就该走另一套更窄的认证。
-_EXEMPT_PREFIXES = ("/static/", "/mcp/")
+_EXEMPT_PREFIXES = (
+    "/static/",
+    "/mcp/",
+    "/api/continuations/hooks/",
+    "/api/integrations/github/webhook",
+)
 
 
 def load_api_key(workspace_dir: Path) -> str:

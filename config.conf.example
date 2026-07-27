@@ -50,3 +50,8 @@ RELAY_IMAGE=gogost/gost:3
 #SYSTEM_LLM_BASE_URL=
 # 可选：出站代理（与容器保持一致，如 http://127.0.0.1:10808）
 #SYSTEM_LLM_PROXY=
+
+# ── GitHub Continuation Webhook ───────────────────────────
+# 在 GitHub 仓库/组织配置 POST /api/integrations/github/webhook，并选择
+# check_suite / workflow_run 事件；两边使用相同的高熵 secret。
+#GITHUB_WEBHOOK_SECRET=

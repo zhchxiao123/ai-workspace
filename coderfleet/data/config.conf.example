@@ -80,3 +80,6 @@ RELAY_IMAGE=gogost/gost:3
 #SYSTEM_LLM_BASE_URL=
 # 可选：出站代理（与容器保持一致，如 http://127.0.0.1:10808）
 #SYSTEM_LLM_PROXY=
+
+# ── GitHub Continuation Webhook ───────────────────────────
+#GITHUB_WEBHOOK_SECRET=

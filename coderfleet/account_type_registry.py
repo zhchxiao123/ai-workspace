@@ -183,10 +183,15 @@ _CF_SEND_SYSTEM_HINT = (
 )
 
 
-def _claude_mcp_bridge_arg() -> str:
-    """issue #69 Slice 2：Intervention 桥接工具的 --mcp-config + --allowedTools 参数
-    片段。这段字符串在所有任务、所有账号间字面完全相同——不接受任何参数——真正
-    会变化的东西（relay 地址/端口、task id）全部由 Claude 自己的 ${VAR} 配置展开
+def _claude_mcp_bridge_arg(*, allow_ask_user: bool) -> str:
+    """CoderFleet MCP 的配置与工具权限参数。
+
+    MCP server 配置在普通/全自动任务间保持字面相同；变化的只有工具权限：普通
+    模式预批准 ask_user_question + schedule_continuation，全自动模式只预批准
+    schedule_continuation，并显式 disallow ask_user_question，防止
+    --dangerously-skip-permissions 把人工等待工具也放行。
+
+    真正会变化的东西（relay 地址/端口、task id）全部由 Claude 自己的 ${VAR} 配置展开
     语法在容器里解析：CODERFLEET_RELAY_IP/CODERFLEET_MCP_BRIDGE_PORT 由
     compose.py 注入，CODERFLEET_TASK_ID 是 _build_claude 命令行本身已经在设置的
     同一个环境变量（见下面 exec 前缀），不必再单独插值一次任务 id 进 JSON 里。
@@ -209,7 +214,11 @@ def _claude_mcp_bridge_arg() -> str:
         },
     }
     config_json = shlex.quote(json.dumps(mcp_config))
-    return f" --mcp-config {config_json} --allowedTools mcp__coderfleet__ask_user_question"
+    ask_tool = "mcp__coderfleet__ask_user_question"
+    continuation_tool = "mcp__coderfleet__schedule_continuation"
+    allowed = f"{ask_tool},{continuation_tool}" if allow_ask_user else continuation_tool
+    denied = "" if allow_ask_user else f" --disallowedTools {ask_tool}"
+    return f" --mcp-config {config_json} --allowedTools {allowed}{denied}"
 
 
 def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
@@ -219,8 +228,9 @@ def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, m
     resume = f" --resume {shlex.quote(session_id)}" if session_id else ""
     model_arg = f" --model {shlex.quote(model)}" if model else ""
     sys_hint = shlex.quote(_CF_SEND_SYSTEM_HINT)
-    # auto 模式的承诺是"自己判断，别问"——绝不能给它挂一个能暂停等人的工具。
-    mcp_bridge = "" if auto else _claude_mcp_bridge_arg()
+    # auto 模式只禁止会暂停等人的 ask_user_question；Continuation 是自动编排
+    # 能力，普通/全自动任务都必须可用。
+    mcp_bridge = _claude_mcp_bridge_arg(allow_ask_user=not auto)
     return (
         f"printf '%s\\n' {ep} | "
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "

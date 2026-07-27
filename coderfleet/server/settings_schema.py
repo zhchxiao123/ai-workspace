@@ -88,6 +88,15 @@ SETTINGS_GROUPS: tuple[SettingGroup, ...] = (
         ),
     ),
     SettingGroup(
+        "github_webhook", "GitHub Webhook",
+        help="用于在 PR checks 完成时恢复等待中的 Conversation。请在仓库或组织中"
+             "配置 /api/integrations/github/webhook，并使用相同 secret。",
+        fields=(
+            SettingField("GITHUB_WEBHOOK_SECRET", "Webhook Secret",
+                         placeholder="高熵随机字符串", secret=True),
+        ),
+    ),
+    SettingGroup(
         "digest", "日报",
         help="AI 日报摘要通过向某个活跃项目提交一个真实任务来生成，"
              "会在该项目的容器/工作目录中运行，可能产生文件改动。"

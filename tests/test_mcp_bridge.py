@@ -21,7 +21,7 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from coderfleet.server.auth import AuthMiddleware
 from coderfleet.server.mcp_bridge import build_intervention_mcp
-from coderfleet.server.models import AccountType, Task, TaskStatus
+from coderfleet.server.models import AccountType, Conversation, Task, TaskStatus
 from coderfleet.server.scheduler import Scheduler
 
 
@@ -165,6 +165,47 @@ def test_ask_user_question_tool_blocks_then_resolves_via_scheduler(tmp_path: Pat
     assert not result.isError, result.content
     assert json.loads(result.content[0].text) == {"which color?": "blue"}
     assert sched.get_task("ask-real").pending_intervention is None
+
+
+def test_schedule_continuation_tool_returns_immediately_and_persists_timer(tmp_path: Path) -> None:
+    app, sched = _make_app_and_scheduler(tmp_path)
+    Conversation(
+        id="conv-mcp", name="CI", account="alice", type=AccountType.claude,
+        project=str(tmp_path / "repo"), project_name="repo",
+    ).save(sched.conversations_dir)
+    Task(
+        id="schedule-mcp", status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="open PR", project=str(tmp_path / "repo"), project_name="repo",
+        conversation_id="conv-mcp",
+    ).save(sched.tasks_dir)
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with streamablehttp_client(
+                "http://testserver/mcp/",
+                headers={"x-coderfleet-task-id": "schedule-mcp"},
+                httpx_client_factory=_asgi_httpx_factory(app),
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    return await session.call_tool(
+                        "schedule_continuation",
+                        {
+                            "prompt": "check CI",
+                            "triggers": [{"type": "timer", "delay_seconds": 60}],
+                        },
+                    )
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    result = asyncio.run(_run())
+    assert not result.isError, result.content
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "armed"
+    assert payload["conversation_id"] == "conv-mcp"
+    assert sched.get_continuation(payload["id"]) is not None
 
 
 def test_ask_user_question_tool_uses_claude_codes_own_tool_use_id_from_meta(tmp_path: Path) -> None:

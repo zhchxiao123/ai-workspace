@@ -96,6 +96,19 @@ coderfleet telegram test    # 发送测试消息验证连通性
 在项目话题里 `/new <指令>` 免项目参数、`/chats` 只列本项目会话；General
 和私聊保持全局语义。不配置该项则一切保持私聊模式。
 
+## GitHub Webhook
+
+设置用于 PR checks Continuation 的 webhook secret：
+
+```bash
+coderfleet config set GITHUB_WEBHOOK_SECRET '<高熵随机字符串>'
+```
+
+在 GitHub 仓库或组织中创建 webhook，Payload URL 指向
+`https://<coderfleet-host>/api/integrations/github/webhook`。Content type 选择
+`application/json`，Secret 使用相同值，并订阅 `check_suite` 与
+`workflow_run` 事件。触发时会同时匹配 repository、PR number 和 head SHA。
+
 ## accounts.conf
 
 ```conf

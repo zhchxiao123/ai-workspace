@@ -79,6 +79,21 @@ class ConversationMode(str, Enum):
     terminal = "terminal"
 
 
+class ContinuationStatus(str, Enum):
+    armed     = "armed"
+    firing    = "firing"
+    fired     = "fired"
+    cancelled = "cancelled"
+    expired   = "expired"
+    failed    = "failed"
+
+
+class ContinuationTriggerType(str, Enum):
+    timer                      = "timer"
+    generic_webhook            = "generic_webhook"
+    github_pr_checks_completed = "github_pr_checks_completed"
+
+
 class BoardCardStatus(str, Enum):
     planned    = "planned"
     todo       = "todo"
@@ -321,6 +336,73 @@ class InterventionQuestion(BaseModel):
     options:     list[InterventionOption] = Field(default_factory=list)
 
 
+class ContinuationTriggerRequest(BaseModel):
+    type: ContinuationTriggerType
+    delay_seconds: Optional[int] = None
+    run_at: Optional[str] = None
+    repository: str = ""
+    pull_request: Optional[int] = None
+    head_sha: str = ""
+
+
+class ContinuationTrigger(BaseModel):
+    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex)
+    type: ContinuationTriggerType
+    status: str = "waiting"
+    fire_at: Optional[str] = None
+    repository: str = ""
+    pull_request: Optional[int] = None
+    head_sha: str = ""
+    webhook_token_hash: str = ""
+
+
+class Continuation(BaseModel):
+    id: str
+    source_task_id: str
+    conversation_id: str
+    prompt: str
+    auto: bool = False
+    model: str = ""
+    status: ContinuationStatus = ContinuationStatus.armed
+    triggers: list[ContinuationTrigger]
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    expires_at: Optional[str] = None
+    fired_at: Optional[str] = None
+    fired_by: str = ""
+    result_task_id: str = ""
+    idempotency_key: str
+    error: str = ""
+
+    def save(self, continuations_dir: Path) -> None:
+        JsonStore(Continuation, continuations_dir).save(self)
+
+    @classmethod
+    def load(cls, path: Path) -> "Continuation":
+        return JsonStore(cls, path.parent).load(path)
+
+    @classmethod
+    def load_all(cls, continuations_dir: Path) -> list["Continuation"]:
+        return JsonStore(cls, continuations_dir).all()
+
+
+class ContinuationCreateRequest(BaseModel):
+    source_task_id: str
+    prompt: str
+    triggers: list[ContinuationTriggerRequest]
+    expires_in_seconds: Optional[int] = None
+    idempotency_key: Optional[str] = None
+
+
+class WebhookDelivery(BaseModel):
+    id: str
+    provider: str
+    received_at: str = Field(default_factory=now_iso)
+
+    def save(self, deliveries_dir: Path) -> None:
+        JsonStore(WebhookDelivery, deliveries_dir).save(self)
+
+
 class PendingIntervention(BaseModel):
     tool_call_id: str
     questions:    list[InterventionQuestion]
@@ -366,6 +448,7 @@ class Task(BaseModel):
     ephemeral_ttl_minutes: int = 120
     ephemeral_container_name: str = ""
     task_secrets: dict = Field(default_factory=dict)
+    continuation_id: str = ""
     # Intervention：非 auto 任务里 CLI 主动暂停问人，见 PendingIntervention
     pending_intervention: Optional[PendingIntervention] = None
 
@@ -475,6 +558,7 @@ class TaskResponse(BaseModel):
     model:    str = ""
     execute_at: Optional[str] = None
     parent_task_id: str = ""
+    continuation_id: str = ""
     depends_on:     list[str] = []
     pipeline_id:    str = ""
     board_card_id:  str = ""
@@ -510,6 +594,7 @@ class TaskResponse(BaseModel):
             model        = getattr(t, "model", ""),
             execute_at   = getattr(t, "execute_at", None),
             parent_task_id = getattr(t, "parent_task_id", ""),
+            continuation_id = getattr(t, "continuation_id", ""),
             depends_on     = getattr(t, "depends_on", []),
             pipeline_id    = getattr(t, "pipeline_id", ""),
             board_card_id  = getattr(t, "board_card_id", ""),

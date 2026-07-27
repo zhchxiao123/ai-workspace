@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import hashlib
 import json
 import logging
 import os
 import random
 import re
+import secrets
 import shlex
 import subprocess
 import uuid
@@ -28,6 +30,7 @@ from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.log_parser import split_complete_lines
 from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
+from coderfleet.server.store import JsonStore
 from coderfleet.ports import allocate_ide_port
 from coderfleet.server.models import (
     Account,
@@ -42,6 +45,11 @@ from coderfleet.server.models import (
     Conversation,
     ConversationMode,
     ConversationStatus,
+    Continuation,
+    ContinuationStatus,
+    ContinuationTrigger,
+    ContinuationTriggerRequest,
+    ContinuationTriggerType,
     ImageBuild,
     LogicalProject,
     LogicalProjectEntry,
@@ -61,6 +69,7 @@ from coderfleet.server.models import (
     WorkflowNodeState,
     WorkflowRun,
     WorkflowTemplate,
+    WebhookDelivery,
     now_iso,
     parse_iso,
     utc_now,
@@ -89,6 +98,8 @@ class Scheduler:
         self.projects_conf  = workspace_dir / "projects.conf"
         self.tasks_dir      = workspace_dir / "tasks"
         self.conversations_dir = workspace_dir / "conversations"
+        self.continuations_dir = workspace_dir / "continuations"
+        self.webhook_deliveries_dir = workspace_dir / "webhook_deliveries"
         self.boards_dir     = workspace_dir / "boards"
         self.board_cards_dir = workspace_dir / "board_cards"
         self.pipelines_dir  = workspace_dir / "pipelines"
@@ -119,6 +130,9 @@ class Scheduler:
         # Intervention：f"{task_id}:{tool_call_id}" → 等待人工作答的 Future。
         # 进程内内存态——调度器重启会丢失，是已知的可接受边界（见 issue #69）。
         self._pending_intervention_futures: dict[str, "asyncio.Future"] = {}
+        self._continuation_lock = asyncio.Lock()
+        # Generic webhook 原始 token 只在创建响应中返回一次；磁盘只保存 SHA-256。
+        self._issued_webhook_tokens: dict[str, dict[str, str]] = {}
 
     def register_notifier(self, notifier: "Callable[[Task], Awaitable[None]]") -> None:
         """注册一个任务终态通知渠道。"""
@@ -722,12 +736,17 @@ class Scheduler:
 
     def conversation_queue_full(self, conversation_id: str) -> bool:
         """会话链排队任务是否已达 MAX_PENDING_PER_CONV（API 与 Telegram 入口共用）。"""
-        pending = sum(
+        pending_tasks = sum(
             1 for t in self.list_tasks()
             if t.conversation_id == conversation_id
             and t.status in (TaskStatus.pending, TaskStatus.scheduled)
         )
-        return pending >= MAX_PENDING_PER_CONV
+        future_continuations = sum(
+            1 for c in self.list_continuations()
+            if c.conversation_id == conversation_id
+            and c.status in (ContinuationStatus.armed, ContinuationStatus.firing)
+        )
+        return pending_tasks + future_continuations >= MAX_PENDING_PER_CONV
 
     def get_task(self, task_id: str) -> Optional[Task]:
         path = self.tasks_dir / f"{task_id}.json"
@@ -756,6 +775,266 @@ class Scheduler:
 
     def get_build_log_path(self, build_id: str) -> Path:
         return self.builds_dir / f"{build_id}.log"
+
+    # ── Conversation Continuation ─────────────────────────
+
+    def new_continuation_id(self) -> str:
+        return f"cont-{utc_now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4]}"
+
+    def list_continuations(self) -> list[Continuation]:
+        return Continuation.load_all(self.continuations_dir)
+
+    def get_continuation(self, continuation_id: str) -> Optional[Continuation]:
+        path = self.continuations_dir / f"{continuation_id}.json"
+        return Continuation.load(path) if path.exists() else None
+
+    async def arm_continuation(
+        self,
+        source_task_id: str,
+        prompt: str,
+        triggers: list[ContinuationTriggerRequest],
+        *,
+        expires_in_seconds: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Continuation:
+        source = self.get_task(source_task_id)
+        if source is None:
+            raise ValueError(f"任务 '{source_task_id}' 不存在")
+        if not source.conversation_id:
+            raise ValueError("当前任务不属于 Conversation，无法安排可恢复的后续任务")
+        conversation = self.get_conversation(source.conversation_id)
+        if conversation is None or conversation.status != ConversationStatus.active:
+            raise ValueError("当前 Conversation 不存在或已归档")
+        if not prompt.strip():
+            raise ValueError("后续任务 prompt 不能为空")
+        if not triggers:
+            raise ValueError("至少需要一个触发条件")
+
+        key = (idempotency_key or "").strip() or f"{source_task_id}:{uuid.uuid4().hex}"
+        existing = next((c for c in self.list_continuations() if c.idempotency_key == key), None)
+        if existing:
+            return existing
+        if self.conversation_queue_full(source.conversation_id):
+            raise RuntimeError(
+                f"该任务链已有 {MAX_PENDING_PER_CONV} 个待执行任务或后续动作，请等待完成后再提交"
+            )
+
+        now = utc_now()
+        normalized: list[ContinuationTrigger] = []
+        issued_tokens: dict[str, str] = {}
+        for spec in triggers:
+            if spec.type == ContinuationTriggerType.timer:
+                if spec.delay_seconds is not None and spec.run_at:
+                    raise ValueError("timer 的 delay_seconds 与 run_at 只能提供一个")
+                if spec.delay_seconds is not None:
+                    if not 10 <= spec.delay_seconds <= 30 * 24 * 3600:
+                        raise ValueError("delay_seconds 必须在 10 秒到 30 天之间")
+                    fire_at = now + timedelta(seconds=spec.delay_seconds)
+                elif spec.run_at:
+                    fire_at = parse_iso(spec.run_at)
+                    if fire_at <= now:
+                        raise ValueError("run_at 必须是未来时间")
+                    if fire_at > now + timedelta(days=30):
+                        raise ValueError("run_at 不能超过 30 天")
+                else:
+                    raise ValueError("timer 必须提供 delay_seconds 或 run_at")
+                normalized.append(ContinuationTrigger(
+                    type=spec.type, fire_at=fire_at.isoformat(timespec="seconds"),
+                ))
+            elif spec.type == ContinuationTriggerType.generic_webhook:
+                token = secrets.token_urlsafe(32)
+                trigger = ContinuationTrigger(
+                    type=spec.type,
+                    webhook_token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                )
+                normalized.append(trigger)
+                issued_tokens[trigger.id] = token
+            elif spec.type == ContinuationTriggerType.github_pr_checks_completed:
+                repository = spec.repository.strip().lower()
+                head_sha = spec.head_sha.strip().lower()
+                if "/" not in repository or not spec.pull_request or not head_sha:
+                    raise ValueError("GitHub trigger 需要 repository、pull_request 和 head_sha")
+                normalized.append(ContinuationTrigger(
+                    type=spec.type,
+                    repository=repository,
+                    pull_request=spec.pull_request,
+                    head_sha=head_sha,
+                ))
+            else:
+                raise ValueError(f"尚未支持触发类型 '{spec.type.value}'")
+
+        expires_at = None
+        if expires_in_seconds is not None:
+            if not 10 <= expires_in_seconds <= 30 * 24 * 3600:
+                raise ValueError("expires_in_seconds 必须在 10 秒到 30 天之间")
+            expires_at = (now + timedelta(seconds=expires_in_seconds)).isoformat(timespec="seconds")
+
+        continuation = Continuation(
+            id=self.new_continuation_id(),
+            source_task_id=source.id,
+            conversation_id=source.conversation_id,
+            prompt=prompt.strip(),
+            auto=getattr(source, "auto", False),
+            model=getattr(source, "model", ""),
+            triggers=normalized,
+            expires_at=expires_at,
+            idempotency_key=key,
+        )
+        continuation.save(self.continuations_dir)
+        if issued_tokens:
+            self._issued_webhook_tokens[continuation.id] = issued_tokens
+        return continuation
+
+    def take_issued_webhook_tokens(self, continuation_id: str) -> dict[str, str]:
+        """取走创建时的一次性明文 token；后续无法从持久化 hash 反推。"""
+        return self._issued_webhook_tokens.pop(continuation_id, {})
+
+    async def signal_generic_webhook(self, token: str) -> Optional[Continuation]:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        for continuation in self.list_continuations():
+            if continuation.status != ContinuationStatus.armed:
+                continue
+            trigger = next(
+                (
+                    t for t in continuation.triggers
+                    if t.type == ContinuationTriggerType.generic_webhook
+                    and t.status == "waiting"
+                    and secrets.compare_digest(t.webhook_token_hash, digest)
+                ),
+                None,
+            )
+            if trigger:
+                return await self.fire_continuation(continuation.id, trigger.id)
+        return None
+
+    async def signal_github_pr_checks(
+        self,
+        *,
+        delivery_id: str,
+        repository: str,
+        pull_request: int,
+        head_sha: str,
+    ) -> list[Continuation]:
+        delivery_store = JsonStore(WebhookDelivery, self.webhook_deliveries_dir)
+        if delivery_store.exists(delivery_id):
+            return []
+        WebhookDelivery(id=delivery_id, provider="github").save(self.webhook_deliveries_dir)
+        matches: list[tuple[str, str]] = []
+        repository = repository.strip().lower()
+        head_sha = head_sha.strip().lower()
+        for continuation in self.list_continuations():
+            if continuation.status != ContinuationStatus.armed:
+                continue
+            for trigger in continuation.triggers:
+                if (
+                    trigger.type == ContinuationTriggerType.github_pr_checks_completed
+                    and trigger.status == "waiting"
+                    and trigger.repository == repository
+                    and trigger.pull_request == pull_request
+                    and trigger.head_sha == head_sha
+                ):
+                    matches.append((continuation.id, trigger.id))
+                    break
+        return [
+            await self.fire_continuation(continuation_id, trigger_id)
+            for continuation_id, trigger_id in matches
+        ]
+
+    async def fire_continuation(self, continuation_id: str, fired_by: str) -> Continuation:
+        async with self._continuation_lock:
+            continuation = self.get_continuation(continuation_id)
+            if continuation is None:
+                raise ValueError(f"后续动作 '{continuation_id}' 不存在")
+            if continuation.status == ContinuationStatus.fired:
+                return continuation
+            if continuation.status != ContinuationStatus.armed:
+                raise RuntimeError(f"后续动作当前状态为 {continuation.status.value}，不能触发")
+
+            continuation.status = ContinuationStatus.firing
+            continuation.fired_by = fired_by
+            continuation.updated_at = now_iso()
+            continuation.save(self.continuations_dir)
+
+            try:
+                existing_task = next(
+                    (t for t in self.list_tasks() if getattr(t, "continuation_id", "") == continuation.id),
+                    None,
+                )
+                task = existing_task or await self.submit(
+                    prompt=continuation.prompt,
+                    conversation_id=continuation.conversation_id,
+                    auto=continuation.auto,
+                    model=continuation.model,
+                    parent_task_id=continuation.source_task_id,
+                    continuation_id=continuation.id,
+                )
+            except Exception as exc:
+                continuation.status = ContinuationStatus.failed
+                continuation.error = str(exc)
+                continuation.updated_at = now_iso()
+                continuation.save(self.continuations_dir)
+                raise
+
+            continuation.status = ContinuationStatus.fired
+            continuation.result_task_id = task.id
+            continuation.fired_at = now_iso()
+            continuation.updated_at = continuation.fired_at
+            for trigger in continuation.triggers:
+                trigger.status = "fired" if trigger.id == fired_by else "cancelled"
+            continuation.save(self.continuations_dir)
+            return continuation
+
+    def cancel_continuation(self, continuation_id: str) -> Optional[Continuation]:
+        continuation = self.get_continuation(continuation_id)
+        if continuation is None:
+            return None
+        if continuation.status in (ContinuationStatus.armed, ContinuationStatus.firing):
+            continuation.status = ContinuationStatus.cancelled
+            continuation.updated_at = now_iso()
+            for trigger in continuation.triggers:
+                if trigger.status == "waiting":
+                    trigger.status = "cancelled"
+            continuation.save(self.continuations_dir)
+        return continuation
+
+    async def process_due_continuations(self) -> None:
+        now = utc_now()
+        for continuation in self.list_continuations():
+            if continuation.status == ContinuationStatus.firing:
+                # Crash recovery: re-open the claim, then finish it through the same
+                # path. fire_continuation deduplicates by Task.continuation_id, so
+                # both "crashed before submit" and "crashed after submit" are safe.
+                continuation.status = ContinuationStatus.armed
+                continuation.save(self.continuations_dir)
+                try:
+                    await self.fire_continuation(
+                        continuation.id, continuation.fired_by or "recovery",
+                    )
+                except Exception as exc:
+                    logger.warning("Continuation 恢复失败 [%s]: %s", continuation.id, exc)
+                continue
+            if continuation.status != ContinuationStatus.armed:
+                continue
+            if continuation.expires_at and parse_iso(continuation.expires_at) <= now:
+                continuation.status = ContinuationStatus.expired
+                continuation.updated_at = now_iso()
+                continuation.save(self.continuations_dir)
+                continue
+            due = next(
+                (
+                    trigger for trigger in continuation.triggers
+                    if trigger.type == ContinuationTriggerType.timer
+                    and trigger.status == "waiting"
+                    and trigger.fire_at
+                    and parse_iso(trigger.fire_at) <= now
+                ),
+                None,
+            )
+            if due:
+                try:
+                    await self.fire_continuation(continuation.id, due.id)
+                except Exception as exc:
+                    logger.warning("Continuation 触发失败 [%s]: %s", continuation.id, exc)
 
     # ── 定时计划管理 ──────────────────────────────────────
 
@@ -1282,6 +1561,7 @@ class Scheduler:
     async def _schedule_pending_tasks_loop(self) -> None:
         while True:
             try:
+                await self.process_due_continuations()
                 await self._check_and_trigger_schedules()
                 await self.schedule_next_tasks()
                 await self._check_auto_digest()
@@ -1529,6 +1809,7 @@ class Scheduler:
         output_dir:     str                   = "",
         ephemeral_retention: Optional[str]    = None,
         ephemeral_ttl_minutes: Optional[int]  = None,
+        continuation_id: str                  = "",
     ) -> Task:
         """
         提交任务，异步在后台执行，立即返回 Task 对象。
@@ -1720,6 +2001,7 @@ class Scheduler:
                 ephemeral_ttl_minutes = ttl_minutes,
                 ephemeral_container_name = getattr(conversation, "ephemeral_container_name", "") if conversation else "",
                 task_secrets   = dict(secrets),
+                continuation_id = continuation_id,
             )
             task.save(self.tasks_dir)
             if conversation:
@@ -1791,6 +2073,7 @@ class Scheduler:
                 pipeline_id    = dag_pipeline,
                 board_card_id  = card_id,
                 execution_mode = "persistent",
+                continuation_id = continuation_id,
             )
             task.save(self.tasks_dir)
             if conversation:
@@ -1827,6 +2110,7 @@ class Scheduler:
                 pipeline_id    = dag_pipeline,
                 board_card_id  = card_id,
                 execution_mode = "persistent",
+                continuation_id = continuation_id,
             )
             task.save(self.tasks_dir)
             if conversation:
@@ -1865,6 +2149,7 @@ class Scheduler:
             pipeline_id    = dag_pipeline,
             board_card_id  = card_id,
             execution_mode = "persistent",
+            continuation_id = continuation_id,
         )
         task.save(self.tasks_dir)
         if conversation:

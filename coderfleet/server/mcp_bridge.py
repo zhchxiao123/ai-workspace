@@ -10,7 +10,7 @@ main.py 全文件带 PEP 563 的 future import，标注在运行时是字符串�
 """
 from mcp.server.fastmcp import FastMCP
 
-from coderfleet.server.models import InterventionQuestion
+from coderfleet.server.models import ContinuationTriggerRequest, InterventionQuestion
 
 
 def build_intervention_mcp(scheduler) -> FastMCP:
@@ -65,5 +65,34 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         return await scheduler.wait_for_intervention_answer(
             task_id, [q.model_dump() for q in questions], tool_call_id=cc_tool_use_id,
         )
+
+    @mcp_server.tool(name="schedule_continuation")
+    async def schedule_continuation(
+        prompt: str,
+        triggers: list[ContinuationTriggerRequest],
+        expires_in_seconds: int = 86400,
+    ) -> dict:
+        """安排当前 Conversation 的一次性后续任务，并立即返回。
+
+        timer 触发器接受 delay_seconds 或 run_at（二选一）。当前调用不会睡眠或
+        保持 Claude 进程；到期后 CoderFleet 创建一个新的 Task，并恢复本会话。
+        """
+        ctx = mcp_server.get_context()
+        request = ctx.request_context.request
+        task_id = request.headers.get("x-coderfleet-task-id", "").strip() if request else ""
+        if not task_id:
+            raise ValueError("missing X-CoderFleet-Task-Id header")
+        meta = ctx.request_context.meta
+        tool_use_id = (meta.model_extra or {}).get("claudecode/toolUseId") if meta else None
+        continuation = await scheduler.arm_continuation(
+            source_task_id=task_id,
+            prompt=prompt,
+            triggers=triggers,
+            expires_in_seconds=expires_in_seconds,
+            idempotency_key=f"{task_id}:{tool_use_id}" if tool_use_id else None,
+        )
+        result = continuation.model_dump(mode="json")
+        result["webhook_tokens"] = scheduler.take_issued_webhook_tokens(continuation.id)
+        return result
 
     return mcp_server

@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 import uuid
 
 import aiofiles
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
@@ -54,6 +54,8 @@ from coderfleet.server.models import (
     ConversationMode,
     ConversationResponse,
     ConversationStatus,
+    Continuation,
+    ContinuationCreateRequest,
     ImageBuild,
     ImageBuildStatus,
     LogicalProject,
@@ -2538,6 +2540,116 @@ async def approve_workflow_run(run_id: str, token: str = ""):
 # ══════════════════════════════════════════════════════════════
 #  定时计划 CRUD
 # ══════════════════════════════════════════════════════════════
+
+# ── Conversation Continuations ────────────────────────────
+
+@app.get("/api/continuations", response_model=list[Continuation])
+async def list_continuations(conversation_id: Optional[str] = None):
+    records = scheduler.list_continuations()
+    if conversation_id:
+        records = [c for c in records if c.conversation_id == conversation_id]
+    return records
+
+
+@app.post("/api/continuations", status_code=201)
+async def create_continuation(req: ContinuationCreateRequest):
+    try:
+        continuation = await scheduler.arm_continuation(
+            req.source_task_id,
+            req.prompt,
+            req.triggers,
+            expires_in_seconds=req.expires_in_seconds,
+            idempotency_key=req.idempotency_key,
+        )
+        result = continuation.model_dump(mode="json")
+        result["webhook_tokens"] = scheduler.take_issued_webhook_tokens(continuation.id)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/continuations/{continuation_id}", response_model=Continuation)
+async def get_continuation(continuation_id: str):
+    continuation = scheduler.get_continuation(continuation_id)
+    if continuation is None:
+        raise HTTPException(status_code=404, detail="continuation not found")
+    return continuation
+
+
+@app.delete("/api/continuations/{continuation_id}", response_model=Continuation)
+async def cancel_continuation(continuation_id: str):
+    continuation = scheduler.cancel_continuation(continuation_id)
+    if continuation is None:
+        raise HTTPException(status_code=404, detail="continuation not found")
+    return continuation
+
+
+@app.post("/api/continuations/{continuation_id}/trigger", response_model=Continuation)
+async def trigger_continuation(continuation_id: str):
+    try:
+        return await scheduler.fire_continuation(continuation_id, "manual")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/api/continuations/hooks/{webhook_token}", status_code=202)
+async def trigger_generic_continuation(webhook_token: str, request: Request):
+    if len(await request.body()) > 256 * 1024:
+        raise HTTPException(status_code=413, detail="webhook payload too large")
+    continuation = await scheduler.signal_generic_webhook(webhook_token)
+    if continuation is None:
+        raise HTTPException(status_code=404, detail="webhook not found or no longer active")
+    return {"accepted": True, "continuation_id": continuation.id}
+
+
+@app.post("/api/integrations/github/webhook", status_code=202)
+async def github_continuation_webhook(request: Request):
+    import hashlib
+    import hmac
+
+    body = await request.body()
+    if len(body) > 1024 * 1024:
+        raise HTTPException(status_code=413, detail="webhook payload too large")
+    secret = _load_config(WORKSPACE_DIR).get("GITHUB_WEBHOOK_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="GitHub webhook is not configured")
+    supplied = request.headers.get("x-hub-signature-256", "")
+    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+    delivery_id = request.headers.get("x-github-delivery", "").strip()
+    if not delivery_id or len(delivery_id) > 128 or not delivery_id.replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="invalid GitHub delivery id")
+    event = request.headers.get("x-github-event", "")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="invalid JSON payload")
+    subject = payload.get("check_suite") if event == "check_suite" else payload.get("workflow_run")
+    if event not in ("check_suite", "workflow_run") or not isinstance(subject, dict):
+        return {"accepted": True, "matched": 0, "ignored": True}
+    if subject.get("status") != "completed":
+        return {"accepted": True, "matched": 0, "ignored": True}
+    repository = ((payload.get("repository") or {}).get("full_name") or "").lower()
+    head_sha = str(subject.get("head_sha") or "").lower()
+    pull_requests = subject.get("pull_requests") or []
+    matched = 0
+    for pull_request in pull_requests:
+        number = pull_request.get("number") if isinstance(pull_request, dict) else None
+        if isinstance(number, int):
+            fired = await scheduler.signal_github_pr_checks(
+                delivery_id=f"{delivery_id}-{number}",
+                repository=repository,
+                pull_request=number,
+                head_sha=head_sha,
+            )
+            matched += len(fired)
+    return {"accepted": True, "matched": matched}
+
 
 @app.get("/api/schedules", response_model=list[ScheduleResponse])
 async def list_schedules():

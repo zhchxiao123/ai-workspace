@@ -53,6 +53,22 @@ coderfleet account add kimi-api TYPE=kimi --auth env
 | `coderfleet task kill <任务ID>` | 终止任务 |
 | `coderfleet task clean [N]` | 清理历史记录 |
 
+## 会话后续动作
+
+管理 Conversation 的一次性后续动作。Timer 或 webhook 中第一个到达的触发条件
+会追加一个 Task，并恢复原会话。
+
+```bash
+coderfleet continuation add <source-task-id> "重新检查 CI" --after 60
+coderfleet continuation list
+coderfleet continuation list --conversation <conversation-id>
+coderfleet continuation trigger <continuation-id>
+coderfleet continuation cancel <continuation-id>
+```
+
+运行中的 Claude Code 也可以调用
+`mcp__coderfleet__schedule_continuation` 自行安排后续动作。
+
 ## macOS 系统托盘
 
 | 命令 | 说明 |

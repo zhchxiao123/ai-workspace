@@ -17,6 +17,28 @@ Entry anatomy — write invariants, not features:
 
 ## Entries
 
+Continuation addendum for the load-bearing files below:
+
+- `coderfleet/server/auth.py`: `/api/integrations/github/webhook` and
+  `/api/continuations/hooks/*` bypass the operator API key only because they
+  authenticate with a GitHub HMAC signature or a one-time high-entropy token.
+- `coderfleet/server/main.py`: webhook routes validate and normalize input, then
+  call `Scheduler.signal_*`; they never create a Task directly. GitHub matching
+  uses repository + PR number + head SHA.
+- `coderfleet/server/mcp_bridge.py`: `schedule_continuation` persists a future
+  Conversation turn and returns immediately; Claude's MCP tool-use id is its
+  retry idempotency key.
+- `coderfleet/server/scheduler.py`: timer and webhook Adapters converge on
+  `fire_continuation`, which deduplicates Task creation by
+  `Task.continuation_id` and resumes through the latest Conversation session.
+- `coderfleet/server/models.py`: `Continuation` is an internal Conversation
+  trigger record, not another execution atom; Task remains the only executor.
+- `coderfleet/account_type_registry.py`: every Claude task loads the same
+  CoderFleet MCP server. `_claude_mcp_bridge_arg(allow_ask_user=...)` varies
+  only tool permissions: normal mode pre-approves AskUserQuestion and
+  Continuation; auto mode pre-approves Continuation and explicitly disallows
+  AskUserQuestion. Never gate the whole MCP config on `auto`.
+
 - `coderfleet/server/telegram_bridge.py` — Telegram long-poll bridge: command routing, topic-per-project registration, broadcast, ASR. All state mutations (offset, per-chat sections, topic registry) must go through `_update_state`/`_set_chat_entry` — a synchronous read-modify-write with no `await` inside the mutator, so it's atomic under the event loop; a separate read-then-write reintroduces the race that `_advance_offset` was written to close (long-poll offset writeback must never clobber a `notify_task` mapping persisted while the poll was suspended). `_ensure_topic` concurrent-create resolves by "first registrant in the state file wins" — a thread created after losing the race is dropped, never re-registered. `is_configured()` is true if `token` and EITHER `chat_ids` OR `topic_group_id` is set — do not require both; group membership is its own trust boundary. `poll_timeout` is 25s, not 50s — proxied long-poll tunnels commonly kill idle connections at 30s+, so a 50s window causes a `ReadTimeout` every round; if you touch the poll loop, keep this under ~28s. `_advance_offset` runs unconditionally after each update regardless of handler success — a poison message must not stall the queue. `_hint_topic_permission_once`'s one-time flag is only persisted after the hint send succeeds — a failed send must retry next round, not burn the one-shot. On unknown/invalid references (expired conversation button, reply to an untracked message, a deleted topic thread) the handler must reject/warn explicitly and never silently fall back to "most recent" or a stale default — this class of bug recurred across #46-49 and #51-53 review passes. Broadcast excerpts are extracted by the bridge itself, not reused from the Digest's LLM summary — the Digest summary strips code blocks to `[代码略]` and truncates at 600 chars, which is unacceptable for a code-review broadcast; the bridge's own excerpt keeps code, caps at 3000 chars, with the full message still bounded by Telegram's 4096 hard limit.
 
 - `coderfleet/server/auth.py` — `AuthMiddleware`, the API-key gate wrapping the entire app (`main.py`'s `app.add_middleware(AuthMiddleware, ...)`, applied to every request unless the path is in `_EXEMPT_PATHS`/`_EXEMPT_PREFIXES`). Real incident (issue #69 Slice 2, found against an actual running deployment, not caught by `tests/test_mcp_bridge.py`'s existing coverage): the Intervention MCP bridge mounted at `/mcp` was silently 401ing every request from Claude's own MCP client, because a newly-mounted sub-app is just as subject to this middleware as any hand-written route, and Claude has no way to know — and shouldn't be given — the app's own API key (a much broader-scoped secret than the one narrow capability `/mcp` exposes; pushing it into every project container's environment as a workaround would let any container impersonate the operator against the *entire* API, a strictly worse exposure than the problem it'd solve). `/mcp/` is now in `_EXEMPT_PREFIXES` alongside `/static/` — it has its own narrower identification scheme (the task-id header, see `mcp_bridge.py`'s entry) instead. The gap existed because `tests/test_mcp_bridge.py`'s other tests mount the MCP server onto a bare `FastAPI()` with no `AuthMiddleware` at all, so they never exercised this interaction; `test_auth_middleware_exempts_mcp_but_still_protects_everything_else` closes that specific hole by mirroring `main.py`'s real construction order (middleware wraps the mount) with a live, non-empty key, and asserts both that `/mcp` gets through *and* that an unrelated path still doesn't — any future sub-app mounted into `main.app` needs the same two-sided check before it's assumed to work, not just a happy-path test against an isolated bare app.
@@ -66,4 +88,3 @@ Entry anatomy — write invariants, not features:
      - .github/workflows/verify.yml — CI wiring only, calls verify.sh.
      - coderfleet/server/static/css/main.css — styling, no runtime
        invariants. -->
-

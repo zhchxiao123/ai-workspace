@@ -37,6 +37,7 @@ Account ──┐
 | **Workflow** | 声明式 **DAG 编排**：`WorkflowTemplate`（蓝图）→ `WorkflowRun`（运行实例，带节点状态机、条件分支、审批、重试） | 不承担「人工进度看板」职责 |
 | **Board** | **纯覆盖层**：卡片指向一条 Conversation 或一个 Workflow 运行，用于人工进度跟踪 | 不执行、不直接持有 Task 列表 |
 | **Schedule** | 定时**触发器**，到点触发一个 Task 或一个 Workflow | 自身不执行，代理给 Task/Workflow |
+| **Continuation** | Conversation 的一次性后续触发记录；timer / webhook 中第一个信号追加一个 Task | 自身不执行，也不是长期重复计划 |
 | **Digest** | 按天对 Task 历史做统计 + AI 摘要 | 只读镜头，不参与执行 |
 
 ## 「该用哪个」决策指引
@@ -46,6 +47,7 @@ Account ──┐
 - **要多步、有分支/并行/审批/重试（自动化）** → 用 **Workflow**（模板 + 运行）。
 - **要跟踪一批工作的人工进度** → 用 **Board**，让卡片指向对应的会话或工作流运行。
 - **要定时跑** → 用 **Schedule**，目标选 Task 或 Workflow。
+- **要在当前会话稍后或等外部事件后继续** → 用 **Continuation**；它向原 Conversation 追加 Task。
 
 ## 退役与收敛方向
 

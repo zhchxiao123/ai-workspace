@@ -626,6 +626,16 @@
           <div class="account-grid" id="schedules-grid">
             <div class="empty">加载中...</div>
           </div>
+          <div class="section-head" style="margin-top:24px">
+            <div>
+              <div class="section-title">会话后续动作</div>
+              <div class="section-subtitle">由 Agent 安排的定时或 Webhook 唤醒；第一个触发条件生效后恢复原会话</div>
+            </div>
+            <button class="btn" style="font-size:12px" onclick="loadContinuations()">刷新</button>
+          </div>
+          <div class="account-grid" id="continuations-grid">
+            <div class="empty">加载中...</div>
+          </div>
         </div>
 
         <!-- 系统设置页 -->
