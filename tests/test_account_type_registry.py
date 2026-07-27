@@ -10,6 +10,8 @@ from coderfleet.account_type_registry import (
     CostTotal,
     FinalText,
     TextChunk,
+    ToolIntent,
+    ToolOutcome,
     UsageDelta,
     UsageProgress,
     UsageTotal,
@@ -21,6 +23,7 @@ from coderfleet.account_type_registry import (
     _events_opencode,
     _events_pi,
     _extract_pi,
+    _shape_by_type,
 )
 
 
@@ -163,6 +166,23 @@ def test_events_grok_ignores_thought_events() -> None:
     assert _events_grok({"type": "thought", "data": "thinking..."}) == []
 
 
+def test_events_grok_has_no_tool_events_by_design() -> None:
+    # grok's stream really does carry only thought/text/end — it has no tool
+    # surface at all (renderer.js's grok line handler has no tool branch
+    # either). Asserted rather than assumed, because "this format has no tool
+    # events" is otherwise indistinguishable from "we forgot to classify them"
+    # — which is exactly the mistake #71 made about kimi. Fed a tool-shaped
+    # line from another format, grok stays silent.
+    assert _events_grok({
+        "type": "tool_execution_start",
+        "toolCallId": "c1", "toolName": "Bash", "args": {},
+    }) == []
+    assert _events_grok({
+        "role": "assistant",
+        "tool_calls": [{"id": "c1", "function": {"name": "Bash", "arguments": "{}"}}],
+    }) == []
+
+
 # ── _events_pi ───────────────────────────────────────────────────────────
 def test_events_pi_message_end_ignores_thinking_blocks() -> None:
     line = {
@@ -213,6 +233,50 @@ def test_events_pi_ignores_non_assistant_message_end() -> None:
 
 def test_events_pi_ignores_non_message_end_events() -> None:
     assert _events_pi({"type": "agent_end", "messages": []}) == []
+
+
+def test_events_pi_tool_execution_start_yields_tool_intent() -> None:
+    line = {
+        "type": "tool_execution_start",
+        "toolCallId": "call_abc123",
+        "toolName": "Bash",
+        "args": {"command": "ls -la"},
+    }
+    assert _events_pi(line) == [
+        ToolIntent("call_abc123", "Bash", {"command": "ls -la"})
+    ]
+
+
+def test_events_pi_tool_execution_end_joins_result_content_blocks() -> None:
+    line = {
+        "type": "tool_execution_end",
+        "toolCallId": "call_abc123",
+        "result": {"content": [{"text": "total 0"}, {"text": "drwxr-xr-x"}]},
+        "isError": False,
+    }
+    assert _events_pi(line) == [
+        ToolOutcome("call_abc123", "total 0\ndrwxr-xr-x", False)
+    ]
+
+
+def test_events_pi_tool_execution_end_accepts_bare_string_result() -> None:
+    line = {"type": "tool_execution_end", "toolCallId": "c1", "result": "done"}
+    assert _events_pi(line) == [ToolOutcome("c1", "done", False)]
+
+
+def test_events_pi_tool_execution_end_carries_error_flag() -> None:
+    line = {
+        "type": "tool_execution_end",
+        "toolCallId": "c1",
+        "result": {"content": [{"text": "boom"}]},
+        "isError": True,
+    }
+    assert _events_pi(line) == [ToolOutcome("c1", "boom", True)]
+
+
+def test_events_pi_tool_execution_end_with_unusable_result_yields_empty_text() -> None:
+    line = {"type": "tool_execution_end", "toolCallId": "c1", "result": 42}
+    assert _events_pi(line) == [ToolOutcome("c1", "", False)]
 
 
 # ── _events_claude ─────────────────────────────────────────────────────
@@ -370,3 +434,18 @@ def test_events_opencode_text_event_and_top_level_usage_both_fire_independently(
 
 def test_events_opencode_ignores_unrelated_event_types() -> None:
     assert _events_opencode({"type": "step_start", "part": {"type": "step-start"}}) == []
+
+
+# ── registry-wide coverage claims (issue #74) ──────────────────────────
+def test_hermes_registers_no_output_event_classifier() -> None:
+    # hermes writes plain text, not JSONL, so it has no per-line classifier and
+    # makes no coverage claim — log_parser falls straight through to its
+    # plain-text extraction. Pinned by test so a future "every type should have
+    # one" sweep can't quietly bolt a classifier onto a format that has no
+    # lines to classify.
+    assert ACCOUNT_TYPES["hermes"].parse_output_events is None
+
+
+def test_default_shape_discriminator_reads_the_type_field() -> None:
+    assert _shape_by_type({"type": "message_end", "message": {}}) == "message_end"
+    assert _shape_by_type({"role": "assistant"}) == ""

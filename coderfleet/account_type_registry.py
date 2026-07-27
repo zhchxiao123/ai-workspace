@@ -119,10 +119,50 @@ class CostTotal:
     cost_usd: float
 
 
+# ── 工具调用（issue #71）────────────────────────────────────────
+#
+# 上面 8 种成员只覆盖"文本 + 用量/花费"，也就是 TaskOutputData 已有的字段。
+# 工具调用是各 CLI 输出里差异最大的一维，过去只有 renderer.js 知道，后端
+# 完全无法回答"这个任务实际做了什么"——这两个成员把它补上。
+#
+# 拆成 intent/outcome 两个事件（而不是一个"已完成的工具调用"）是必须的：
+# 四种格式全都把"请求"和"结果"分在两行，靠一个 id 关联，而其中三种给这个
+# id 用了不同的字段名。合成一个事件就要求分类函数跨行保存状态，直接破坏
+# "一行进、零或多个事件出"的纯函数约束（那是这些函数不需要 Docker 就能
+# 单测的前提）。
+#
+#   ToolIntent  —— 请求发起：call_id + 工具名 + 参数。
+#   ToolOutcome —— 请求完成：call_id + 结果文本 + 是否报错。
+#
+# 归一化的是**字段名**，不是值：call_id 原样透传（claude 的 tool_use_id、
+# codex 的 tool_call_id、pi 的 toolCallId 都落到 call_id 上），因为它只在
+# 单个日志内部做相等比较，不需要规范化。arguments 一律由各分类函数负责
+# 归一成 dict——有些格式（codex/kimi）会把它编码成 JSON 字符串，解码的
+# 责任留在分类函数里，消费方只看到一种形状。
+#
+# 这两种事件不折叠进 TaskOutputData（它只有 text/token/cost 四个字段，
+# 工具调用不属于其中任何一个）；log_parser.py 的 reducer 对它们显式空转，
+# 本 issue 的真实读路径是覆盖率探测器 detect_unrecognized_shapes()。
+
+@dataclass(frozen=True)
+class ToolIntent:
+    call_id: str
+    name: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    call_id: str
+    result_text: str = ""
+    is_error: bool = False
+
+
 OutputEvent = Union[
     TextChunk, FinalText,
     UsageDelta, UsageProgress, UsageTotal,
     CostDelta, CostFirstSeen, CostTotal,
+    ToolIntent, ToolOutcome,
 ]
 EventsFn = Callable[[dict], List[OutputEvent]]
 
@@ -314,7 +354,32 @@ def _events_pi(d: dict) -> List[OutputEvent]:
     # `agent_end` re-lists the same messages, so it's intentionally not read
     # here to avoid double-counting text/usage across duplicate coverage of
     # the same turn.
-    if d.get("type") != "message_end":
+    t = d.get("type", "")
+    if t == "tool_execution_start":
+        # pi is the only format that gives tool calls their own dedicated
+        # start/end event types — one call per line, no nesting, no shared
+        # event type between request and result.
+        return [ToolIntent(
+            str(d.get("toolCallId", "")),
+            str(d.get("toolName", "")),
+            d.get("args") if isinstance(d.get("args"), dict) else {},
+        )]
+    if t == "tool_execution_end":
+        # Result arrives either as {"content": [{"text": ...}, ...]} or as a
+        # bare string; anything else yields empty text rather than a repr.
+        result = d.get("result")
+        if isinstance(result, dict) and isinstance(result.get("content"), list):
+            text = "\n".join(
+                str(c.get("text", ""))
+                for c in result["content"]
+                if isinstance(c, dict)
+            )
+        elif isinstance(result, str):
+            text = result
+        else:
+            text = ""
+        return [ToolOutcome(str(d.get("toolCallId", "")), text, bool(d.get("isError")))]
+    if t != "message_end":
         return []
     msg = d.get("message", {})
     if msg.get("role") != "assistant":
@@ -458,6 +523,48 @@ def _events_opencode(d: dict) -> List[OutputEvent]:
     return events
 
 
+# ── 行"形状"判别（issue #74）──────────────────────────────────
+#
+# 覆盖率探测器（log_parser.detect_unrecognized_shapes）要回答的问题是：
+# "这个日志里有没有哪一类行，是分类函数从头到尾一个事件都没产出、而我们
+# 也没声明过它本来就该沉默的？"——也就是 CLI 悄悄改了输出格式的信号。
+# 过去两次静默损坏（#69、#70）都属于这一类，靠人眼盯 renderer.js 才发现。
+#
+# 要问这个问题就得先能说出"哪一类行"。判别字段**不是统一的**：
+# claude/codex/opencode/pi 看 type，kimi 看 role（type 只用来细分 meta）。
+# 所以这里不写死字段名，而是每种类型自带一个纯函数把一行映射成形状名，
+# 默认取 type。新增类型若判别方式又不一样，改它自己的 shape_of，不要在
+# 探测器里加分支。
+ShapeFn = Callable[[dict], str]
+
+
+def _shape_by_type(d: dict) -> str:
+    """默认判别：形状名就是 `type` 字段。"""
+    return str(d.get("type", ""))
+
+
+# 声明"本来就该沉默"的形状：这些行确实不产生任何 OutputEvent，而且是设计
+# 如此，不是漏掉了。少了这份声明，探测器会把每条会话横幅都报成异常，噪音
+# 大到没人会看——它的价值完全取决于这份清单是准的。
+#
+# 起点是 renderer.js 里显式 no-op 的那批 case。下面两条是**超出**那批的额外
+# 声明，各有各的理由，加新的也要在这里写清楚为什么：
+#   session   —— renderer 会渲染它，但我们这边没人分类；不声明的话每份 pi
+#                日志都会永远多报一条，噪音直接淹掉真信号。
+#   agent_end —— 见下。
+_SILENT_PI = frozenset({
+    "session",         # 会话头，只被 _extract_pi 读走 id
+    "agent_start", "agent_settled",
+    "turn_start", "turn_end",
+    "message_start",
+    "message_update",  # 逐 delta，完整内容在 message_end
+    "tool_execution_update",
+    # agent_end 会把本轮所有 message 再列一遍。渲染器读它，我们**故意**不读
+    # ——读了就会和 message_end 把同一份文本/用量记两遍。这是有意的沉默。
+    "agent_end",
+})
+
+
 # ── per-type session ID extractors ────────────────────────────
 
 def _extract_claude(text):
@@ -591,6 +698,15 @@ class AccountTypeSpec:
     # 把一行任务输出 JSON 归一化成 OutputEvent 列表的纯函数；None 表示该类型
     # 没有结构化的逐行输出格式（目前只有 hermes——纯文本，走 log_parser.py
     # 通用的 _parse_text_fallback，不参与这里的事件归一化）。
+    shape_of: ShapeFn = _shape_by_type
+    # 把一行映射成"形状名"的纯函数，供覆盖率探测器分组用。默认取 type；判别
+    # 字段不同的类型（如 kimi 看 role）在这里换掉，不要去改探测器。
+    # 必须对任意 dict 全函数（只读字段 + 转字符串，不做类型假设）：探测器
+    # 不给它兜底——没有形状名就连"这行炸了"都报不出来。分类函数本身允许
+    # 抛（探测器会把抛异常当作"没识别"记账），shape_of 不允许。
+    silent_shapes: frozenset = frozenset()
+    # 声明"确实不产出任何事件、且设计如此"的形状名。探测器只报既没产出事件、
+    # 又不在这份清单里的形状。parse_output_events 为 None 时本字段无意义。
 
 
 # ── 注册表 ────────────────────────────────────────────────────
@@ -716,6 +832,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         build_inner_cmd=_build_pi,
         extract_session_id=_extract_pi,
         parse_output_events=_events_pi,
+        silent_shapes=_SILENT_PI,
     ),
 }
 

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from unittest.mock import patch
 
-from coderfleet.server.log_parser import extract_task_output, parse_log, split_complete_lines
+from coderfleet.account_type_registry import ACCOUNT_TYPES, TextChunk
+from coderfleet.server.log_parser import (
+    ShapeCoverage,
+    detect_unrecognized_shapes,
+    extract_task_output,
+    parse_log,
+    split_complete_lines,
+)
 
 
 def test_extract_kimi_stream_json_output() -> None:
@@ -257,6 +266,175 @@ def test_extract_pi_falls_back_to_last_assistant_message_when_no_agent_end() -> 
     log = json.dumps({"type": "message_end", "message": assistant_msg})
 
     assert extract_task_output(log, "pi") == "partial answer"
+
+
+def _pi_tool_lines() -> list[str]:
+    return [
+        json.dumps({
+            "type": "tool_execution_start",
+            "toolCallId": "c1", "toolName": "Bash", "args": {"command": "ls"},
+        }),
+        json.dumps({
+            "type": "tool_execution_end",
+            "toolCallId": "c1",
+            "result": {"content": [{"text": "README.md"}]},
+        }),
+    ]
+
+
+def test_tool_events_do_not_perturb_text_or_usage() -> None:
+    # ToolIntent/ToolOutcome carry information TaskOutputData has no field for
+    # (issue #74). Interleaving them with the shapes that *do* fold must leave
+    # text/token/cost byte-identical — the fold's no-op branches are explicit
+    # precisely so this stays true rather than depending on the if/elif chain
+    # falling off its end.
+    assistant_msg = _pi_message(
+        "assistant",
+        [{"type": "text", "text": "Done."}],
+        usage={
+            "input": 100, "output": 20,
+            "cost": {"total": 0.003},
+        },
+    )
+    tool_lines = _pi_tool_lines()
+    without_tools = json.dumps({"type": "message_end", "message": assistant_msg})
+    with_tools = "\n".join(tool_lines[:1] + [without_tools] + tool_lines[1:])
+
+    assert parse_log(with_tools, "pi") == parse_log(without_tools, "pi")
+
+
+# ── coverage detector (issue #74) ─────────────────────────────────────────────
+
+def test_detect_unrecognized_shapes_empty_for_fully_classified_log() -> None:
+    assistant_msg = _pi_message("assistant", [{"type": "text", "text": "Done."}])
+    log = "\n".join(
+        _pi_tool_lines() + [json.dumps({"type": "message_end", "message": assistant_msg})]
+    )
+
+    assert detect_unrecognized_shapes(log, "pi") == ShapeCoverage("pi", {})
+
+
+def test_detect_unrecognized_shapes_ignores_declared_silent_shapes() -> None:
+    log = "\n".join([
+        json.dumps({"type": "session", "id": "s1"}),
+        json.dumps({"type": "agent_start"}),
+        json.dumps({"type": "turn_start"}),
+        json.dumps({"type": "agent_settled"}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "pi") == ShapeCoverage("pi", {})
+
+
+def test_detect_unrecognized_shapes_reports_an_undeclared_shape() -> None:
+    log = "\n".join([
+        json.dumps({"type": "turn_start"}),
+        json.dumps({"type": "quantum_leap", "payload": 1}),
+        json.dumps({"type": "quantum_leap", "payload": 2}),
+    ])
+
+    report = detect_unrecognized_shapes(log, "pi")
+    assert report == ShapeCoverage("pi", {"quantum_leap": 2})
+    # A report is meant to be actionable on sight: it has to say which account
+    # type it is about, since the shape name alone is ambiguous across types.
+    assert "pi" in str(report) and "quantum_leap" in str(report)
+
+
+def test_detect_unrecognized_shapes_spares_a_shape_that_classified_elsewhere() -> None:
+    # pi emits `message_end` for user turns too; those legitimately produce no
+    # events while the assistant ones do. Silence is a property of the shape
+    # across the whole log, not of one line, so this must stay quiet.
+    user_msg = _pi_message("user", [{"type": "text", "text": "hi"}])
+    assistant_msg = _pi_message("assistant", [{"type": "text", "text": "Done."}])
+    log = "\n".join([
+        json.dumps({"type": "message_end", "message": user_msg}),
+        json.dumps({"type": "message_end", "message": assistant_msg}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "pi") == ShapeCoverage("pi", {})
+
+
+def test_detect_unrecognized_shapes_honours_a_non_type_discriminator() -> None:
+    # The load-bearing half of the registry design: a type that names its line
+    # shapes on something other than `type` must be expressible **without
+    # touching the detector**. kimi is the real such type (it discriminates on
+    # `role`) and is a later slice of #71; this proves the mechanism now, since
+    # discovering it doesn't generalise only when kimi lands would mean
+    # reworking every classifier slice in between.
+    spec = replace(
+        ACCOUNT_TYPES["pi"],
+        shape_of=lambda d: str(d.get("role", "")),
+        silent_shapes=frozenset({"system"}),
+        parse_output_events=lambda d: [TextChunk("x")] if d.get("role") == "assistant" else [],
+    )
+    log = "\n".join([
+        json.dumps({"role": "assistant", "content": "hi"}),
+        json.dumps({"role": "system", "content": "banner"}),
+        json.dumps({"role": "tool", "content": "output"}),
+    ])
+
+    with patch.dict(ACCOUNT_TYPES, {"pi": spec}):
+        report = detect_unrecognized_shapes(log, "pi")
+
+    # `assistant` classified, `system` declared silent, `tool` neither — and
+    # every one of those verdicts was reached by reading `role`, which the
+    # detector itself never mentions.
+    assert report == ShapeCoverage("pi", {"tool": 1})
+
+
+def test_detect_unrecognized_shapes_empty_for_type_without_classifier() -> None:
+    # hermes is plain text, not JSONL — it has no classifier, so there is no
+    # coverage claim to check and nothing to report.
+    assert detect_unrecognized_shapes('{"type":"whatever"}', "hermes") == ShapeCoverage("hermes", {})
+
+
+def test_detect_unrecognized_shapes_empty_for_unknown_account_type() -> None:
+    # Same graceful fall-through parse_log() has for a legacy/malformed
+    # acc_type on an old Task record: report nothing, never raise.
+    assert detect_unrecognized_shapes('{"type":"whatever"}', "no-such-type") == ShapeCoverage(
+        "no-such-type", {}
+    )
+
+
+def test_detect_unrecognized_shapes_reports_a_line_whose_classifier_blew_up() -> None:
+    # A CLI retyping a field (object → string, int → string) is a normal form of
+    # the very drift this detector exists to catch, and the classifiers assume
+    # field types freely. If a raising line propagated, the detector would take
+    # down its caller with a stack trace on exactly its motivating input — so a
+    # line its classifier could not survive counts as unclassified, not as fatal.
+    log = "\n".join([
+        json.dumps({"type": "message_end", "message": "not an object"}),
+        json.dumps({"type": "message_end", "message": "still not an object"}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "pi") == ShapeCoverage("pi", {"message_end": 2})
+
+
+def test_detect_unrecognized_shapes_clean_on_a_realistic_full_pi_log() -> None:
+    # The detector's whole point is that a real end-to-end transcript comes out
+    # silent — otherwise nobody would ever read its output. This is the same
+    # log shape asserted in test_extract_pi_final_answer_ignores_thinking_blocks,
+    # plus a tool call.
+    user_msg = _pi_message("user", [{"type": "text", "text": "hello"}])
+    assistant_msg = _pi_message(
+        "assistant",
+        [{"type": "text", "text": "Hi."}],
+        usage={"input": 10, "output": 2, "cost": {"total": 0.001}},
+    )
+    log = "\n".join([
+        json.dumps({"type": "session", "version": 3, "id": "s1", "cwd": "/workspace"}),
+        json.dumps({"type": "agent_start"}),
+        json.dumps({"type": "turn_start"}),
+        json.dumps({"type": "message_start", "message": user_msg}),
+        json.dumps({"type": "message_end", "message": user_msg}),
+    ] + _pi_tool_lines() + [
+        json.dumps({"type": "message_update", "message": assistant_msg}),
+        json.dumps({"type": "message_end", "message": assistant_msg}),
+        json.dumps({"type": "turn_end", "message": assistant_msg}),
+        json.dumps({"type": "agent_end", "messages": [user_msg, assistant_msg]}),
+        json.dumps({"type": "agent_settled"}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "pi").unrecognized == {}
 
 
 def test_split_complete_lines_holds_back_partial_tail() -> None:

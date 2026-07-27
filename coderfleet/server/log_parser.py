@@ -17,12 +17,16 @@ from dataclasses import dataclass, field
 
 from coderfleet.account_type_registry import (
     ACCOUNT_TYPES,
+    AccountTypeSpec,
     CostDelta,
     CostFirstSeen,
     CostTotal,
+    EventsFn,
     FinalText,
     OutputEvent,
     TextChunk,
+    ToolIntent,
+    ToolOutcome,
     UsageDelta,
     UsageProgress,
     UsageTotal,
@@ -110,20 +114,33 @@ def extract_task_output(log_text: str, acc_type: str = "claude") -> str:
 # (see issue #70 — this replaces six independently-drifting
 # `_parse_<type>_line` functions that did not derive from ACCOUNT_TYPES).
 
-def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> None:
-    # Deliberately ACCOUNT_TYPES.get(acc_type), not account_type_registry's
-    # get_spec() -- get_spec() raises KeyError for an unrecognized acc_type,
-    # which would turn an unknown/legacy acc_type string into a hard crash
-    # here instead of the graceful fall-through to _parse_text_fallback that
-    # parse_log() has always had. This function's caller passes acc_type
-    # straight through from a Task record, which can predate a type's
-    # removal or simply be malformed input.
-    spec = ACCOUNT_TYPES.get(acc_type)
-    events_fn = spec.parse_output_events if spec else None
-    if events_fn is None:
-        return
+def _classifier_for(acc_type: str) -> tuple[AccountTypeSpec | None, EventsFn | None]:
+    """
+    Look up an account type's spec and its line classifier, tolerating misses.
 
-    text_chunks: list[str] = []
+    Deliberately ACCOUNT_TYPES.get(acc_type), not account_type_registry's
+    get_spec() -- get_spec() raises KeyError for an unrecognized acc_type,
+    which would turn an unknown/legacy acc_type string into a hard crash
+    instead of the graceful fall-through parse_log() has always had. Callers
+    pass acc_type straight through from a Task record, which can predate a
+    type's removal or simply be malformed input.
+
+    A `None` classifier means the type makes no per-line claim at all (hermes:
+    plain text, not JSONL).
+    """
+    spec = ACCOUNT_TYPES.get(acc_type)
+    return spec, (spec.parse_output_events if spec else None)
+
+
+def _iter_json_lines(log_text: str):
+    """
+    Yield each JSON-object line of a task log, skipping everything else.
+
+    Shared by the fold and the coverage detector so the two cannot disagree
+    about which lines of a log even count — they answer questions about the
+    same population or the detector's coverage claim is about a different log
+    than the one that was parsed.
+    """
     for line in log_text.splitlines():
         s = line.strip()
         if not s.startswith("{"):
@@ -132,7 +149,17 @@ def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> No
             d = json.loads(s)
         except json.JSONDecodeError:
             continue
+        if isinstance(d, dict):
+            yield d
 
+
+def _parse_jsonl_log(log_text: str, result: TaskOutputData, acc_type: str) -> None:
+    _, events_fn = _classifier_for(acc_type)
+    if events_fn is None:
+        return
+
+    text_chunks: list[str] = []
+    for d in _iter_json_lines(log_text):
         for event in events_fn(d):
             _apply_event(event, result, text_chunks)
 
@@ -171,6 +198,102 @@ def _apply_event(event: OutputEvent, result: TaskOutputData, chunks: list[str]) 
             result.cost_usd = event.cost_usd
     elif isinstance(event, CostTotal):
         result.cost_usd = event.cost_usd
+    elif isinstance(event, (ToolIntent, ToolOutcome)):
+        # Deliberate no-op, spelled out rather than left to fall off the end of
+        # the chain (issue #74). TaskOutputData models a finished task's answer
+        # (text) and its price (tokens/cost); a tool call is neither, and
+        # folding one into `text` would corrupt the value workflows substitute
+        # into {{steps.X.outputs.text}}. Tool events exist for consumers that
+        # read the event stream directly — today `detect_unrecognized_shapes`.
+        pass
+
+
+# ── coverage detector (issue #74) ─────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ShapeCoverage:
+    """
+    One coverage verdict: which of `acc_type`'s line shapes went unclassified.
+
+    Carries `acc_type` rather than just the shape counts because shape names
+    collide across types (`text`, `message_end`, `assistant` all appear in more
+    than one format) — a bare shape name is not enough to act on. `__str__` is
+    the form meant for a failure message.
+    """
+    acc_type: str
+    unrecognized: dict[str, int]  # shape name → occurrences, all of them silent
+
+    def __str__(self) -> str:
+        if not self.unrecognized:
+            return f"{self.acc_type}: all line shapes accounted for"
+        shapes = ", ".join(
+            f"{shape!r} ×{count}" for shape, count in sorted(self.unrecognized.items())
+        )
+        return f"{self.acc_type}: unclassified line shapes: {shapes}"
+
+
+def detect_unrecognized_shapes(log_text: str, acc_type: str) -> ShapeCoverage:
+    """
+    Report line shapes this account type's classifier never turned into events.
+
+    `unrecognized` holds every shape that (a) appeared at least once,
+    (b) produced zero OutputEvents on *every* one of its occurrences, and
+    (c) is not declared in the spec's `silent_shapes`. Empty means the log is
+    fully accounted for.
+
+    This is the real reader of the tool-call events: before they existed, most
+    lines in a real log legitimately produced nothing, so "produced nothing" was
+    meaningless noise. Now that requests and results classify too, a shape going
+    quiet across a whole log is a usable signal that a CLI changed its output
+    format — the failure mode behind both #69 and #70, each of which was only
+    caught by eye.
+
+    Silence is judged per shape across the whole log, not per line, because one
+    shape can legitimately be silent on some lines and not others (pi emits
+    `message_end` for user turns as well as assistant ones). Detection is
+    therefore at whatever granularity the type's `shape_of` gives; a type that
+    needs finer resolution sharpens its own `shape_of`.
+
+    Advisory and read-only: nothing here feeds TaskOutputData, and this is
+    deliberately not wired into the scheduler or server — picking an
+    enforcement policy (warn / fail / rate-limit) is a separate decision. Its
+    consumer today is the test suite. Types with no classifier (hermes, which
+    is plain text) make no coverage claim, and an unknown acc_type falls
+    through the same way parse_log() does rather than raising; both report
+    nothing.
+    """
+    spec, events_fn = _classifier_for(acc_type)
+    if spec is None or events_fn is None:
+        return ShapeCoverage(acc_type, {})
+
+    seen: dict[str, int] = {}
+    classified: set[str] = set()
+    for d in _iter_json_lines(log_text):
+        # `shape_of` is required to be total over dicts (it only reads fields
+        # and stringifies), so it is called unguarded — a shape name is needed
+        # to report anything at all, including a failure.
+        shape = spec.shape_of(d)
+        try:
+            events = events_fn(d)
+        except Exception:
+            # A classifier that blew up did not classify the line, and a line
+            # it cannot survive is precisely the drift this detector exists to
+            # surface (a CLI retyping a field: object → string, int → string).
+            # Swallowing keeps the documented "does not raise" contract, and
+            # the line is still counted against its shape below — so the
+            # report names it instead of the caller dying on a stack trace.
+            # Deliberately bare: every exception a classifier can raise means
+            # the same thing here.
+            events = []
+        seen[shape] = seen.get(shape, 0) + 1
+        if events:
+            classified.add(shape)
+
+    return ShapeCoverage(acc_type, {
+        shape: count
+        for shape, count in seen.items()
+        if shape not in classified and shape not in spec.silent_shapes
+    })
 
 
 # ── plain-text fallback ───────────────────────────────────────────────────────
