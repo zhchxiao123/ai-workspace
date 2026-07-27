@@ -2161,7 +2161,22 @@ async def get_logs(
         raise HTTPException(status_code=404, detail=f"日志文件不存在：{task_id}")
     # 日志文件可达数 MB，同步读取会独占单进程事件循环，挤占同一时刻的其它请求
     # （SSE 日志流、心跳轮询等）——丢进线程池执行。
-    text = await run_in_threadpool(log_path.read_text, encoding="utf-8")
+    raw = await run_in_threadpool(log_path.read_bytes)
+
+    task = scheduler.get_task(task_id)
+    if task is not None and task.status == TaskStatus.running:
+        # 任务仍在运行：_stream_container_log 正并发追加写这个文件，这次整读
+        # 可能撞上"某一行写到一半"的瞬间，把最后一行从中间截断（同一类问题见
+        # scheduler.py._stream_container_log 和 stream_logs() 的注释——那两处
+        # 分别在写入侧和 SSE 增量推送侧已经用 split_complete_lines 挡过一次，
+        # 但这个一次性整读的历史接口当时漏掉了，截断的半行 JSON 传到前端后
+        # renderer.js 找不到匹配的收尾大括号，只能整段退化成裸文本展示）。
+        # 已完成任务的日志是静态的，不受这个问题影响，也不能在这里裁剪——
+        # 完成时落盘的最后一行可能本来就没有结尾换行符，裁剪会把它误删掉。
+        from coderfleet.server.log_parser import split_complete_lines
+        raw, _pending = split_complete_lines(raw)
+
+    text = raw.decode("utf-8", errors="replace")
     if light:
         from coderfleet.server.log_parser import strip_unused_render_fields
         text = await run_in_threadpool(strip_unused_render_fields, text)
@@ -2209,17 +2224,17 @@ async def stream_logs(
     log_path = scheduler.get_log_path(task_id)
 
     async def _read_from(offset: int) -> tuple[bytes, int]:
-        """从 offset 字节处读取到文件末尾，返回 (内容, 新的文件大小)。"""
+        """从 offset 字节处读取到文件末尾，返回 (内容, 实际起始偏移 start)。"""
         if not log_path.exists():
             return b"", 0
         cur_size = log_path.stat().st_size
         start = min(offset, cur_size)
         if cur_size <= start:
-            return b"", cur_size
+            return b"", start
         async with aiofiles.open(log_path, "rb") as f:
             await f.seek(start)
             data = await f.read()
-        return data, cur_size
+        return data, start
 
     async def generate() -> AsyncIterator[str]:
         last_size: int = 0
@@ -2230,9 +2245,17 @@ async def stream_logs(
 
         if skip_bytes > 0:
             # ── 精确模式：客户端已持有前 skip_bytes 字节，从此处开始推送剩余内容 ──
-            new_bytes, last_size = await _read_from(skip_bytes)
-            if new_bytes:
-                for line in new_bytes.decode("utf-8", errors="replace").splitlines(keepends=True):
+            # 跟 get_logs()/下面 tail>0 分支同一类问题：这次一次性读到文件末尾，
+            # 任务仍在运行时可能撞上"某一行写到一半"，尾部被截断。用
+            # split_complete_lines 只把完整行推给前端，截断的尾巴交给 pending，
+            # 由下面的轮询循环接上；last_size 必须算成 start + 已消费的完整
+            # 字节数，不能用 offset 或某次单独 stat() 的文件大小——否则下一轮
+            # 会把这段尾巴当成"还没读过"重复推送，或者反过来把它跳过。
+            new_bytes, start = await _read_from(skip_bytes)
+            complete, pending = split_complete_lines(new_bytes)
+            last_size = start + len(complete)
+            if complete:
+                for line in complete.decode("utf-8", errors="replace").splitlines(keepends=True):
                     yield f"data: {line.rstrip()}\n\n"
 
         elif tail > 0:
@@ -2242,10 +2265,18 @@ async def stream_logs(
             if log_path.exists():
                 async with aiofiles.open(log_path, "rb") as f:
                     raw = await f.read()
-                lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+                # 跟 get_logs() 同一类问题：读到这里时任务可能仍在运行，raw 的
+                # 尾部可能刚好截在写到一半的一行中间。用 split_complete_lines
+                # 只把完整行纳入这次的"末尾 tail 行"，截断的尾巴留进 pending，
+                # 交给下面的轮询循环在下一次读到新字节时接上——而不是把半行
+                # JSON 当成一整行推给前端。last_size 也必须用这次实际读到的
+                # 完整字节数，不能再单独 stat() 一次——两次调用之间文件可能
+                # 又长了，用 stat() 的话会把这段新字节悄悄跳过。
+                complete, pending = split_complete_lines(raw)
+                lines = complete.decode("utf-8", errors="replace").splitlines(keepends=True)
                 for line in lines[-tail:]:
                     yield f"data: {line.rstrip()}\n\n"
-                last_size = log_path.stat().st_size
+                last_size = len(complete)
 
         else:
             # ── tail=0, skip_bytes=0：不推送任何已有内容，直接从文件末尾开始 tail ──
