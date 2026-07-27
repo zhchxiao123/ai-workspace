@@ -4489,6 +4489,18 @@
       cursor: pointer;
     }
 
+    .chat-model-custom-input {
+      border: none;
+      border-bottom: 1px solid var(--border-md);
+      background: transparent;
+      color: var(--accent);
+      font: inherit;
+      font-weight: 650;
+      font-size: 11px;
+      width: 130px;
+      outline: none;
+    }
+
     .chat-input-hint {
       font-size: 11px;
       color: var(--text-3);

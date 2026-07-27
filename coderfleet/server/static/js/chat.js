@@ -1477,13 +1477,23 @@ async function renderChatWorkspace(conv) {
 
     // 恢复本会话上次选中的模型（会话期内记忆），否则回退到最近一条任务实际使用的模型
     const modelSelect = document.getElementById('chat-model-select');
+    const modelCustomInput = document.getElementById('chat-model-custom');
     if (modelSelect) {
       const lastModel = convTasks.length ? (convTasks[convTasks.length - 1].model || '') : '';
       const remembered = Object.prototype.hasOwnProperty.call(chatModelByConversation, conv.id)
         ? chatModelByConversation[conv.id]
         : lastModel;
-      modelSelect.value = remembered;
-      if (modelSelect.value !== remembered) modelSelect.value = ''; // 未知模型值时回退到默认选项
+      const isPresetValue = CHAT_MODEL_OPTIONS.some(o => o.value === remembered);
+      if (remembered && !isPresetValue) {
+        // 不在预设列表里的模型值（自定义模型，或已从预设中移除的旧别名）——
+        // 落到自定义输入框里，而不是静默回退到默认模型
+        modelSelect.value = '__custom__';
+        if (modelCustomInput) modelCustomInput.value = remembered;
+      } else {
+        modelSelect.value = remembered;
+        if (modelCustomInput) modelCustomInput.value = '';
+      }
+      _toggleChatModelCustomInput();
     }
 
     const runningTask = convTasks.find(t => t.status === 'running');
@@ -2366,10 +2376,12 @@ function buildChatInputHTML(placeholder, hint) {
 
 const CHAT_MODEL_OPTIONS = [
   { value: '',       label: '默认模型',        title: '跟随账号 / CLI 的默认模型设置' },
-  { value: 'opus',   label: 'Opus 4.8 · 最强推理', title: 'Claude Opus 4.8 —— 推理能力最强，速度较慢，适合复杂任务' },
+  { value: 'opus',   label: 'Opus · 最强推理', title: 'Claude Opus 别名 —— 跟随 CLI 自动指向当前最强的 Opus 版本（现为 Opus 5），推理能力最强，速度较慢，适合复杂任务' },
+  { value: 'claude-opus-5', label: 'Opus 5 · 锁定版本', title: 'Claude Opus 5 —— 显式锁定该版本号，不会随 CLI 别名指向未来更新的 Opus 而变化' },
   { value: 'sonnet', label: 'Sonnet 5 · 均衡推荐', title: 'Claude Sonnet 5 —— 速度与能力均衡，日常任务首选' },
   { value: 'fable',  label: 'Fable 5 · 快速输出', title: 'Claude Fable 5 —— Opus 级能力、更快输出，Fast 模式使用' },
   { value: 'haiku',  label: 'Haiku 4.5 · 最快响应', title: 'Claude Haiku 4.5 —— 响应最快，适合简单或大批量任务' },
+  { value: '__custom__', label: '自定义…', title: '手动输入任意 --model 值，用于尚未加入预设列表的新模型' },
 ];
 
 async function getChatAccount(accountName) {
@@ -2427,15 +2439,39 @@ function buildChatModelPillHtml() {
       <span class="chat-model-pill" title="选择本次对话使用的模型">
         <span class="chat-model-pill-label">模型</span>
         <select id="chat-model-select" class="chat-model-select" onchange="onChatModelChange(this.value)">${opts}</select>
+        <input type="text" id="chat-model-custom" class="chat-model-custom-input"
+               placeholder="如 claude-opus-5.1" style="display:none"
+               oninput="onChatModelCustomInput(this.value)">
       </span>`;
 }
 
+// 自定义模型输入框只在下拉框选中"自定义…"时显示
+function _toggleChatModelCustomInput() {
+  const select = document.getElementById('chat-model-select');
+  const input = document.getElementById('chat-model-custom');
+  if (!select || !input) return;
+  input.style.display = select.value === '__custom__' ? '' : 'none';
+}
+
 function onChatModelChange(value) {
-  if (activeConversationId) chatModelByConversation[activeConversationId] = value;
+  _toggleChatModelCustomInput();
+  if (!activeConversationId) return;
+  chatModelByConversation[activeConversationId] = value === '__custom__'
+    ? (document.getElementById('chat-model-custom')?.value.trim() || '')
+    : value;
+}
+
+function onChatModelCustomInput(value) {
+  if (activeConversationId) chatModelByConversation[activeConversationId] = value.trim();
 }
 
 function getChatModel() {
-  return document.getElementById('chat-model-select')?.value || '';
+  const select = document.getElementById('chat-model-select');
+  if (!select) return '';
+  if (select.value === '__custom__') {
+    return document.getElementById('chat-model-custom')?.value.trim() || '';
+  }
+  return select.value;
 }
 
 function toggleSchedTimeInput(checked) {
