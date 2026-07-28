@@ -63,6 +63,32 @@ def test_start_project_container_regenerates_compose_and_starts_only_that_servic
     assert ("start", ws, ["claude-project-repo"]) in calls
 
 
+def test_start_project_container_with_ide_enabled_also_starts_ide_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """编辑项目开启 IDE 后仅重启该项目应把 IDE 代理容器也带起来，不能只启动主服务、
+    等着下一次全量 apply 才生效。"""
+    ws = _make_workspace(tmp_path)
+    (ws / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={ws / 'repo'} IDE=on IDE_PORT=18080\n",
+        encoding="utf-8",
+    )
+    _use_scheduler(monkeypatch, ws)
+
+    calls: list[tuple] = []
+
+    monkeypatch.setattr(compose, "write_compose", lambda workspace: calls.append(("write_compose", workspace)))
+    monkeypatch.setattr(
+        docker_ops, "start_services",
+        lambda workspace, services: (calls.append(("start", workspace, services)), _FakeResult(0))[1],
+    )
+
+    result = asyncio.run(server_main.start_project_container("repo"))
+
+    assert result == {"ok": True}
+    assert ("start", ws, ["claude-project-repo", "ide-project-repo"]) in calls
+
+
 def test_start_project_container_unknown_project_returns_404(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -148,6 +174,30 @@ def test_stop_project_container_uses_non_destructive_stop_scoped_to_one_service(
 
     assert result == {"ok": True}
     assert ("stop", ws, ["claude-project-repo"]) in calls
+
+
+def test_stop_project_container_with_ide_enabled_also_stops_ide_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _make_workspace(tmp_path)
+    (ws / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={ws / 'repo'} IDE=on IDE_PORT=18080\n",
+        encoding="utf-8",
+    )
+    _use_scheduler(monkeypatch, ws)
+
+    calls: list[tuple] = []
+
+    def fake_stop_services(workspace: Path, services: list[str]) -> _FakeResult:
+        calls.append(("stop", workspace, services))
+        return _FakeResult(0)
+
+    monkeypatch.setattr(docker_ops, "stop_services", fake_stop_services)
+
+    result = asyncio.run(server_main.stop_project_container("repo"))
+
+    assert result == {"ok": True}
+    assert ("stop", ws, ["claude-project-repo", "ide-project-repo"]) in calls
 
 
 def test_stop_project_container_logs_request_and_success(

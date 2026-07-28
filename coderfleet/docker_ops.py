@@ -15,8 +15,8 @@ from typing import Optional
 
 import click
 
-from coderfleet.config import load_config, parse_conf
-from coderfleet.compose import write_compose
+from coderfleet.config import load_config, parse_conf, truthy
+from coderfleet.compose import write_compose, ide_service_name
 from coderfleet.server.models import ImageBuild, ImageBuildStatus
 
 
@@ -86,7 +86,12 @@ def _run_and_record_build(cmd: list[str], image: str, ws: Path, kind: str, proje
 
 
 def _service_names_for(ws: Path, project_names: tuple[str, ...]) -> list[str]:
-    """Resolve project names (from projects.conf) to their compose service names."""
+    """Resolve project names (from projects.conf) to their compose service names.
+
+    Includes the IDE proxy service for projects with IDE=on, so `up`/`down`/`restart
+    <project>` actually bring the IDE container along instead of leaving it stale
+    until a full `apply`.
+    """
     accounts = _get_accounts(ws)
     projects = {p["NAME"]: p for p in _get_projects(ws)}
     services = []
@@ -96,6 +101,8 @@ def _service_names_for(ws: Path, project_names: tuple[str, ...]) -> list[str]:
             raise click.ClickException(f"项目 '{name}' 不在 projects.conf 中")
         acc_type = accounts.get(proj.get("ACCOUNT", ""), {}).get("TYPE", "")
         services.append(_service_name(name, acc_type))
+        if truthy(proj.get("IDE", "off")):
+            services.append(ide_service_name(name))
     return services
 
 

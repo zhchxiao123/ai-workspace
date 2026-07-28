@@ -22,6 +22,11 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def ide_service_name(project_name: str) -> str:
+    """项目 IDE 代理服务名——与容器启停共用，避免漏掉 IDE 代理容器。"""
+    return f"ide-project-{project_name}"
+
+
 def _parse_port(value: str, project_name: str) -> int:
     try:
         port = int(value)
@@ -330,7 +335,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         services[svc_name] = svc
 
         if ide_enabled:
-            ide_svc_name = f"ide-project-{pname}"
+            ide_svc_name = ide_service_name(pname)
             ide_ctr_name = f"coderfleet-ide-{pname}"
             ide_networks = {"extnet": {}}
             if acc_proxy != "off":

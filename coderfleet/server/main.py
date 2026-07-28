@@ -1074,14 +1074,16 @@ async def get_project_container_status(name: str):
 @app.post("/api/projects/{name}/container/start")
 async def start_project_container(name: str):
     project, acc = _resolve_project_and_account(name)
-    from coderfleet.compose import write_compose
+    from coderfleet.compose import write_compose, ide_service_name
     from coderfleet.docker_ops import start_services
 
-    service = project.service_name(acc.type)
+    services = [project.service_name(acc.type)]
+    if project.ide_enabled:
+        services.append(ide_service_name(name))
     _app_logger.info("收到项目 '%s' 的启动请求", name)
     await asyncio.get_event_loop().run_in_executor(None, write_compose, WORKSPACE_DIR)
     result = await asyncio.get_event_loop().run_in_executor(
-        None, start_services, WORKSPACE_DIR, [service]
+        None, start_services, WORKSPACE_DIR, services
     )
     if result.returncode != 0:
         _app_logger.warning("项目 '%s' 启动失败（returncode=%s）", name, result.returncode)
@@ -1093,12 +1095,15 @@ async def start_project_container(name: str):
 @app.post("/api/projects/{name}/container/stop")
 async def stop_project_container(name: str):
     project, acc = _resolve_project_and_account(name)
+    from coderfleet.compose import ide_service_name
     from coderfleet.docker_ops import stop_services
 
-    service = project.service_name(acc.type)
+    services = [project.service_name(acc.type)]
+    if project.ide_enabled:
+        services.append(ide_service_name(name))
     _app_logger.info("收到项目 '%s' 的停止请求", name)
     result = await asyncio.get_event_loop().run_in_executor(
-        None, stop_services, WORKSPACE_DIR, [service]
+        None, stop_services, WORKSPACE_DIR, services
     )
     if result.returncode != 0:
         _app_logger.warning("项目 '%s' 停止失败（returncode=%s）", name, result.returncode)

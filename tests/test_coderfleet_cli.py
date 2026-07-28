@@ -204,6 +204,29 @@ def test_restart_scoped_to_one_project_stops_then_starts_only_that_service(tmp_p
     assert "--force-recreate" not in "\n".join(calls)
 
 
+def test_restart_scoped_to_one_project_with_ide_includes_ide_service(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text(
+        "NAME=api-claude TYPE=claude AUTH=login\n",
+        encoding="utf-8",
+    )
+    (workspace / "projects.conf").write_text(
+        f"NAME=repo ACCOUNT=api-claude PATH={workspace / 'repo'} IDE=on IDE_PORT=18080\n",
+        encoding="utf-8",
+    )
+    call_log = tmp_path / "docker-calls.log"
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path, call_log), "restart", "repo")
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    stop_lines = [line for line in calls if " stop " in f" {line} "]
+    up_lines = [line for line in calls if " up " in f" {line} "]
+    assert stop_lines and up_lines
+    assert "claude-project-repo" in stop_lines[-1] and "ide-project-repo" in stop_lines[-1]
+    assert "claude-project-repo" in up_lines[-1] and "ide-project-repo" in up_lines[-1]
+
+
 def test_apply_default_is_incremental(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
     (workspace / "accounts.conf").write_text(
