@@ -2129,18 +2129,7 @@ async def retry_task(task_id: str):
             detail=f"只能重试 failed/killed 状态的任务，当前状态：{original.status.value}",
         )
     try:
-        new_task = await scheduler.submit(
-            prompt         = original.prompt,
-            project_name   = original.project_name or None,
-            auto           = getattr(original, "auto", False),
-            model          = getattr(original, "model", ""),
-            pipeline_id    = original.pipeline_id or None,
-            parent_task_id = original.parent_task_id or None,
-            depends_on     = [],
-            board_card_id  = original.board_card_id or None,
-        )
-        if original.pipeline_id:
-            scheduler.update_pipeline_node_task(original.pipeline_id, task_id, new_task.id)
+        new_task = await scheduler.clone_task_for_retry(original)
         return TaskResponse.from_task(new_task)
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
