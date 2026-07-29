@@ -31,6 +31,13 @@ Continuation addendum for the load-bearing files below:
 - `coderfleet/server/scheduler.py`: timer and webhook Adapters converge on
   `fire_continuation`, which deduplicates Task creation by
   `Task.continuation_id` and resumes through the latest Conversation session.
+  Failed executions also converge on `_maybe_auto_retry`, configured by
+  `TASK_AUTO_RETRY` (default on), `TASK_AUTO_RETRY_MAX`, and
+  `TASK_AUTO_RETRY_DELAY_SECONDS`. It only retries a narrow set of transient
+  502/503/504/network failures when the log contains no known tool-side-effect
+  event, uses exponential backoff, and records
+  `retry_of`/`retry_count`/`retry_task_id`. Manual and automatic retry both use
+  `clone_task_for_retry` so their cloned task fields cannot drift.
 - `coderfleet/server/models.py`: `Continuation` is an internal Conversation
   trigger record, not another execution atom; Task remains the only executor.
 - `coderfleet/account_type_registry.py`: every Claude task loads the same

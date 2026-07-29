@@ -42,6 +42,61 @@ def _assert_detached_command(command: str, task_id: str) -> None:
     assert command.rstrip().endswith("&"), command
 
 
+def test_retryable_failure_only_accepts_transient_errors_before_tool_use() -> None:
+    assert Scheduler.is_retryable_failure(
+        "API Error: 503 status code (no body). This is a server-side issue."
+    )
+    assert Scheduler.is_retryable_failure("request failed: ECONNRESET")
+    assert not Scheduler.is_retryable_failure("permission denied")
+    assert not Scheduler.is_retryable_failure(
+        '{"type":"tool_use","name":"Write"}\nAPI Error: 503 status code'
+    )
+
+
+def test_auto_retry_respects_limit_and_links_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "config.conf").write_text(
+        "TASK_AUTO_RETRY=on TASK_AUTO_RETRY_MAX=2 TASK_AUTO_RETRY_DELAY_SECONDS=0\n",
+        encoding="utf-8",
+    )
+    sched = Scheduler(tmp_path)
+    original = Task(
+        id="failed-1", status=TaskStatus.failed, account="alice",
+        type=AccountType.claude, prompt="continue", project="/workspace",
+    )
+    original.save(sched.tasks_dir)
+    log_path = sched.get_log_path(original.id)
+    log_path.write_text("API Error: 503 status code (no body)\n", encoding="utf-8")
+    replacement = original.model_copy(update={
+        "id": "retry-1", "status": TaskStatus.running,
+    })
+
+    async def fake_clone(task: Task, *, automatic: bool = False) -> Task:
+        assert automatic is True
+        replacement.retry_of = task.id
+        replacement.retry_count = task.retry_count + 1
+        replacement.save(sched.tasks_dir)
+        task.retry_task_id = replacement.id
+        task.save(sched.tasks_dir)
+        return replacement
+
+    monkeypatch.setattr(sched, "clone_task_for_retry", fake_clone)
+    retried = asyncio.run(sched._maybe_auto_retry(original, log_path))
+
+    assert retried is not None
+    assert sched.get_task("failed-1").retry_task_id == "retry-1"
+    assert "第 1/2 次重试" in log_path.read_text(encoding="utf-8")
+
+    replacement.status = TaskStatus.failed
+    replacement.retry_count = 2
+    replacement.save(sched.tasks_dir)
+    replacement_log = sched.get_log_path(replacement.id)
+    replacement_log.write_text("API Error: 503 status code\n", encoding="utf-8")
+    assert asyncio.run(sched._maybe_auto_retry(replacement, replacement_log)) is None
+
+
 def test_build_cli_command_uses_headless_codex_exec() -> None:
     command = Scheduler.build_cli_command(
         AccountType.codex,

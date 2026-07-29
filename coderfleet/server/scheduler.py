@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from coderfleet.config import parse_conf
+from coderfleet.config import load_config, parse_conf, truthy
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.log_parser import split_complete_lines
@@ -83,6 +83,19 @@ MAX_PENDING_PER_CONV = 5
 # Intervention 默认超时（秒）：CLI 主动暂停问人，人没在这个时限内回答就自动放行，
 # 不无限期挂起（见 issue #69）。
 DEFAULT_INTERVENTION_TIMEOUT_SECONDS = 600
+
+_TRANSIENT_FAILURE_RE = re.compile(
+    r"(?:API Error:\s*(?:502|503|504)\b|"
+    r"(?:502|503|504)\s+status code\b|"
+    r"\b(?:bad gateway|service unavailable|gateway timeout)\b|"
+    r"\bconnection (?:reset|refused|timed out)\b|"
+    r"\b(?:ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b)",
+    re.IGNORECASE,
+)
+_SIDE_EFFECT_EVENT_RE = re.compile(
+    r'"(?:type|item_type)"\s*:\s*"'
+    r'(?:tool_use|command_execution|file_change|mcp_tool_call|collab_tool_call)"'
+)
 
 
 class Scheduler:
@@ -756,6 +769,82 @@ class Scheduler:
 
     def get_log_path(self, task_id: str) -> Path:
         return self.tasks_dir / f"{task_id}.log"
+
+    def _auto_retry_settings(self) -> tuple[bool, int, float]:
+        cfg = load_config(self.workspace_dir)
+        enabled = truthy(cfg.get("TASK_AUTO_RETRY", "on"))
+        try:
+            max_retries = max(0, min(int(cfg.get("TASK_AUTO_RETRY_MAX", "2")), 10))
+        except ValueError:
+            max_retries = 2
+        try:
+            base_delay = max(0.0, min(float(cfg.get("TASK_AUTO_RETRY_DELAY_SECONDS", "2")), 300.0))
+        except ValueError:
+            base_delay = 2.0
+        return enabled, max_retries, base_delay
+
+    @staticmethod
+    def is_retryable_failure(log_text: str) -> bool:
+        """Return true only for a known transient failure before any tool side effect."""
+        return bool(_TRANSIENT_FAILURE_RE.search(log_text)) and not bool(
+            _SIDE_EFFECT_EVENT_RE.search(log_text)
+        )
+
+    async def clone_task_for_retry(self, original: Task, *, automatic: bool = False) -> Task:
+        """Clone a terminal task through the normal submission path."""
+        new_task = await self.submit(
+            prompt=original.prompt,
+            account_name=original.account,
+            project_name=original.project_name or None,
+            auto=getattr(original, "auto", False),
+            conversation_id=original.conversation_id or None,
+            images=list(getattr(original, "images", [])),
+            model=getattr(original, "model", ""),
+            pipeline_id=original.pipeline_id or None,
+            parent_task_id=original.parent_task_id or None,
+            depends_on=[],
+            board_card_id=original.board_card_id or None,
+            ephemeral=getattr(original, "ephemeral", False),
+            execution_mode=getattr(original, "execution_mode", None),
+            secrets=dict(getattr(original, "task_secrets", {})),
+            output_dir=getattr(original, "output_dir", ""),
+            ephemeral_retention=getattr(original, "ephemeral_retention", None),
+            ephemeral_ttl_minutes=getattr(original, "ephemeral_ttl_minutes", None),
+        )
+        new_task.retry_of = original.id
+        new_task.retry_count = original.retry_count + 1 if automatic else 0
+        new_task.save(self.tasks_dir)
+        original.retry_task_id = new_task.id
+        original.save(self.tasks_dir)
+        if original.pipeline_id:
+            self.update_pipeline_node_task(original.pipeline_id, original.id, new_task.id)
+        return new_task
+
+    async def _maybe_auto_retry(self, task: Task, log_path: Path) -> Optional[Task]:
+        enabled, max_retries, base_delay = self._auto_retry_settings()
+        if not enabled or task.retry_count >= max_retries:
+            return None
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+        if not self.is_retryable_failure(log_text):
+            return None
+
+        delay = base_delay * (2 ** task.retry_count)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n自动重试：检测到临时网关/网络故障，"
+                f"{delay:g} 秒后进行第 {task.retry_count + 1}/{max_retries} 次重试。\n"
+            )
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await self.clone_task_for_retry(task, automatic=True)
+        except (ValueError, RuntimeError) as exc:
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(f"自动重试提交失败：{exc}\n")
+            return None
 
     # ── 镜像构建管理 ──────────────────────────────────────
 
@@ -2365,7 +2454,9 @@ class Scheduler:
             self._append_log_footer(log_path, f"failed (exit={rc})")
 
         self._extract_and_save_token_usage(task, log_path)
-        asyncio.create_task(self._notify(task))
+        retried = await self._maybe_auto_retry(task, log_path) if rc != 0 else None
+        if retried is None:
+            asyncio.create_task(self._notify(task))
         return rc
 
     # ── Ephemeral task helpers ────────────────────────────────
@@ -2735,7 +2826,9 @@ class Scheduler:
                 self._append_log_footer(log_path, f"failed (exit={rc})")
 
             self._extract_and_save_token_usage(task, log_path)
-            asyncio.create_task(self._notify(task))
+            retried = await self._maybe_auto_retry(task, log_path) if rc != 0 else None
+            if retried is None:
+                asyncio.create_task(self._notify(task))
 
         except asyncio.CancelledError:
             if proc is not None:

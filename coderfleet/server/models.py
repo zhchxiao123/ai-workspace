@@ -449,6 +449,10 @@ class Task(BaseModel):
     ephemeral_container_name: str = ""
     task_secrets: dict = Field(default_factory=dict)
     continuation_id: str = ""
+    # Retry lineage. retry_count counts automatic retries from the root task.
+    retry_of: str = ""
+    retry_count: int = 0
+    retry_task_id: str = ""
     # Intervention：非 auto 任务里 CLI 主动暂停问人，见 PendingIntervention
     pending_intervention: Optional[PendingIntervention] = None
 
@@ -559,6 +563,9 @@ class TaskResponse(BaseModel):
     execute_at: Optional[str] = None
     parent_task_id: str = ""
     continuation_id: str = ""
+    retry_of: str = ""
+    retry_count: int = 0
+    retry_task_id: str = ""
     depends_on:     list[str] = []
     pipeline_id:    str = ""
     board_card_id:  str = ""
@@ -595,6 +602,9 @@ class TaskResponse(BaseModel):
             execute_at   = getattr(t, "execute_at", None),
             parent_task_id = getattr(t, "parent_task_id", ""),
             continuation_id = getattr(t, "continuation_id", ""),
+            retry_of         = getattr(t, "retry_of", ""),
+            retry_count      = getattr(t, "retry_count", 0),
+            retry_task_id    = getattr(t, "retry_task_id", ""),
             depends_on     = getattr(t, "depends_on", []),
             pipeline_id    = getattr(t, "pipeline_id", ""),
             board_card_id  = getattr(t, "board_card_id", ""),
