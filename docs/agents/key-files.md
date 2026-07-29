@@ -40,6 +40,13 @@ Continuation addendum for the load-bearing files below:
   `clone_task_for_retry` so their cloned task fields cannot drift.
 - `coderfleet/server/models.py`: `Continuation` is an internal Conversation
   trigger record, not another execution atom; Task remains the only executor.
+- `coderfleet/continuation_cmds.py`: `coderfleet continuation list/add/cancel/trigger`
+  — the CLI counterpart to the Continuation REST endpoints, kept alongside them
+  per the CLI/Web-UI equal-capability rule rather than shipping Web-only. Pure
+  passthrough: it does no validation of its own (e.g. the 10..2592000s
+  `--after` range) and trusts the server's `/api/continuations*` responses for
+  every error message via `_http_error_detail`; do not duplicate server-side
+  checks here.
 - `coderfleet/account_type_registry.py`: every Claude task loads the same
   CoderFleet MCP server. `_claude_mcp_bridge_arg(allow_ask_user=...)` varies
   only tool permissions: normal mode pre-approves AskUserQuestion and
