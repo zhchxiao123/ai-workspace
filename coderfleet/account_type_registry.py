@@ -328,16 +328,50 @@ def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model
 # _build_<type>/_extract_<type> 的约束一致，同样直接单测，不需要 Docker。
 
 def _events_kimi(d: dict) -> List[OutputEvent]:
-    if d.get("role") != "assistant":
+    # kimi 是唯一一种**不靠 type 而靠 role 判别行形状**的格式（见下面的
+    # _shape_kimi）。它的工具调用是 OpenAI 风格：请求不是一整行，而是挂在
+    # assistant 行上的一个 tool_calls 数组——一行可以带好几次调用。
+    #
+    # 注意：kimi 至今不报 token/cost，这是 #70 起就照抄的已知缺口，issue #79
+    # 明确不在这里修。
+    role = d.get("role")
+    if role == "tool":
+        # 结果行用的是另一个字段名 tool_call_id，归一到 call_id。
+        #
+        # **决定（不是默认值）**：kimi 的工具结果行压根没有错误标志字段，跟
+        # 其他所有格式都不一样。这里一律报 is_error=False，而不是去猜内容里
+        # 有没有 "Error"——猜出来的失败率一定不准，而一个稳定的 False 至少
+        # 语义明确："这个格式不告诉我们成功还是失败"。真要区分，得等 kimi
+        # 自己在输出里给出信号。
+        return [ToolOutcome(str(d.get("tool_call_id", "")), str(d.get("content") or ""), False)]
+
+    if role != "assistant":
         return []
+
+    events: List[OutputEvent] = []
     content = d.get("content", "")
     if isinstance(content, str):
-        return [TextChunk(content)]
-    events: List[OutputEvent] = []
-    if isinstance(content, list):
+        if content:
+            events.append(TextChunk(content))
+    elif isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
                 events.append(TextChunk(str(block.get("text", ""))))
+
+    tool_calls = d.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function")
+            fn = fn if isinstance(fn, dict) else {}
+            events.append(ToolIntent(
+                str(tc.get("id", "")),
+                str(fn.get("name", "") or ""),
+                # arguments 可能是对象，也可能是 JSON 字符串——解不出来的字符串
+                # 由 _as_arguments_dict 原样保留，不丢也不抛。
+                _as_arguments_dict(fn.get("arguments")),
+            ))
     return events
 
 
@@ -408,6 +442,46 @@ def _events_pi(d: dict) -> List[OutputEvent]:
     return events
 
 
+def _as_arguments_dict(value) -> dict:
+    """
+    工具参数 → dict，永远是 dict（OutputEvent 的约定，见 ToolIntent）。
+
+    有些格式（codex 老版本、kimi）把参数编码成 JSON 字符串。解码责任留在
+    分类函数这一侧，消费方只看到一种形状。解不出来的字符串**不丢弃**——
+    原样塞进 {"arguments": ...}，因为"参数长什么样"本身就是排查 CLI 格式
+    漂移时最想看到的东西；丢了就等于把线索删了。
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"arguments": value}
+        return parsed if isinstance(parsed, dict) else {"arguments": value}
+    return {}
+
+
+def _claude_tool_result_text(content) -> str:
+    """
+    tool_result.content 的两种编码 → 一段文本。
+
+    数组那种编码踩过一次真实的坑：Read 命中图片文件时，数组里会混进一个
+    **没有 .text 的 image block**，直接 join 出来就是空字符串，整段工具输出
+    悄悄消失（renderer.js 已经为此修过一次）。所以这里只取 text block，
+    其余（image 等）跳过而不是当成空串拼进去。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(c.get("text", ""))
+            for c in content
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+    return ""
+
+
 def _events_claude(d: dict) -> List[OutputEvent]:
     t = d.get("type", "")
     events: List[OutputEvent] = []
@@ -426,13 +500,40 @@ def _events_claude(d: dict) -> List[OutputEvent]:
                 events.append(CostTotal(float(c)))
                 break
     elif t == "assistant":
+        # claude 的工具事件是**嵌在行里的 block**，不是行本身的形状（issue #75）：
+        # 一条 assistant 行的 message.content[] 里可以同时躺着 text / thinking /
+        # tool_use，所以这里一次遍历按原顺序产出多个事件，而不是每种 block 各扫
+        # 一遍——顺序就是模型实际输出的顺序，消费方能直接拿来重建时间线。
         msg = d.get("message", {})
         for block in msg.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "text":
                 events.append(TextChunk(block["text"]))
+            elif bt == "tool_use":
+                events.append(ToolIntent(
+                    str(block.get("id", "")),
+                    str(block.get("name", "")),
+                    block.get("input") if isinstance(block.get("input"), dict) else {},
+                ))
         usage = msg.get("usage", {})
         if usage:
             events.append(UsageProgress(int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))))
+    elif t == "user":
+        # 工具**结果**回到一条 user 行里（claude 把工具输出当成"用户"喂回给模型），
+        # 靠 tool_use_id 关联回上面那条 tool_use。一条 user 行也可能只是普通提示
+        # 文本，那就一个事件都不产出——探测器按"整份日志里这个形状有没有产出过
+        # 事件"判断，所以不会把这种正常情况误报成异常。
+        msg = d.get("message", {})
+        for block in msg.get("content", []):
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            events.append(ToolOutcome(
+                str(block.get("tool_use_id", "")),
+                _claude_tool_result_text(block.get("content")),
+                bool(block.get("is_error")),
+            ))
     elif t == "usage":
         events.append(UsageDelta(int(d.get("input_tokens", 0)), int(d.get("output_tokens", 0))))
         c = d.get("cost_usd") or d.get("total_cost_usd", 0)
@@ -441,8 +542,149 @@ def _events_claude(d: dict) -> List[OutputEvent]:
     return events
 
 
+def _codex_tool_result_text(result) -> str:
+    """
+    codex flat tool_result 的 result 有三种编码 → 一段文本。
+
+    第三种（既不是字符串也不是 content 数组，而是个结构化对象，比如
+    {"exit_code":0,...}）如果返回空串，就等于把一条真实结果悄悄丢掉了——
+    所以序列化成 JSON 而不是放弃。ensure_ascii=False 保证中文输出还是中文。
+    """
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        return "\n".join(
+            str(c.get("text", "")) for c in result if isinstance(c, dict)
+        )
+    if result is None:
+        return ""
+    return json.dumps(result, ensure_ascii=False)
+
+
+# item.* 生命周期族里算作"工具调用"的 item 类型（issue #77）。
+# command_execution 单独处理（它的名字/参数/错误判定都自成一套）；下面这三种
+# 走同一条通用路径，只是名字和参数的取法各不相同。
+_CODEX_GENERIC_TOOL_ITEMS = ("mcp_tool_call", "web_search", "collab_tool_call")
+# 这三个 status 值表示失败，其余（包括缺失）都算成功。
+_CODEX_FAILED_STATUSES = frozenset({"cancelled", "error", "failed"})
+
+
+def _codex_item_tool_name(item: dict) -> str:
+    it = item.get("type")
+    if it == "web_search":
+        return "WebSearch"
+    if it == "mcp_tool_call":
+        return str(item.get("tool") or "MCP")
+    return str(item.get("tool") or "Collab")
+
+
+def _codex_item_arguments(item: dict) -> dict:
+    it = item.get("type")
+    if it == "web_search":
+        # query 可能直接挂在 item 上，也可能藏在 action 里，而 action 里又分
+        # 单值 query 和列表 queries 两种写法——三种都见过，取到哪个算哪个。
+        query = item.get("query")
+        if isinstance(query, str) and query.strip():
+            return {"query": query.strip()}
+        action = item.get("action")
+        if isinstance(action, dict):
+            if action.get("query"):
+                return {"query": str(action["query"])}
+            queries = action.get("queries")
+            if isinstance(queries, list) and queries:
+                return {"query": str(queries[0])}
+        return {"query": ""}
+    if it == "mcp_tool_call":
+        return {
+            "server": item.get("server"),
+            "tool": item.get("tool"),
+            "arguments": item.get("arguments"),
+        }
+    return {
+        "tool": item.get("tool"),
+        "prompt": item.get("prompt"),
+        "agents": item.get("receiver_thread_ids"),
+    }
+
+
+def _codex_item_events(item: dict, completed: bool) -> List[OutputEvent]:
+    """
+    一条 item.started / item.completed → 零或多个工具事件。
+
+    completed=True 时**总是同时**产出 intent 和 outcome，即使前面已经来过
+    item.started。因为 completion 可以在完全没有 started 的情况下直接到达
+    （renderer.js 专门为此在找不到卡片时补建一张），而纯函数分类器没法知道
+    自己有没有见过那条 started——"见过没有"是渲染器的本地状态，不是这一行
+    的内容。产出重复的 intent 由消费方按 call_id 去重，比丢掉一次真实调用
+    安全得多。
+    """
+    it = item.get("type")
+    call_id = str(item.get("id", ""))
+
+    if it == "command_execution":
+        # command 原样带出。renderer.js 会把 `/bin/bash -lc "..."` 外壳拆掉，
+        # 那是显示层的事——真正执行的就是带壳的那条。
+        intent = ToolIntent(call_id, "Bash", {"command": str(item.get("command", ""))})
+        if not completed:
+            return [intent]
+        # exit_code 缺失和 exit_code == 0 **都不是失败**，不能混为一谈：
+        # `int(item.get("exit_code") or 0)` 之类的写法会把两者压成同一个值，
+        # 恰好在这里是对的，但一旦语义反过来（缺失=未知失败）就会静默出错。
+        exit_code = item.get("exit_code")
+        is_error = exit_code is not None and exit_code != 0
+        return [intent, ToolOutcome(call_id, str(item.get("aggregated_output") or ""), is_error)]
+
+    if it in _CODEX_GENERIC_TOOL_ITEMS:
+        intent = ToolIntent(call_id, _codex_item_tool_name(item), _codex_item_arguments(item))
+        if not completed:
+            return [intent]
+        # 通用工具没有 exit_code，失败靠 status 判定——同一个格式里两套错误
+        # 判定规则，按 item 类型分。
+        is_error = str(item.get("status", "")) in _CODEX_FAILED_STATUSES
+        # renderer.js 在这里合成的是给人看的中文短句（"已完成网络搜索。"），
+        # 那是显示层的措辞，不是数据；这里带出真实结果，没有就留空。
+        result = item.get("error") if is_error and item.get("error") is not None else item.get("result")
+        return [intent, ToolOutcome(call_id, _codex_tool_result_text(result), is_error)]
+
+    # todo_list 不是工具调用，是计划/进度面板（它也是唯一一种会在 completed
+    # 之前反复推 item.updated 快照的 item 类型）；agent_message 走上面的文本
+    # 提取；file_change 是文件卡片。三者都不产出工具事件。
+    return []
+
+
 def _events_codex(d: dict) -> List[OutputEvent]:
     t = d.get("type", "")
+    if t in ("item.started", "item.completed"):
+        item = d.get("item")
+        if isinstance(item, dict):
+            events = _codex_item_events(item, completed=(t == "item.completed"))
+            if events:
+                return events
+    if t == "tool_call":
+        # codex 用**两套完全不同的表示**描述工具活动：这里的扁平
+        # tool_call/tool_result 对，以及 item.* 生命周期族（issue #77）。
+        # 两套并存，不是新旧替代关系，别把哪一套当成"过时的"删掉。
+        #
+        # 关联 id 的字段名是**不对称的**：请求行叫 id，结果行叫 tool_call_id。
+        # 归一化的就是这个字段名。
+        #
+        # 请求行没有 id 时，call_id 落成空串——**故意不学 renderer.js 现造一个
+        # 随机 id**（它那样做只是为了给 DOM 元素一个 key）。造出来的 id 永远
+        # 匹配不上任何结果，等于凭空捏造一条不存在的关联；空串至少诚实地说
+        # "这条关联不上"，消费方按空 call_id 一律当作不可关联处理即可。
+        return [ToolIntent(
+            str(d.get("id", "")),
+            str(d.get("name", "") or ""),
+            # name/arguments 各有一个备用字段名，是 Codex CLI 版本漂移留下的：
+            # 磁盘上的老日志用的是 input。
+            _as_arguments_dict(d.get("arguments") if d.get("arguments") is not None else d.get("input")),
+        )]
+    if t == "tool_result":
+        return [ToolOutcome(
+            str(d.get("tool_call_id", "")),
+            _codex_tool_result_text(d.get("result")),
+            bool(d.get("is_error")),
+        )]
     if t == "message" and d.get("role") == "assistant":
         return [
             TextChunk(block["text"])
@@ -481,6 +723,54 @@ def _events_codex(d: dict) -> List[OutputEvent]:
     return []
 
 
+# opencode 的 state.status 里表示"已收尾"和"失败"的取值。completed 算收尾但
+# 不算失败；error/failed 两者都算。
+_OPENCODE_TERMINAL_STATUSES = frozenset({"completed", "error", "failed"})
+_OPENCODE_FAILED_STATUSES = frozenset({"error", "failed"})
+
+
+def _opencode_tool_events(part: dict) -> List[OutputEvent]:
+    """
+    一条 opencode tool_use 行 → 工具事件（issue #78）。
+
+    opencode 跟其他所有格式都不一样：**请求和结果共用同一个事件类型**，同一
+    个行形状随着调用推进反复出现，区分二者的是嵌在里面的 state.status。
+
+    收尾状态的那一行**总是同时**产出 intent 和 outcome。renderer.js 是靠"这个
+    id 我见过没有"来决定要不要补一张请求卡片的，那是渲染器的本地状态，纯函数
+    分类器既没有也不该需要。无条件产出两个事件，输出就只取决于这一行本身；
+    而且在"running 那行压根没写进日志"的情况下也不会把这次调用整个丢掉。重复
+    的 intent 由消费方按 call_id 去重。
+
+    工具名**原样带出，不做规范化**。renderer.js 会把 bash/shell 映射成 Bash
+    之类，那是显示层的统一；这套词汇表的 name 承诺的是"这个 CLI 自己报的工具
+    名"。把 opencode 的 bash 改写成 claude 的 Bash 会让跨 CLI 对比*看起来*
+    整齐，实际却抹掉了"这是两个不同实现"这个真信息——想要规范视图的消费方
+    自己映射，反过来则不可能。state.input 同理，不做键名归一。
+    """
+    state = part.get("state")
+    state = state if isinstance(state, dict) else {}
+    metadata = state.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+
+    call_id = str(part.get("callID") or part.get("id") or "")
+    name = str(part.get("tool") or state.get("tool") or "")
+    intent = ToolIntent(call_id, name, _as_arguments_dict(state.get("input")))
+
+    status = str(state.get("status", ""))
+    if status not in _OPENCODE_TERMINAL_STATUSES:
+        return [intent]
+
+    output = state.get("output")
+    if output is None:
+        output = metadata.get("output")
+    # 失败有**两个互相独立**的信号，各自单独成立：终止状态是 error/failed，
+    # 或者 metadata.exit 是个非零值。exit 缺失和 exit == 0 都不算失败。
+    exit_code = metadata.get("exit")
+    is_error = status in _OPENCODE_FAILED_STATUSES or (exit_code is not None and exit_code != 0)
+    return [intent, ToolOutcome(call_id, str(output or ""), is_error)]
+
+
 def _events_opencode(d: dict) -> List[OutputEvent]:
     # Current OpenCode CLI output nests everything under a `part` object
     # (matching renderer.js's _opencodeText/_opencodeStepFinish, which read
@@ -497,7 +787,9 @@ def _events_opencode(d: dict) -> List[OutputEvent]:
     part = part if isinstance(part, dict) else {}
     events: List[OutputEvent] = []
 
-    if t == "text" and part.get("type") == "text":
+    if t == "tool_use":
+        events.extend(_opencode_tool_events(part))
+    elif t == "text" and part.get("type") == "text":
         text = part.get("text")
         if text:
             events.append(TextChunk(text))
@@ -553,6 +845,20 @@ def _shape_by_type(d: dict) -> str:
     return str(d.get("type", ""))
 
 
+def _shape_kimi(d: dict) -> str:
+    """
+    kimi 判别：形状名是 `role`，只有 meta 这一类再用 `type` 细分。
+
+    这就是 #74 里坚持"判别字段必须按类型可配"的那个具体理由——kimi 的行
+    根本没有顶层 type，用默认判别会把整份日志压成同一个空形状，覆盖率探测
+    直接失去意义。改这里，不要去改探测器。
+    """
+    role = str(d.get("role", ""))
+    if role == "meta":
+        return f"meta/{d.get('type', '')}"
+    return role
+
+
 # 声明"本来就该沉默"的形状：这些行确实不产生任何 OutputEvent，而且是设计
 # 如此，不是漏掉了。少了这份声明，探测器会把每条会话横幅都报成异常，噪音
 # 大到没人会看——它的价值完全取决于这份清单是准的。
@@ -572,6 +878,40 @@ _SILENT_PI = frozenset({
     # agent_end 会把本轮所有 message 再列一遍。渲染器读它，我们**故意**不读
     # ——读了就会和 message_end 把同一份文本/用量记两遍。这是有意的沉默。
     "agent_end",
+})
+
+# claude 的 switch 里没有一条显式 no-op case——它那五种形状全都会渲染点什么。
+# 所以这两条都是"超出 renderer no-op 集"的额外声明，理由各自写在下面。
+_SILENT_CLAUDE = frozenset({
+    "system",            # subtype=init 的就绪横幅：模型名 + 工具数，没有可归一化的内容
+    "rate_limit_event",  # 每次请求都带一份限额快照，绝大多数是 allowed；纯运行时状态，
+                         # 不属于任务"产出"的任何一维（文本/用量/工具）
+})
+
+# codex 的 renderer switch 里显式 no-op 的是 turn.started / turn.ended，其余
+# 几条是超出那批的额外声明，理由写在各自后面。
+_SILENT_CODEX = frozenset({
+    "turn.started", "turn.ended",
+    "thread.started",  # 只被 _extract_codex 读走 thread_id
+    "thread.ended",    # 收尾横幅，内容都在 turn.completed 里
+    "reasoning",       # 思考过程；不是答复文本，混进 text 会污染工作流取值
+    "item.updated",    # 只有 todo_list 会推这个阶段，而 todo_list 不是工具调用
+    # CLI 级终止错误（限流/鉴权失败/进程崩溃）。渲染器会显示，我们这边没有
+    # 对应的事件种类——错误还不在这套词汇表里，等真需要时再加一个成员，不要
+    # 硬塞进 TextChunk。
+    "turn.failed", "error",
+})
+
+# kimi 的形状名来自 _shape_kimi（role，meta 再按 type 细分），所以这里写的是
+# role 值而不是 type 值。
+_SILENT_KIMI = frozenset({
+    "user",                        # 回放里的用户提示，不是任务产出
+    "meta/session.resume_hint",    # 只被 _extract_kimi 读走 session_id
+})
+
+_SILENT_OPENCODE = frozenset({
+    "step_start",  # 一步的开始横幅，用量都在 step_finish 上
+    "reasoning",   # 同 codex：思考过程不是答复文本
 })
 
 
@@ -737,6 +1077,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         build_inner_cmd=_build_claude,
         extract_session_id=_extract_claude,
         parse_output_events=_events_claude,
+        silent_shapes=_SILENT_CLAUDE,
     ),
     "codex": AccountTypeSpec(
         id="codex", label="Codex CLI",
@@ -750,6 +1091,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         extract_session_id=_extract_codex,
         usage_status_cmd="coderfleet-usage-status codex 2>&1",
         parse_output_events=_events_codex,
+        silent_shapes=_SILENT_CODEX,
     ),
     "opencode": AccountTypeSpec(
         id="opencode", label="OpenCode",
@@ -767,6 +1109,7 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         build_inner_cmd=_build_opencode,
         extract_session_id=_extract_opencode,
         parse_output_events=_events_opencode,
+        silent_shapes=_SILENT_OPENCODE,
     ),
     "hermes": AccountTypeSpec(
         id="hermes", label="Hermes Agent",
@@ -822,6 +1165,8 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
         build_inner_cmd=_build_kimi,
         extract_session_id=_extract_kimi,
         parse_output_events=_events_kimi,
+        shape_of=_shape_kimi,
+        silent_shapes=_SILENT_KIMI,
     ),
     "pi": AccountTypeSpec(
         id="pi", label="Pi Agent",

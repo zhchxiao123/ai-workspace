@@ -381,6 +381,72 @@ def test_detect_unrecognized_shapes_honours_a_non_type_discriminator() -> None:
     assert report == ShapeCoverage("pi", {"tool": 1})
 
 
+def test_detect_unrecognized_shapes_clean_on_a_realistic_full_claude_log() -> None:
+    log = "\n".join([
+        json.dumps({"type": "system", "subtype": "init", "model": "claude-opus-5", "tools": ["Read"]}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Let me look."},
+            {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/a"}},
+        ], "usage": {"input_tokens": 50, "output_tokens": 10}}}),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "file body"},
+        ]}}),
+        json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed"}}),
+        json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}}),
+        json.dumps({"type": "result", "result": "Done.", "cost_usd": 0.02, "session_id": "s1"}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "claude") == ShapeCoverage("claude", {})
+
+
+def test_detect_unrecognized_shapes_clean_on_a_realistic_full_codex_log() -> None:
+    # Carries both of codex's parallel tool representations: the flat
+    # tool_call/tool_result pair and the item.* lifecycle family.
+    log = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "th_1"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "reasoning", "text": "thinking"}),
+        json.dumps({"type": "tool_call", "id": "call_1", "name": "shell", "arguments": {"command": "ls"}}),
+        json.dumps({"type": "tool_result", "tool_call_id": "call_1", "result": "README.md"}),
+        json.dumps({"type": "item.started", "item": {"id": "it_1", "type": "command_execution", "command": "ls"}}),
+        json.dumps({"type": "item.updated", "item": {"id": "it_2", "type": "todo_list", "items": []}}),
+        json.dumps({"type": "item.completed", "item": {
+            "id": "it_1", "type": "command_execution", "command": "ls",
+            "aggregated_output": "README.md", "exit_code": 0,
+        }}),
+        json.dumps({"type": "item.completed", "item": {
+            "id": "it_3", "type": "agent_message", "text": "Done.",
+        }}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 150, "output_tokens": 35}}),
+        json.dumps({"type": "turn.ended"}),
+        json.dumps({"type": "thread.ended", "result": "ok"}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "codex") == ShapeCoverage("codex", {})
+
+
+def test_detect_unrecognized_shapes_clean_on_a_realistic_full_opencode_log() -> None:
+    log = "\n".join([
+        json.dumps({"type": "step_start", "part": {"type": "step-start"}}),
+        json.dumps({"type": "reasoning", "part": {"type": "reasoning", "text": "thinking"}}),
+        json.dumps({"type": "tool_use", "part": {
+            "type": "tool", "callID": "oc_1", "tool": "bash",
+            "state": {"status": "running", "input": {"command": "ls"}},
+        }}),
+        json.dumps({"type": "tool_use", "part": {
+            "type": "tool", "callID": "oc_1", "tool": "bash",
+            "state": {"status": "completed", "input": {"command": "ls"},
+                      "output": "README.md", "metadata": {"exit": 0}},
+        }}),
+        json.dumps({"type": "text", "part": {"type": "text", "text": "Done."}}),
+        json.dumps({"type": "step_finish", "part": {
+            "type": "step-finish", "tokens": {"input": 100, "output": 30}, "cost": 0.01,
+        }}),
+    ])
+
+    assert detect_unrecognized_shapes(log, "opencode") == ShapeCoverage("opencode", {})
+
+
 def test_detect_unrecognized_shapes_empty_for_type_without_classifier() -> None:
     # hermes is plain text, not JSONL — it has no classifier, so there is no
     # coverage claim to check and nothing to report.

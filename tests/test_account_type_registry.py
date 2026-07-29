@@ -134,8 +134,86 @@ def test_events_kimi_list_content_yields_text_chunk_per_text_block() -> None:
     assert _events_kimi(line) == [TextChunk("part one"), TextChunk("part two")]
 
 
-def test_events_kimi_ignores_non_assistant_role() -> None:
-    assert _events_kimi({"role": "tool", "content": "README.md"}) == []
+def test_events_kimi_ignores_roles_that_carry_no_output() -> None:
+    # Was written against the `tool` role back when nothing classified it; #79
+    # gave that role tool outcomes, so the claim moved to the roles that really
+    # do stay silent.
+    assert _events_kimi({"role": "meta", "type": "session.resume_hint", "session_id": "s1"}) == []
+    assert _events_kimi({"role": "user", "content": "hello"}) == []
+
+
+def test_events_kimi_assistant_yields_one_tool_intent_per_tool_call() -> None:
+    # #71's User Story 5 claimed kimi emits no tool events. It does — OpenAI
+    # style, on an array carried by an assistant-role line. See the correction
+    # comment on #71.
+    line = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "tc_1", "function": {"name": "Bash", "arguments": {"command": "ls"}}},
+            {"id": "tc_2", "function": {"name": "Read", "arguments": {"path": "/a"}}},
+        ],
+    }
+    assert _events_kimi(line) == [
+        ToolIntent("tc_1", "Bash", {"command": "ls"}),
+        ToolIntent("tc_2", "Read", {"path": "/a"}),
+    ]
+
+
+def test_events_kimi_assistant_yields_text_alongside_tool_calls() -> None:
+    line = {
+        "role": "assistant",
+        "content": "Let me look.",
+        "tool_calls": [{"id": "tc_1", "function": {"name": "Bash", "arguments": {}}}],
+    }
+    assert _events_kimi(line) == [
+        TextChunk("Let me look."),
+        ToolIntent("tc_1", "Bash", {}),
+    ]
+
+
+def test_events_kimi_decodes_json_encoded_tool_arguments() -> None:
+    line = {"role": "assistant", "tool_calls": [
+        {"id": "tc_1", "function": {"name": "Bash", "arguments": '{"command": "ls"}'}},
+    ]}
+    assert _events_kimi(line) == [ToolIntent("tc_1", "Bash", {"command": "ls"})]
+
+
+def test_events_kimi_keeps_unparseable_tool_arguments_string() -> None:
+    # Neither discarded nor allowed to raise — the classifier stays total.
+    line = {"role": "assistant", "tool_calls": [
+        {"id": "tc_1", "function": {"name": "Bash", "arguments": "{not json"}},
+    ]}
+    assert _events_kimi(line) == [ToolIntent("tc_1", "Bash", {"arguments": "{not json"})]
+
+
+def test_events_kimi_tool_role_yields_tool_outcome() -> None:
+    line = {"role": "tool", "tool_call_id": "tc_1", "content": "README.md"}
+    assert _events_kimi(line) == [ToolOutcome("tc_1", "README.md", False)]
+
+
+def test_events_kimi_tool_role_reports_success_because_it_carries_no_error_flag() -> None:
+    # kimi's tool lines have no error field at all, unlike every other format.
+    # The decision (documented on the classifier) is to report False rather than
+    # guess from the content.
+    line = {"role": "tool", "tool_call_id": "tc_1", "content": "Error: no such file"}
+    assert _events_kimi(line) == [ToolOutcome("tc_1", "Error: no such file", False)]
+
+
+def test_events_kimi_still_reports_no_token_or_cost_usage() -> None:
+    # A known gap preserved bug-for-bug since #70, explicitly not fixed here.
+    line = {"role": "assistant", "content": "hi", "usage": {"input_tokens": 10, "output_tokens": 2}}
+    assert _events_kimi(line) == [TextChunk("hi")]
+
+
+def test_kimi_discriminates_line_shape_on_role_not_type() -> None:
+    # kimi is the one type whose lines are named by `role`; `type` only
+    # sub-classifies its meta lines. Read through the registry's own
+    # mechanism — the coverage detector never mentions either field name.
+    shape_of = ACCOUNT_TYPES["kimi"].shape_of
+    assert shape_of({"role": "assistant", "content": "hi"}) == "assistant"
+    assert shape_of({"role": "tool", "tool_call_id": "tc_1"}) == "tool"
+    assert shape_of({"role": "meta", "type": "session.resume_hint"}) == "meta/session.resume_hint"
 
 
 # ── _events_grok ───────────────────────────────────────────────────────
@@ -328,6 +406,115 @@ def test_events_claude_ignores_unknown_event_types() -> None:
     assert _events_claude({"type": "rate_limit_event"}) == []
 
 
+def test_events_claude_assistant_yields_one_tool_intent_per_tool_use_block() -> None:
+    # claude is the first format whose tool events are nested *inside* a line
+    # rather than being the line's own shape, and the first where one line
+    # yields several events.
+    line = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "Let me look."},
+                {"type": "thinking", "thinking": "reasoning..."},
+                {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/a"}},
+                {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "ls"}},
+            ],
+        },
+    }
+    assert _events_claude(line) == [
+        TextChunk("Let me look."),
+        ToolIntent("toolu_1", "Read", {"file_path": "/a"}),
+        ToolIntent("toolu_2", "Bash", {"command": "ls"}),
+    ]
+
+
+def test_events_claude_assistant_keeps_text_and_usage_alongside_tool_intents() -> None:
+    line = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}},
+                {"type": "text", "text": "done"},
+            ],
+            "usage": {"input_tokens": 7, "output_tokens": 3},
+        },
+    }
+    assert _events_claude(line) == [
+        ToolIntent("toolu_1", "Read", {}),
+        TextChunk("done"),
+        UsageProgress(7, 3),
+    ]
+
+
+def test_events_claude_user_tool_result_with_string_content() -> None:
+    line = {
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "README.md"},
+        ]},
+    }
+    assert _events_claude(line) == [ToolOutcome("toolu_1", "README.md", False)]
+
+
+def test_events_claude_user_tool_result_with_content_block_array() -> None:
+    line = {
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "text", "text": "line one"},
+                {"type": "text", "text": "line two"},
+            ]},
+        ]},
+    }
+    assert _events_claude(line) == [ToolOutcome("toolu_1", "line one\nline two", False)]
+
+
+def test_events_claude_user_tool_result_keeps_text_when_array_mixes_an_image_block() -> None:
+    # Read hitting an image file puts a text-less image block in the array;
+    # joining naively yields "" and silently loses the result. renderer.js
+    # already had to fix exactly this once.
+    line = {
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": [
+                {"type": "image", "source": {"data": "base64..."}},
+                {"type": "text", "text": "the actual output"},
+            ]},
+        ]},
+    }
+    assert _events_claude(line) == [ToolOutcome("toolu_1", "the actual output", False)]
+
+
+def test_events_claude_user_tool_result_carries_error_flag() -> None:
+    line = {
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "boom", "is_error": True},
+        ]},
+    }
+    assert _events_claude(line) == [ToolOutcome("toolu_1", "boom", True)]
+
+
+def test_events_claude_user_yields_one_outcome_per_tool_result_block() -> None:
+    line = {
+        "type": "user",
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "a"},
+            {"type": "text", "text": "an ordinary user turn, not a tool result"},
+            {"type": "tool_result", "tool_use_id": "toolu_2", "content": "b"},
+        ]},
+    }
+    assert _events_claude(line) == [
+        ToolOutcome("toolu_1", "a", False),
+        ToolOutcome("toolu_2", "b", False),
+    ]
+
+
+def test_events_claude_user_without_tool_results_yields_nothing() -> None:
+    line = {"type": "user", "message": {"content": [{"type": "text", "text": "hello"}]}}
+    assert _events_claude(line) == []
+
+
 # ── _events_codex ──────────────────────────────────────────────────────
 def test_events_codex_legacy_message_role_yields_text_chunks() -> None:
     line = {
@@ -350,8 +537,11 @@ def test_events_codex_item_completed_agent_message_with_no_text_yields_nothing()
     assert _events_codex(line) == []
 
 
-def test_events_codex_item_completed_ignores_non_agent_message_items() -> None:
-    line = {"type": "item.completed", "item": {"id": "item_1", "type": "command_execution"}}
+def test_events_codex_item_completed_yields_no_text_for_non_agent_message_items() -> None:
+    # Was written against `command_execution` when no item type classified at
+    # all; #77 gave that type tool events, so the "not a text item" claim moved
+    # to `file_change` — a display-only surface that classifies as nothing.
+    line = {"type": "item.completed", "item": {"id": "item_1", "type": "file_change", "changes": []}}
     assert _events_codex(line) == []
 
 
@@ -379,6 +569,195 @@ def test_events_codex_turn_completed_with_non_dict_usage_yields_nothing() -> Non
 
 def test_events_codex_ignores_unrelated_event_types() -> None:
     assert _events_codex({"type": "turn.started"}) == []
+
+
+def test_events_codex_flat_tool_call_yields_tool_intent() -> None:
+    line = {"type": "tool_call", "id": "call_1", "name": "shell", "arguments": {"command": "ls"}}
+    assert _events_codex(line) == [ToolIntent("call_1", "shell", {"command": "ls"})]
+
+
+def test_events_codex_flat_tool_call_accepts_the_alternate_input_spelling() -> None:
+    # Older Codex CLI versions wrote `input` where current ones write
+    # `arguments`; real logs on disk predate the rename.
+    line = {"type": "tool_call", "id": "call_1", "name": "shell", "input": {"command": "ls"}}
+    assert _events_codex(line) == [ToolIntent("call_1", "shell", {"command": "ls"})]
+
+
+def test_events_codex_flat_tool_call_decodes_json_encoded_arguments() -> None:
+    line = {"type": "tool_call", "id": "call_1", "name": "shell", "arguments": '{"command": "ls"}'}
+    assert _events_codex(line) == [ToolIntent("call_1", "shell", {"command": "ls"})]
+
+
+def test_events_codex_flat_tool_call_keeps_unparseable_arguments_string() -> None:
+    line = {"type": "tool_call", "id": "call_1", "name": "shell", "arguments": "not json"}
+    assert _events_codex(line) == [ToolIntent("call_1", "shell", {"arguments": "not json"})]
+
+
+def test_events_codex_flat_tool_call_without_id_yields_an_empty_correlation_id() -> None:
+    # Explicitly NOT the renderer's behaviour, which invents a random id purely
+    # to key a DOM element. A synthesised id can never match an outcome, so it
+    # would fabricate a correlation that does not exist.
+    line = {"type": "tool_call", "name": "shell", "arguments": {}}
+    assert _events_codex(line) == [ToolIntent("", "shell", {})]
+
+
+def test_events_codex_flat_tool_result_normalizes_its_correlation_field() -> None:
+    # Asymmetric on purpose: the request names the id `id`, the result names it
+    # `tool_call_id`. Both land on the vocabulary's single `call_id`.
+    line = {"type": "tool_result", "tool_call_id": "call_1", "result": "total 0"}
+    assert _events_codex(line) == [ToolOutcome("call_1", "total 0", False)]
+
+
+def test_events_codex_flat_tool_result_joins_content_block_array() -> None:
+    line = {
+        "type": "tool_result", "tool_call_id": "call_1",
+        "result": [{"text": "line one"}, {"text": "line two"}],
+    }
+    assert _events_codex(line) == [ToolOutcome("call_1", "line one\nline two", False)]
+
+
+def test_events_codex_flat_tool_result_serializes_a_structured_object_result() -> None:
+    # The third encoding: an object with no text at all. Yielding "" here would
+    # silently drop a real result, so it is serialized instead.
+    line = {"type": "tool_result", "tool_call_id": "call_1", "result": {"exit_code": 0, "ok": True}}
+    assert _events_codex(line) == [
+        ToolOutcome("call_1", '{"exit_code": 0, "ok": true}', False)
+    ]
+
+
+def test_events_codex_flat_tool_result_carries_error_flag() -> None:
+    line = {"type": "tool_result", "tool_call_id": "call_1", "result": "boom", "is_error": True}
+    assert _events_codex(line) == [ToolOutcome("call_1", "boom", True)]
+
+
+# ── _events_codex: item.* lifecycle family (issue #77) ─────────────────
+def test_events_codex_item_started_command_execution_yields_tool_intent() -> None:
+    line = {
+        "type": "item.started",
+        "item": {"id": "it_1", "type": "command_execution", "command": '/bin/bash -lc "ls -la"'},
+    }
+    # The command is carried raw. renderer.js unwraps the /bin/bash -lc wrapper
+    # for display; what actually ran is the wrapped form.
+    assert _events_codex(line) == [
+        ToolIntent("it_1", "Bash", {"command": '/bin/bash -lc "ls -la"'})
+    ]
+
+
+def test_events_codex_item_completed_command_execution_yields_intent_and_outcome() -> None:
+    # A completion line can arrive with no preceding start line (the renderer
+    # defends against exactly this by synthesising the start card). A pure
+    # classifier cannot know whether it saw the start, so a completion always
+    # carries both events and consumers dedupe on call_id.
+    line = {
+        "type": "item.completed",
+        "item": {
+            "id": "it_1", "type": "command_execution",
+            "command": "ls", "aggregated_output": "README.md", "exit_code": 0,
+        },
+    }
+    assert _events_codex(line) == [
+        ToolIntent("it_1", "Bash", {"command": "ls"}),
+        ToolOutcome("it_1", "README.md", False),
+    ]
+
+
+def test_events_codex_command_execution_nonzero_exit_code_is_an_error() -> None:
+    line = {
+        "type": "item.completed",
+        "item": {"id": "it_1", "type": "command_execution", "command": "false",
+                 "aggregated_output": "", "exit_code": 1},
+    }
+    assert _events_codex(line)[1] == ToolOutcome("it_1", "", True)
+
+
+def test_events_codex_command_execution_absent_exit_code_is_not_an_error() -> None:
+    # A zero exit code and an absent one are both non-failures, and must not be
+    # conflated — `exit_code or 0` would be right for one and wrong for neither.
+    line = {
+        "type": "item.completed",
+        "item": {"id": "it_1", "type": "command_execution", "command": "ls", "aggregated_output": "x"},
+    }
+    assert _events_codex(line)[1] == ToolOutcome("it_1", "x", False)
+
+
+def test_events_codex_item_started_mcp_tool_call_yields_tool_intent() -> None:
+    line = {
+        "type": "item.started",
+        "item": {"id": "it_2", "type": "mcp_tool_call", "server": "coderfleet",
+                 "tool": "ask_user_question", "arguments": {"a": 1}},
+    }
+    assert _events_codex(line) == [ToolIntent(
+        "it_2", "ask_user_question",
+        {"server": "coderfleet", "tool": "ask_user_question", "arguments": {"a": 1}},
+    )]
+
+
+def test_events_codex_item_started_web_search_reads_a_top_level_query() -> None:
+    line = {"type": "item.started", "item": {"id": "it_3", "type": "web_search", "query": "python"}}
+    assert _events_codex(line) == [ToolIntent("it_3", "WebSearch", {"query": "python"})]
+
+
+def test_events_codex_item_started_web_search_reads_a_nested_action_query() -> None:
+    line = {
+        "type": "item.started",
+        "item": {"id": "it_3", "type": "web_search", "action": {"query": "python"}},
+    }
+    assert _events_codex(line) == [ToolIntent("it_3", "WebSearch", {"query": "python"})]
+
+
+def test_events_codex_item_started_web_search_reads_the_first_of_nested_queries() -> None:
+    line = {
+        "type": "item.started",
+        "item": {"id": "it_3", "type": "web_search", "action": {"queries": ["first", "second"]}},
+    }
+    assert _events_codex(line) == [ToolIntent("it_3", "WebSearch", {"query": "first"})]
+
+
+def test_events_codex_item_started_collab_tool_call_yields_tool_intent() -> None:
+    line = {
+        "type": "item.started",
+        "item": {"id": "it_4", "type": "collab_tool_call", "tool": "spawn_agent",
+                 "prompt": "go", "receiver_thread_ids": ["t1"]},
+    }
+    assert _events_codex(line) == [ToolIntent(
+        "it_4", "spawn_agent", {"tool": "spawn_agent", "prompt": "go", "agents": ["t1"]},
+    )]
+
+
+def test_events_codex_generic_tool_item_failure_is_determined_from_status() -> None:
+    for status in ("cancelled", "error", "failed"):
+        line = {
+            "type": "item.completed",
+            "item": {"id": "it_5", "type": "web_search", "query": "q", "status": status},
+        }
+        assert _events_codex(line)[1].is_error is True, status
+
+
+def test_events_codex_generic_tool_item_success_status_is_not_an_error() -> None:
+    line = {
+        "type": "item.completed",
+        "item": {"id": "it_5", "type": "mcp_tool_call", "tool": "t",
+                 "status": "completed", "result": {"Ok": "fine"}},
+    }
+    assert _events_codex(line)[1] == ToolOutcome("it_5", '{"Ok": "fine"}', False)
+
+
+def test_events_codex_todo_list_item_yields_no_tool_events_in_any_phase() -> None:
+    # todo_list is a plan/progress surface, not a tool call — and it is the only
+    # item type that pushes repeated snapshots through the update phase.
+    item = {"id": "it_6", "type": "todo_list", "items": [{"text": "a", "completed": False}]}
+    for phase in ("item.started", "item.updated", "item.completed"):
+        assert _events_codex({"type": phase, "item": item}) == [], phase
+
+
+def test_events_codex_item_updated_yields_nothing_for_any_item_type() -> None:
+    item = {"id": "it_1", "type": "command_execution", "command": "ls"}
+    assert _events_codex({"type": "item.updated", "item": item}) == []
+
+
+def test_events_codex_item_completed_agent_message_text_extraction_unchanged() -> None:
+    line = {"type": "item.completed", "item": {"id": "it_7", "type": "agent_message", "text": "answer"}}
+    assert _events_codex(line) == [TextChunk("answer")]
 
 
 # ── _events_opencode ───────────────────────────────────────────────────
@@ -434,6 +813,76 @@ def test_events_opencode_text_event_and_top_level_usage_both_fire_independently(
 
 def test_events_opencode_ignores_unrelated_event_types() -> None:
     assert _events_opencode({"type": "step_start", "part": {"type": "step-start"}}) == []
+
+
+# ── _events_opencode: tool calls (issue #78) ───────────────────────────
+def _oc_tool(state: dict, call_id: str = "oc_1", tool: str = "bash") -> dict:
+    return {"type": "tool_use", "part": {"type": "tool", "callID": call_id, "tool": tool, "state": state}}
+
+
+def test_events_opencode_running_tool_yields_intent_only() -> None:
+    line = _oc_tool({"status": "running", "input": {"command": "ls"}})
+    assert _events_opencode(line) == [ToolIntent("oc_1", "bash", {"command": "ls"})]
+
+
+def test_events_opencode_completed_tool_yields_intent_and_outcome() -> None:
+    # opencode is the only format whose request and result arrive on the SAME
+    # event type; a terminal line always carries both, because the classifier
+    # cannot know whether the running line was ever written.
+    line = _oc_tool({"status": "completed", "input": {"command": "ls"}, "output": "README.md"})
+    assert _events_opencode(line) == [
+        ToolIntent("oc_1", "bash", {"command": "ls"}),
+        ToolOutcome("oc_1", "README.md", False),
+    ]
+
+
+def test_events_opencode_terminal_line_alone_still_yields_both_events() -> None:
+    # The "terminal line only" ordering — a log where the running line was
+    # never written must not lose the fact that the tool was called at all.
+    line = _oc_tool({"status": "completed", "input": {}, "output": "x"})
+    assert [type(e).__name__ for e in _events_opencode(line)] == ["ToolIntent", "ToolOutcome"]
+
+
+def test_events_opencode_tool_id_falls_back_to_part_id() -> None:
+    line = {"type": "tool_use", "part": {"type": "tool", "id": "prt_9", "tool": "read",
+                                         "state": {"status": "running", "input": {}}}}
+    assert _events_opencode(line) == [ToolIntent("prt_9", "read", {})]
+
+
+def test_events_opencode_tool_name_falls_back_to_the_nested_state() -> None:
+    line = {"type": "tool_use", "part": {"type": "tool", "callID": "oc_1",
+                                         "state": {"status": "running", "tool": "grep", "input": {}}}}
+    assert _events_opencode(line) == [ToolIntent("oc_1", "grep", {})]
+
+
+def test_events_opencode_tool_name_is_not_canonicalised() -> None:
+    # renderer.js maps bash/shell → "Bash" for display. The classifier reports
+    # what the CLI actually called it — see the comment on the classifier.
+    line = _oc_tool({"status": "running", "input": {}}, tool="webfetch")
+    assert _events_opencode(line)[0].name == "webfetch"
+
+
+def test_events_opencode_result_text_falls_back_to_metadata_output() -> None:
+    line = _oc_tool({"status": "completed", "input": {}, "metadata": {"output": "from metadata"}})
+    assert _events_opencode(line)[1] == ToolOutcome("oc_1", "from metadata", False)
+
+
+def test_events_opencode_error_status_is_a_failure() -> None:
+    for status in ("error", "failed"):
+        line = _oc_tool({"status": status, "input": {}, "output": "boom"})
+        assert _events_opencode(line)[1].is_error is True, status
+
+
+def test_events_opencode_nonzero_metadata_exit_is_a_failure_on_its_own() -> None:
+    # Two independent failure signals; either alone is sufficient. Here the
+    # status says success and only the exit code says otherwise.
+    line = _oc_tool({"status": "completed", "input": {}, "output": "", "metadata": {"exit": 2}})
+    assert _events_opencode(line)[1].is_error is True
+
+
+def test_events_opencode_zero_metadata_exit_is_not_a_failure() -> None:
+    line = _oc_tool({"status": "completed", "input": {}, "output": "ok", "metadata": {"exit": 0}})
+    assert _events_opencode(line)[1] == ToolOutcome("oc_1", "ok", False)
 
 
 # ── registry-wide coverage claims (issue #74) ──────────────────────────

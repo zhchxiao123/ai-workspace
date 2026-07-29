@@ -52,6 +52,29 @@ Continuation addendum for the load-bearing files below:
   only tool permissions: normal mode pre-approves AskUserQuestion and
   Continuation; auto mode pre-approves Continuation and explicitly disallows
   AskUserQuestion. Never gate the whole MCP config on `auto`.
+  Tool-call events (issues #74/#75/#77/#78/#79): each account type's shape
+  discriminator (`shape_of`) is configurable per type, not a shared default —
+  kimi has no top-level `type` and must discriminate by `role` (`_shape_kimi`),
+  or the coverage detector collapses every kimi line into one shape and stops
+  meaning anything. `_as_arguments_dict` never drops an unparseable
+  JSON-string argument; it keeps the raw string under `{"arguments": ...}`
+  because the argument shape itself is the signal you want when a CLI's wire
+  format drifts. `_claude_tool_result_text` only joins `text` blocks — an
+  `image` block (e.g. a Read hit on an image file) has no `.text` and must be
+  skipped, not treated as empty, or the whole tool result silently vanishes
+  (renderer.js hit this exact bug once already). For codex `item.completed`
+  and opencode's terminal `state.status`, always emit both `ToolIntent` and
+  `ToolOutcome` together regardless of whether a `started`/running line was
+  ever seen — "seen before" is the renderer's local state, not something a
+  pure classifier can know, and de-duplicating repeated intents by `call_id`
+  is the consumer's job, not this module's. codex and opencode tool names are
+  passed through unnormalized by design — cross-CLI name mapping (e.g.
+  opencode's `bash` → `Bash`) belongs in renderer.js's display layer;
+  normalizing here would erase which CLI actually reported the call. Each
+  type's `silent_shapes` must stay in sync with the renderer's real no-op
+  cases plus any additional true no-ops (e.g. claude's `rate_limit_event`,
+  codex's `turn.failed`/`error` which has no event-vocabulary member yet) — an
+  incomplete list makes the coverage detector cry wolf on every normal line.
 
 - `coderfleet/server/telegram_bridge.py` — Telegram long-poll bridge: command routing, topic-per-project registration, broadcast, ASR. All state mutations (offset, per-chat sections, topic registry) must go through `_update_state`/`_set_chat_entry` — a synchronous read-modify-write with no `await` inside the mutator, so it's atomic under the event loop; a separate read-then-write reintroduces the race that `_advance_offset` was written to close (long-poll offset writeback must never clobber a `notify_task` mapping persisted while the poll was suspended). `_ensure_topic` concurrent-create resolves by "first registrant in the state file wins" — a thread created after losing the race is dropped, never re-registered. `is_configured()` is true if `token` and EITHER `chat_ids` OR `topic_group_id` is set — do not require both; group membership is its own trust boundary. `poll_timeout` is 25s, not 50s — proxied long-poll tunnels commonly kill idle connections at 30s+, so a 50s window causes a `ReadTimeout` every round; if you touch the poll loop, keep this under ~28s. `_advance_offset` runs unconditionally after each update regardless of handler success — a poison message must not stall the queue. `_hint_topic_permission_once`'s one-time flag is only persisted after the hint send succeeds — a failed send must retry next round, not burn the one-shot. On unknown/invalid references (expired conversation button, reply to an untracked message, a deleted topic thread) the handler must reject/warn explicitly and never silently fall back to "most recent" or a stale default — this class of bug recurred across #46-49 and #51-53 review passes. Broadcast excerpts are extracted by the bridge itself, not reused from the Digest's LLM summary — the Digest summary strips code blocks to `[代码略]` and truncates at 600 chars, which is unacceptable for a code-review broadcast; the bridge's own excerpt keeps code, caps at 3000 chars, with the full message still bounded by Telegram's 4096 hard limit.
 
