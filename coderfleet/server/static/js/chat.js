@@ -437,11 +437,24 @@ function renderChatSearchResults(results, query, deep = false, error = '') {
   }
 
   const rows = results.map(result => {
-    const target = encodeURIComponent(chatSearchTargetId(result));
-    const projectName = encodeURIComponent(result.project_name || '');
+    // .replace(/'/g, '%27')：encodeURIComponent 故意不转义单引号（它在 URI 里合法），
+    // 但这里的落点是单引号包住的 onclick JS 字符串参数——项目名/对话名带撇号
+    // （很常见，比如 "John's App"）就会破出字符串字面量。跟 chat.js:239 项目头部
+    // 渲染同一个项目名时用的是同一个修法，这里之前漏了。
+    const target = encodeURIComponent(chatSearchTargetId(result)).replace(/'/g, '%27');
+    const projectName = encodeURIComponent(result.project_name || '').replace(/'/g, '%27');
     const match = (result.matches || [])[0];
     const snippet = match ? `<div class="chat-search-match">${esc(match.field)}：${esc(match.snippet)}</div>` : '';
     const status = result.status ? `<span class="chat-search-status">${esc(result.status)}</span>` : '';
+    // 项目类型的结果额外带一个"+新建对话"快捷按钮——点击整行本来就只是展开/跳转到
+    // 那个项目分组，还是要再找它自己的"+"按钮，等于白搜；这里直接复用侧边栏项目
+    // 头部同一个 startNewChat/openEphemeralModalForProject 调用，跳过中间那一步。
+    const quickNewChatBtn = result.type === 'project' ? `
+        <button class="chat-search-quick-new-btn" onclick="event.stopPropagation(); quickStartNewChatForProject('${projectName}')" title="新建对话" aria-label="新建对话">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+        </button>` : '';
     return `
       <div class="chat-search-result" onclick="openChatSearchResult('${esc(result.type)}', '${target}', '${projectName}')">
         <div class="chat-search-result-main">
@@ -453,6 +466,7 @@ function renderChatSearchResults(results, query, deep = false, error = '') {
           <div class="chat-search-subtitle">${esc(result.subtitle || '')}</div>
           ${snippet}
         </div>
+        ${quickNewChatBtn}
       </div>`;
   }).join('');
 
@@ -512,6 +526,20 @@ function openChatSearchResult(type, encodedTarget, encodedProjectName) {
 
   rerenderChatProjectList();
   if (target) selectConversation(target);
+}
+
+// 项目类型搜索结果上的"+"快捷按钮：跳过"展开分组再手动去点它自己的+"这一步，
+// 直接复用侧边栏项目头部同一套判断（临时容器项目走弹窗，其余走 startNewChat）。
+function quickStartNewChatForProject(encodedProjectName) {
+  const projectName = decodeURIComponent(encodedProjectName || '');
+  if (!projectName) return;
+  clearChatSearchInput();
+  const proj = projectsCache.find(p => p.name === projectName);
+  if (proj && proj.ephemeral) {
+    openEphemeralModalForProject(proj.name, proj.account);
+  } else {
+    startNewChat({ projectName });
+  }
 }
 
 function saveChatCollapsedState() {

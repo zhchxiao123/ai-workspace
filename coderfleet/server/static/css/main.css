@@ -4024,6 +4024,7 @@
 
     .chat-search-result {
       display: flex;
+      align-items: flex-start;
       gap: 8px;
       padding: 8px 9px;
       border-radius: var(--radius);
@@ -4040,6 +4041,34 @@
     .chat-search-result-main {
       min-width: 0;
       flex: 1;
+    }
+
+    /* 项目类型搜索结果上的"+新建对话"快捷按钮——跟侧边栏项目头部的 proj-new-chat-btn
+       同一套外观/交互（hover 才显现），只是挂在搜索结果行上。 */
+    .chat-search-quick-new-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+      border-radius: var(--radius);
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
+    }
+
+    .chat-search-result:hover .chat-search-quick-new-btn {
+      opacity: 1;
+    }
+
+    .chat-search-quick-new-btn:hover {
+      color: var(--accent);
+      background: var(--bg);
     }
 
     .chat-search-title-row {
