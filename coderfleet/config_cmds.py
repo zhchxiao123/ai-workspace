@@ -10,7 +10,7 @@ from typing import Optional
 
 import click
 
-from coderfleet.config import container_timezone, ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
+from coderfleet.config import container_timezone, ensure_bind_mount_dir, ensure_workspace, load_config, parse_conf, remove_conf_entry, set_config, update_conf_field, write_conf_line
 from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types, env_auth_type_ids
 from coderfleet.ports import allocate_ide_port
 
@@ -120,7 +120,7 @@ def cmd_account_add(
 
     ensure_workspace(ws)
     write_conf_line(accounts_conf, tokens)
-    (ws / "accounts" / name).mkdir(parents=True, exist_ok=True)
+    ensure_bind_mount_dir(ws / "accounts" / name)
 
     click.secho(f"✓ 账号 '{name}' 已添加（类型：{acc_type}，认证：{auth}，代理：{proxy}）", fg="green")
     if auth == "env":

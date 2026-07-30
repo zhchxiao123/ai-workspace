@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from coderfleet.config import container_timezone, load_config, parse_conf
+from coderfleet.config import container_timezone, ensure_bind_mount_dir, load_config, parse_conf
 from coderfleet.account_type_registry import ACCOUNT_TYPES
 
 
@@ -98,7 +98,7 @@ def _login_single(ws: Path, target: str, *, replace_process: bool = True) -> int
     if r.returncode != 0:
         raise click.ClickException(f"镜像 {image} 不存在，请先执行：coderfleet build")
 
-    Path(auth_src).mkdir(parents=True, exist_ok=True)
+    ensure_bind_mount_dir(Path(auth_src))
     subprocess.run(["docker", "rm", "-f", login_ctr], capture_output=True)
 
     click.secho(f"账号容器未运行，启动临时认证容器 {login_ctr}...", fg="cyan")

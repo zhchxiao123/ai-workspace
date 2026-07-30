@@ -12,7 +12,7 @@ from typing import Any
 import click
 import yaml
 
-from coderfleet.config import container_timezone, load_config, parse_conf
+from coderfleet.config import container_timezone, ensure_bind_mount_dir, load_config, parse_conf
 from coderfleet.docker_socket import docker_socket_config_for_project, resolve_docker_socket
 from coderfleet.account_type_registry import ACCOUNT_TYPES, duplicate_account_types
 from coderfleet.ports import allocate_ide_port
@@ -221,7 +221,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         ctr_name = f"{acc_type}-{pname}"
         auth_src = f"./accounts/{paccount}"
 
-        (ws / "accounts" / paccount).mkdir(parents=True, exist_ok=True)
+        ensure_bind_mount_dir(ws / "accounts" / paccount)
 
         # 基础环境变量（所有类型共享）
         environment: dict[str, str] = {
@@ -279,7 +279,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
         for sec_name in secondary_names:
             sec_acc = accounts[sec_name]
             sec_spec = ACCOUNT_TYPES.get(sec_acc.get("TYPE", "codex"), ACCOUNT_TYPES["codex"])
-            (ws / "accounts" / sec_name).mkdir(parents=True, exist_ok=True)
+            ensure_bind_mount_dir(ws / "accounts" / sec_name)
             svc["volumes"].append(f"./accounts/{sec_name}:{sec_spec.auth_dir}")
             if sec_acc.get("AUTH", "login") == "env":
                 sec_env_file = sec_acc.get("ENV_FILE", "")
@@ -315,7 +315,7 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "CODERFLEET_IDE_BIND": "0.0.0.0" if ide_remote else "127.0.0.1",
             })
             # 持久化 code-server 的扩展/主题/设置目录，避免容器重建（apply/镜像更新）后丢失
-            (ws / "ide-data" / pname).mkdir(parents=True, exist_ok=True)
+            ensure_bind_mount_dir(ws / "ide-data" / pname)
             svc["volumes"].append(f"./ide-data/{pname}:/home/byclaw/.local/share/code-server")
 
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
