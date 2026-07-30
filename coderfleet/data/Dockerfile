@@ -142,6 +142,10 @@ RUN set -eux; \
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent \
     && pi --version
 
+# ── Trellis (engineering framework for AI coding) ─────────
+RUN npm install -g @mindfoldhq/trellis@latest \
+    && trellis --version
+
 # ── RTK (Rust Token Killer) ───────────────────────────────
 # CLI proxy that compresses common dev-command output before it reaches an
 # LLM's context. install.sh auto-detects arch (amd64/arm64) and verifies
