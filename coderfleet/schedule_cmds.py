@@ -67,8 +67,9 @@ def cmd_schedule_list() -> None:
 
     for s in schedules:
         flag = click.style("● 启用", fg="green") if s.get("enabled") else click.style("○ 停用", fg="yellow")
+        creator_flag = click.style("  [Agent 自建]", fg="magenta") if s.get("created_by") == "agent" else ""
         click.echo(
-            f"{flag}  {click.style(s['id'], fg='cyan')}  {s.get('name', '')}"
+            f"{flag}  {click.style(s['id'], fg='cyan')}  {s.get('name', '')}{creator_flag}"
         )
         click.echo(
             f"       规则：{_fmt_rule(s)}   目标：{_fmt_target(s)}   项目：{s.get('project_name') or '-'}"

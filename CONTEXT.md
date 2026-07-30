@@ -46,8 +46,17 @@ Account ──┐
 - **要多步、且后一步依赖前一步的上下文（交互式）** → 用 **Conversation**（串行链）。
 - **要多步、有分支/并行/审批/重试（自动化）** → 用 **Workflow**（模板 + 运行）。
 - **要跟踪一批工作的人工进度** → 用 **Board**，让卡片指向对应的会话或工作流运行。
-- **要定时跑** → 用 **Schedule**，目标选 Task 或 Workflow。
-- **要在当前会话稍后或等外部事件后继续** → 用 **Continuation**；它向原 Conversation 追加 Task。
+- **要定时跑** → 用 **Schedule**，目标选 Task 或 Workflow。人工经 Web UI/CLI 配置，或运行中的 agent 经 MCP `create_schedule` 自助创建。
+- **要在当前会话稍后或等外部事件后继续（只等一次）** → 用 **Continuation**；它向原 Conversation 追加 Task，到期或触发后即终止，不是重复计划。
+- **要让运行中的 agent 自己建一个长期循环检查（每天/每小时/cron）** → 用 **Schedule**，不要把 **Continuation** 拿来循环用——Continuation 的 fired 是终态，硬套循环等于每次都要重新武装一次，语义和生命周期都对不上。
+
+## Schedule 的创建者归属
+
+`Schedule` 有创建者维度：`created_by: human | agent`。人工经 Web UI/CLI 配置的是 `human`；运行中的 agent 经 MCP `create_schedule` 自助创建的是 `agent`，并额外记一条 `created_by_conversation_id`（哪条 Conversation 建的）。
+
+- **生效方式对等**：agent 创建的 Schedule 跟人工创建的一样，保存即 `enabled=True`、立刻生效——不因为创建者是 agent 就多一道人工确认闸，也不设频率下限；这是权衡后的决定，见 `docs/adr/0001-agent-self-service-schedules.md`。
+- **读写权限不对等**：项目内所有 Schedule 对 agent 可读（list/get，不分创建者）；但改/删/toggle 只能由 `created_by_conversation_id` 指向的那条 Conversation 自己发起——碰不到人工建的，也碰不到别的会话建的。
+- **范围恒等于调用方自己的 project/account**：`create_schedule` 不接受调用方以外的 `project_name`/`account`，服务端从请求的 Task 身份派生，不信任客户端传入值（跟 `ask_user_question`/`schedule_continuation` 从 `X-CoderFleet-Task-Id` 取身份是同一模式）。
 
 ## 退役与收敛方向
 

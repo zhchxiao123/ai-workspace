@@ -50,6 +50,33 @@ def test_schedule_list_renders_rows(monkeypatch):
     assert "从未" in result.output  # last_run_at None
 
 
+def test_schedule_list_flags_agent_created_schedules(monkeypatch):
+    payload = [
+        {
+            "id": "sched-1", "name": "每日构建", "enabled": True,
+            "schedule_type": "daily", "time_of_day": "09:30",
+            "target_type": "task", "project_name": "repo",
+            "next_run_at": "2026-07-11T09:30:00", "last_run_at": None,
+            "created_by": "agent",
+        },
+        {
+            "id": "sched-2", "name": "人工建的", "enabled": True,
+            "schedule_type": "daily", "time_of_day": "10:00",
+            "target_type": "task", "project_name": "repo",
+            "next_run_at": "2026-07-11T10:00:00", "last_run_at": None,
+            "created_by": "human",
+        },
+    ]
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: _FakeResp(json_data=payload))
+    result = CliRunner().invoke(schedule_cmds.schedule_group, ["list"])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    sched1_idx = next(i for i, l in enumerate(lines) if "sched-1" in l)
+    sched2_idx = next(i for i, l in enumerate(lines) if "sched-2" in l)
+    assert "Agent 自建" in lines[sched1_idx]
+    assert "Agent 自建" not in lines[sched2_idx]
+
+
 def test_schedule_list_empty(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda url, **kw: _FakeResp(json_data=[]))
     result = CliRunner().invoke(schedule_cmds.schedule_group, ["list"])

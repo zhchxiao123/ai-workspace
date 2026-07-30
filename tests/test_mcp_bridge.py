@@ -21,8 +21,20 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from coderfleet.server.auth import AuthMiddleware
 from coderfleet.server.mcp_bridge import build_intervention_mcp
-from coderfleet.server.models import AccountType, Conversation, Task, TaskStatus
+from coderfleet.server.models import AccountType, Conversation, Schedule, ScheduleType, Task, TaskStatus
 from coderfleet.server.scheduler import Scheduler
+
+
+def _agent_source_task(sched: Scheduler, *, task_id: str = "sched-mcp", conversation_id: str = "conv-sched-mcp") -> None:
+    Conversation(
+        id=conversation_id, name="agent session", account="alice", type=AccountType.claude,
+        project="/repo", project_name="repo",
+    ).save(sched.conversations_dir)
+    Task(
+        id=task_id, status=TaskStatus.running, account="alice", type=AccountType.claude,
+        prompt="watch CI", project="/repo", project_name="repo",
+        conversation_id=conversation_id,
+    ).save(sched.tasks_dir)
 
 
 @pytest.fixture(autouse=True)
@@ -368,3 +380,132 @@ def test_auth_middleware_exempts_mcp_but_still_protects_everything_else() -> Non
         f"/mcp must be exempt from the app's own API key — Claude's MCP client can't "
         f"provide it; got {mcp_resp.status_code}: {mcp_resp.text}"
     )
+
+
+def test_create_schedule_tool_persists_agent_owned_recurring_schedule(tmp_path: Path) -> None:
+    app, sched = _make_app_and_scheduler(tmp_path)
+    _agent_source_task(sched)
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with streamablehttp_client(
+                "http://testserver/mcp/",
+                headers={"x-coderfleet-task-id": "sched-mcp"},
+                httpx_client_factory=_asgi_httpx_factory(app),
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    return await session.call_tool(
+                        "create_schedule",
+                        {
+                            "name": "daily CI check",
+                            "prompt": "check CI status",
+                            "schedule_type": "daily",
+                            "time_of_day": "09:00",
+                        },
+                    )
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    result = asyncio.run(_run())
+    assert not result.isError, result.content
+    payload = json.loads(result.content[0].text)
+    assert payload["created_by"] == "agent"
+    assert payload["created_by_conversation_id"] == "conv-sched-mcp"
+    assert payload["project_name"] == "repo"
+    assert payload["account"] == "alice"
+    assert payload["enabled"] is True
+    assert sched.get_schedule(payload["id"]) is not None
+
+
+def test_list_and_get_schedules_tools_are_scoped_to_callers_own_project(tmp_path: Path) -> None:
+    app, sched = _make_app_and_scheduler(tmp_path)
+    _agent_source_task(sched)
+    own = asyncio.run(sched.create_agent_schedule(
+        "sched-mcp", name="own", prompt="check CI",
+        schedule_type=ScheduleType.daily, time_of_day="09:00",
+    ))
+    other = sched.create_schedule(Schedule(
+        id="sched-other-project", name="unrelated", prompt="unrelated",
+        project_name="other-repo", schedule_type=ScheduleType.daily, time_of_day="03:00",
+    ))
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with streamablehttp_client(
+                "http://testserver/mcp/",
+                headers={"x-coderfleet-task-id": "sched-mcp"},
+                httpx_client_factory=_asgi_httpx_factory(app),
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    listed = await session.call_tool("list_schedules", {})
+                    got_own = await session.call_tool("get_schedule", {"schedule_id": own.id})
+                    got_other = await session.call_tool("get_schedule", {"schedule_id": other.id})
+                    return listed, got_own, got_other
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    listed, got_own, got_other = asyncio.run(_run())
+    assert not listed.isError, listed.content
+    listed_ids = {json.loads(item.text)["id"] for item in listed.content}
+    assert listed_ids == {own.id}
+
+    assert not got_own.isError, got_own.content
+    assert json.loads(got_own.content[0].text)["id"] == own.id
+
+    assert got_other.isError
+
+
+def test_update_cancel_toggle_schedule_tools_enforce_creator_conversation_ownership(tmp_path: Path) -> None:
+    app, sched = _make_app_and_scheduler(tmp_path)
+    _agent_source_task(sched)
+    own = asyncio.run(sched.create_agent_schedule(
+        "sched-mcp", name="own", prompt="check CI",
+        schedule_type=ScheduleType.daily, time_of_day="09:00",
+    ))
+    human_sched = sched.create_schedule(Schedule(
+        id="sched-human", name="human's", prompt="backup",
+        project_name="repo", schedule_type=ScheduleType.daily, time_of_day="03:00",
+    ))
+
+    async def _run():
+        session_ctx = app.state._intervention_mcp.session_manager.run()
+        await session_ctx.__aenter__()
+        try:
+            async with streamablehttp_client(
+                "http://testserver/mcp/",
+                headers={"x-coderfleet-task-id": "sched-mcp"},
+                httpx_client_factory=_asgi_httpx_factory(app),
+            ) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    updated = await session.call_tool(
+                        "update_schedule", {"schedule_id": own.id, "prompt": "check CI status again"},
+                    )
+                    toggled = await session.call_tool("toggle_schedule", {"schedule_id": own.id})
+                    rejected = await session.call_tool(
+                        "update_schedule", {"schedule_id": human_sched.id, "prompt": "hijacked"},
+                    )
+                    cancelled = await session.call_tool("cancel_schedule", {"schedule_id": own.id})
+                    return updated, toggled, rejected, cancelled
+        finally:
+            await session_ctx.__aexit__(None, None, None)
+
+    updated, toggled, rejected, cancelled = asyncio.run(_run())
+
+    assert not updated.isError, updated.content
+    assert json.loads(updated.content[0].text)["prompt"] == "check CI status again"
+
+    assert not toggled.isError, toggled.content
+    assert json.loads(toggled.content[0].text)["enabled"] is False
+
+    assert rejected.isError
+
+    assert not cancelled.isError, cancelled.content
+    assert sched.get_schedule(own.id) is None
+    assert sched.get_schedule(human_sched.id) is not None
