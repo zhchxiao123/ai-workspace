@@ -314,6 +314,9 @@ def generate_compose(ws: Path) -> dict[str, Any]:
                 "CODERFLEET_IDE_AUTH": p.get("IDE_AUTH", "none"),
                 "CODERFLEET_IDE_BIND": "0.0.0.0" if ide_remote else "127.0.0.1",
             })
+            # 持久化 code-server 的扩展/主题/设置目录，避免容器重建（apply/镜像更新）后丢失
+            (ws / "ide-data" / pname).mkdir(parents=True, exist_ok=True)
+            svc["volumes"].append(f"./ide-data/{pname}:/home/byclaw/.local/share/code-server")
 
         if acc_auth == "env" and acc_env_file and acc_env_file != "-":
             svc["env_file"] = [acc_env_file] + svc.get("env_file", [])

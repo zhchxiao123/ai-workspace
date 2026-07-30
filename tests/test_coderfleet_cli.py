@@ -379,6 +379,8 @@ def test_apply_enables_project_ide(tmp_path: Path) -> None:
     assert "- TCP:codex-project-repo:8080" in compose
     assert "ports:" in compose
     assert "- 127.0.0.1:18080:8080" in compose
+    assert "- ./ide-data/repo:/home/byclaw/.local/share/code-server" in compose
+    assert (workspace / "ide-data" / "repo").is_dir()
 
 
 def test_apply_auto_assigns_project_ide_port(tmp_path: Path) -> None:
