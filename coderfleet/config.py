@@ -40,6 +40,20 @@ def ensure_workspace(ws: Path) -> None:
         (ws / sub).mkdir(parents=True, exist_ok=True)
 
 
+def ensure_bind_mount_dir(path: Path) -> None:
+    """
+    Create (or fix up) a host directory that gets bind-mounted into a
+    container running as `byclaw`. `useradd -r` gives byclaw a system UID
+    that generally does not match the host UID running `coderfleet apply`,
+    and bind mounts preserve numeric ownership — so without world-writable
+    permissions byclaw gets EACCES the moment it tries to create anything
+    inside (e.g. code-server's `User`/`extensions`, or a CLI's auth cache).
+    `exist_ok=True` skips `mkdir`'s mode, so chmod runs unconditionally.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o777)
+
+
 def parse_conf(path: Path) -> list[dict[str, str]]:
     """
     Parse a KEY=value space-tokenized .conf file.

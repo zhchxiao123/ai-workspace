@@ -380,7 +380,11 @@ def test_apply_enables_project_ide(tmp_path: Path) -> None:
     assert "ports:" in compose
     assert "- 127.0.0.1:18080:8080" in compose
     assert "- ./ide-data/repo:/home/byclaw/.local/share/code-server" in compose
-    assert (workspace / "ide-data" / "repo").is_dir()
+    ide_data_dir = workspace / "ide-data" / "repo"
+    assert ide_data_dir.is_dir()
+    assert oct(ide_data_dir.stat().st_mode)[-3:] == "777"
+    accounts_dir = workspace / "accounts" / "api-codex"
+    assert oct(accounts_dir.stat().st_mode)[-3:] == "777"
 
 
 def test_apply_auto_assigns_project_ide_port(tmp_path: Path) -> None:
@@ -503,6 +507,9 @@ def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
     assert "PROXY=off" in accounts_conf
+    account_dir = workspace / "accounts" / "api-claude"
+    assert account_dir.is_dir()
+    assert oct(account_dir.stat().st_mode)[-3:] == "777"
 
 
 def test_project_add_accepts_project_docker_socket(tmp_path: Path) -> None:
