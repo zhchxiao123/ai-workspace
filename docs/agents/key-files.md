@@ -27,7 +27,17 @@ Continuation addendum for the load-bearing files below:
   uses repository + PR number + head SHA.
 - `coderfleet/server/mcp_bridge.py`: `schedule_continuation` persists a future
   Conversation turn and returns immediately; Claude's MCP tool-use id is its
-  retry idempotency key.
+  retry idempotency key. `_require_task_id`/`_tool_use_id` are the one shared
+  implementation of "identity comes only from the `X-CoderFleet-Task-Id`
+  header / `_meta.claudecode/toolUseId`, never a client-supplied argument" —
+  every tool, including the six `*_schedule` tools (issue #82/#83/#84), must
+  call these rather than re-deriving identity inline. `create_schedule`/
+  `list_schedules`/`get_schedule` are scoped to the caller's own
+  `project_name` (derived from the Task, never a parameter — an agent cannot
+  ask for another project's schedules or create one there);
+  `update_schedule`/`cancel_schedule`/`toggle_schedule` additionally require
+  `Schedule.created_by_conversation_id` to match the caller's Conversation —
+  that check lives in `Scheduler._require_agent_owned_schedule`, not here.
 - `coderfleet/server/scheduler.py`: timer and webhook Adapters converge on
   `fire_continuation`, which deduplicates Task creation by
   `Task.continuation_id` and resumes through the latest Conversation session.
@@ -38,8 +48,33 @@ Continuation addendum for the load-bearing files below:
   event, uses exponential backoff, and records
   `retry_of`/`retry_count`/`retry_task_id`. Manual and automatic retry both use
   `clone_task_for_retry` so their cloned task fields cannot drift.
+  `create_agent_schedule`/`list_schedules_for_task`/`get_schedule_for_task`/
+  `update_agent_schedule`/`cancel_agent_schedule`/`toggle_agent_schedule` are
+  the MCP-facing Schedule surface (issue #81/#82/#83/#84): creation always
+  derives `project_name`/`account`/`created_by_conversation_id` from the
+  calling Task — never a client-supplied value, mirroring `arm_continuation`
+  — stamps `created_by="agent"`, sets `enabled=True` with no approval gate
+  and no minimum-interval floor (deliberate, see
+  `docs/adr/0001-agent-self-service-schedules.md`), and dedupes via
+  `Schedule.idempotency_key` exactly like `arm_continuation`'s own
+  `idempotency_key` param. The three mutating methods all funnel through
+  `_require_agent_owned_schedule`, which rejects any Schedule that isn't both
+  `created_by=="agent"` and owned by the calling Task's own
+  `conversation_id` — a human-created Schedule, or one created by a
+  different Conversation, is untouchable from this path. Do not add a second
+  code path that bypasses that check.
 - `coderfleet/server/models.py`: `Continuation` is an internal Conversation
   trigger record, not another execution atom; Task remains the only executor.
+  `Schedule.created_by`/`created_by_conversation_id`/`idempotency_key` default
+  to `"human"`/`""`/`""` so REST-created rows (which never set them) are
+  unaffected; only `Scheduler.create_agent_schedule` sets `created_by="agent"`.
+  `ScheduleResponse` mirrors `created_by`/`created_by_conversation_id`
+  explicitly — pydantic's `BaseModel.__init__` silently drops unknown kwargs
+  by default (`extra="ignore"`), so `ScheduleResponse.from_schedule`'s
+  `cls(**s.model_dump())` will silently omit any `Schedule` field not also
+  declared on `ScheduleResponse`; a new field meant to reach the Web UI must
+  be added to both models in the same change or it's invisible there with no
+  error.
 - `coderfleet/continuation_cmds.py`: `coderfleet continuation list/add/cancel/trigger`
   — the CLI counterpart to the Continuation REST endpoints, kept alongside them
   per the CLI/Web-UI equal-capability rule rather than shipping Web-only. Pure

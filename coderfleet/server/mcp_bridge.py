@@ -10,7 +10,29 @@ main.py 全文件带 PEP 563 的 future import，标注在运行时是字符串�
 """
 from mcp.server.fastmcp import FastMCP
 
-from coderfleet.server.models import ContinuationTriggerRequest, InterventionQuestion
+from coderfleet.server.models import ContinuationTriggerRequest, InterventionQuestion, ScheduleType
+
+
+def _require_task_id(mcp_server: FastMCP) -> str:
+    """从请求头取调用方的 Task 身份——绝不信任客户端传入的任何身份参数。
+
+    同一个 relay 路径被所有账号的容器共用，客户端本来就不可信；这是
+    ask_user_question/schedule_continuation 已经在用的同一个模式，新工具
+    全部复用，不要各自重新实现一遍。
+    """
+    ctx = mcp_server.get_context()
+    request = ctx.request_context.request
+    task_id = request.headers.get("x-coderfleet-task-id", "").strip() if request else ""
+    if not task_id:
+        raise ValueError("missing X-CoderFleet-Task-Id header")
+    return task_id
+
+
+def _tool_use_id(mcp_server: FastMCP) -> str | None:
+    """取 Claude Code 自己的 tool_use.id（`_meta["claudecode/toolUseId"]`），取不到就返回 None。"""
+    ctx = mcp_server.get_context()
+    meta = ctx.request_context.meta
+    return (meta.model_extra or {}).get("claudecode/toolUseId") if meta else None
 
 
 def build_intervention_mcp(scheduler) -> FastMCP:
@@ -44,11 +66,7 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         当前操作模型（同一个人运营多个自己的账号，不是抵御外部攻击者）下这个代价
         可以接受。
         """
-        ctx = mcp_server.get_context()
-        request = ctx.request_context.request
-        task_id = request.headers.get("x-coderfleet-task-id", "").strip() if request else ""
-        if not task_id:
-            raise ValueError("missing X-CoderFleet-Task-Id header")
+        task_id = _require_task_id(mcp_server)
 
         # 尽量把这次调用的 CC 自己的 tool_use.id 传下去，这样 Web UI 问答卡片（按
         # tool_use.id 认领）跟 PendingIntervention.tool_call_id 才能对上——否则
@@ -59,8 +77,7 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         # 是 "claudecode/toolUseId"（含斜杠，不是合法 Python 属性名，取不到就
         # 说明这个 MCP 客户端没有对应字段或者字段名变了，退化成随机 id，至少这次
         # 请求内部依然自洽，只是前端没法精确认领）。
-        meta = ctx.request_context.meta
-        cc_tool_use_id = (meta.model_extra or {}).get("claudecode/toolUseId") if meta else None
+        cc_tool_use_id = _tool_use_id(mcp_server)
 
         return await scheduler.wait_for_intervention_answer(
             task_id, [q.model_dump() for q in questions], tool_call_id=cc_tool_use_id,
@@ -77,13 +94,8 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         timer 触发器接受 delay_seconds 或 run_at（二选一）。当前调用不会睡眠或
         保持 Claude 进程；到期后 CoderFleet 创建一个新的 Task，并恢复本会话。
         """
-        ctx = mcp_server.get_context()
-        request = ctx.request_context.request
-        task_id = request.headers.get("x-coderfleet-task-id", "").strip() if request else ""
-        if not task_id:
-            raise ValueError("missing X-CoderFleet-Task-Id header")
-        meta = ctx.request_context.meta
-        tool_use_id = (meta.model_extra or {}).get("claudecode/toolUseId") if meta else None
+        task_id = _require_task_id(mcp_server)
+        tool_use_id = _tool_use_id(mcp_server)
         continuation = await scheduler.arm_continuation(
             source_task_id=task_id,
             prompt=prompt,
@@ -94,5 +106,101 @@ def build_intervention_mcp(scheduler) -> FastMCP:
         result = continuation.model_dump(mode="json")
         result["webhook_tokens"] = scheduler.take_issued_webhook_tokens(continuation.id)
         return result
+
+    @mcp_server.tool(name="create_schedule")
+    async def create_schedule(
+        name: str,
+        prompt: str,
+        schedule_type: ScheduleType,
+        time_of_day: str | None = None,
+        days_of_week: list[int] | None = None,
+        minute_of_hour: int | None = None,
+        cron_expr: str | None = None,
+        ephemeral_retention: str = "release_on_finish",
+        ephemeral_ttl_minutes: int = 120,
+    ) -> dict:
+        """自助创建一个循环 Schedule（daily/weekly/hourly/cron），并立即生效。
+
+        范围恒等于调用方自己的 project/account，不接受也不信任其他项目/账号；
+        不设人工确认闸、不设频率下限——跟人在 Web UI 里建的 Schedule 同等地位。
+        只能建在一个 Task 属于某条 Conversation 时，因为改/删权限只认创建它的
+        那条 Conversation（见 CONTEXT.md「Schedule 的创建者归属」）。
+        """
+        task_id = _require_task_id(mcp_server)
+        tool_use_id = _tool_use_id(mcp_server)
+        sched = await scheduler.create_agent_schedule(
+            task_id,
+            name=name,
+            prompt=prompt,
+            schedule_type=schedule_type,
+            time_of_day=time_of_day,
+            days_of_week=days_of_week,
+            minute_of_hour=minute_of_hour,
+            cron_expr=cron_expr,
+            ephemeral_retention=ephemeral_retention,
+            ephemeral_ttl_minutes=ephemeral_ttl_minutes,
+            idempotency_key=f"{task_id}:{tool_use_id}" if tool_use_id else None,
+        )
+        return sched.model_dump(mode="json")
+
+    @mcp_server.tool(name="list_schedules")
+    async def list_schedules() -> list[dict]:
+        """列出调用方自己项目内的全部 Schedule，不分创建者（人工建的也能看到，但看不到别的项目）。"""
+        task_id = _require_task_id(mcp_server)
+        return [s.model_dump(mode="json") for s in scheduler.list_schedules_for_task(task_id)]
+
+    @mcp_server.tool(name="get_schedule")
+    async def get_schedule(schedule_id: str) -> dict:
+        """按 id 查询单条 Schedule，范围同样限定在调用方自己的项目内。"""
+        task_id = _require_task_id(mcp_server)
+        sched = scheduler.get_schedule_for_task(task_id, schedule_id)
+        if sched is None:
+            raise ValueError(f"定时计划 '{schedule_id}' 不存在")
+        return sched.model_dump(mode="json")
+
+    @mcp_server.tool(name="update_schedule")
+    async def update_schedule(
+        schedule_id: str,
+        name: str | None = None,
+        prompt: str | None = None,
+        schedule_type: ScheduleType | None = None,
+        time_of_day: str | None = None,
+        days_of_week: list[int] | None = None,
+        minute_of_hour: int | None = None,
+        cron_expr: str | None = None,
+        ephemeral_retention: str | None = None,
+        ephemeral_ttl_minutes: int | None = None,
+    ) -> dict:
+        """更新一条自己创建的 Schedule；只能改自己（当前 Conversation）建的那些。
+
+        只暴露安全字段——project_name/account/created_by 这类归属字段不在
+        这个签名里，agent 没有任何途径通过这个工具改到自己的项目/账号范围之外。
+        """
+        task_id = _require_task_id(mcp_server)
+        updates = {
+            k: v for k, v in {
+                "name": name, "prompt": prompt, "schedule_type": schedule_type,
+                "time_of_day": time_of_day, "days_of_week": days_of_week,
+                "minute_of_hour": minute_of_hour, "cron_expr": cron_expr,
+                "ephemeral_retention": ephemeral_retention,
+                "ephemeral_ttl_minutes": ephemeral_ttl_minutes,
+            }.items() if v is not None
+        }
+        sched = scheduler.update_agent_schedule(task_id, schedule_id, updates)
+        return sched.model_dump(mode="json")
+
+    @mcp_server.tool(name="cancel_schedule")
+    async def cancel_schedule(schedule_id: str) -> dict:
+        """取消（删除）一条自己创建的 Schedule；只能取消自己建的那些。"""
+        task_id = _require_task_id(mcp_server)
+        scheduler.cancel_agent_schedule(task_id, schedule_id)
+        return {"cancelled": True, "id": schedule_id}
+
+    @mcp_server.tool(name="toggle_schedule")
+    async def toggle_schedule(schedule_id: str) -> dict:
+        """切换一条自己创建的 Schedule 的启用/暂停状态；只能操作自己建的那些。"""
+        task_id = _require_task_id(mcp_server)
+        sched = scheduler.toggle_agent_schedule(task_id, schedule_id)
+        return sched.model_dump(mode="json")
 
     return mcp_server

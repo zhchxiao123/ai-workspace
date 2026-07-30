@@ -1184,6 +1184,9 @@ class Schedule(BaseModel):
     last_workflow_run_id: str = ""
     created:         str = Field(default_factory=now_iso)
     updated:         str = Field(default_factory=now_iso)
+    created_by:      str = "human"  # human | agent —— agent 经 MCP create_schedule 自助创建
+    created_by_conversation_id: str = ""  # created_by=="agent" 时，是哪条 Conversation 建的；改/删权限只认这个
+    idempotency_key: str = ""  # 仅 agent 创建时用于去重，人工经 REST 创建的恒为空
 
     def save(self, schedules_dir: Path) -> None:
         JsonStore(Schedule, schedules_dir).save(self)
@@ -1230,6 +1233,8 @@ class ScheduleResponse(BaseModel):
     last_workflow_run_id: str = ""
     created:         str
     updated:         str
+    created_by:      str = "human"
+    created_by_conversation_id: str = ""
 
     @classmethod
     def from_schedule(cls, s: "Schedule") -> "ScheduleResponse":

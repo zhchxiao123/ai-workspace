@@ -877,6 +877,12 @@ class Scheduler:
         path = self.continuations_dir / f"{continuation_id}.json"
         return Continuation.load(path) if path.exists() else None
 
+    @staticmethod
+    def _new_idempotency_key(source_task_id: str, idempotency_key: Optional[str]) -> str:
+        """`arm_continuation`/`create_agent_schedule` 共用的 key 派生规则：调用方传了就
+        用调用方的（通常是 `f"{task_id}:{tool_use_id}"`），没传就现铸一个保证不撞的。"""
+        return (idempotency_key or "").strip() or f"{source_task_id}:{uuid.uuid4().hex}"
+
     async def arm_continuation(
         self,
         source_task_id: str,
@@ -899,7 +905,7 @@ class Scheduler:
         if not triggers:
             raise ValueError("至少需要一个触发条件")
 
-        key = (idempotency_key or "").strip() or f"{source_task_id}:{uuid.uuid4().hex}"
+        key = self._new_idempotency_key(source_task_id, idempotency_key)
         existing = next((c for c in self.list_continuations() if c.idempotency_key == key), None)
         if existing:
             return existing
@@ -1163,6 +1169,126 @@ class Scheduler:
             return False
         p.unlink()
         return True
+
+    async def create_agent_schedule(
+        self,
+        source_task_id: str,
+        name: str,
+        prompt: str,
+        schedule_type: ScheduleType,
+        *,
+        time_of_day: Optional[str] = None,
+        days_of_week: Optional[list[int]] = None,
+        minute_of_hour: Optional[int] = None,
+        cron_expr: Optional[str] = None,
+        ephemeral_retention: str = "release_on_finish",
+        ephemeral_ttl_minutes: int = 120,
+        idempotency_key: Optional[str] = None,
+    ) -> Schedule:
+        """运行中的 agent 经 MCP `create_schedule` 自助建一个循环 Schedule。
+
+        范围恒等于调用方自己的 project/account（从 source_task_id 派生，从不信任
+        客户端传入值——跟 arm_continuation 是同一模式）；`created_by`/
+        `created_by_conversation_id` 打标，供后续 mutate 的归属校验使用（见
+        CONTEXT.md「Schedule 的创建者归属」、docs/adr/0001-agent-self-service-schedules.md）。
+        不设人工确认闸、不设频率下限——这是权衡后的决定，不是遗漏。
+        """
+        source = self.get_task(source_task_id)
+        if source is None:
+            raise ValueError(f"任务 '{source_task_id}' 不存在")
+        if not source.conversation_id:
+            raise ValueError("当前任务不属于 Conversation，无法创建定时计划")
+        if not prompt.strip():
+            raise ValueError("定时计划 prompt 不能为空")
+
+        key = self._new_idempotency_key(source_task_id, idempotency_key)
+        existing = next((s for s in self.list_schedules() if s.idempotency_key == key), None)
+        if existing:
+            return existing
+
+        sched = Schedule(
+            id=self.new_schedule_id(),
+            name=name,
+            prompt=prompt,
+            project_name=source.project_name,
+            account=source.account,
+            schedule_type=schedule_type,
+            time_of_day=time_of_day,
+            days_of_week=days_of_week or [],
+            minute_of_hour=minute_of_hour,
+            cron_expr=cron_expr,
+            enabled=True,
+            ephemeral_retention=ephemeral_retention,
+            ephemeral_ttl_minutes=ephemeral_ttl_minutes,
+            created_by="agent",
+            created_by_conversation_id=source.conversation_id,
+            idempotency_key=key,
+        )
+        return self.create_schedule(sched)
+
+    @staticmethod
+    def _redact_webhook_token_if_not_owner(sched: Schedule, conversation_id: str) -> Schedule:
+        """`webhook_token` 是公开、无认证的 `/api/webhooks/{token}/trigger` 端点凭证——
+        不是自己（当前 Conversation）创建的 Schedule，读的时候就把它抹掉，否则
+        list/get 会变成绕过 `_require_agent_owned_schedule` 强制触发别人 Schedule
+        的旁路（matt-code-review 发现的真实缺口，不是假设）。返回值是内存副本，
+        不影响持久化记录。"""
+        if sched.created_by == "agent" and sched.created_by_conversation_id == conversation_id:
+            return sched
+        return sched.model_copy(update={"webhook_token": ""})
+
+    def list_schedules_for_task(self, source_task_id: str) -> list[Schedule]:
+        """agent 经 MCP `list_schedules` 查询——项目内全部可见，不分创建者。"""
+        source = self.get_task(source_task_id)
+        if source is None:
+            raise ValueError(f"任务 '{source_task_id}' 不存在")
+        return [
+            self._redact_webhook_token_if_not_owner(s, source.conversation_id)
+            for s in self.list_schedules() if s.project_name == source.project_name
+        ]
+
+    def get_schedule_for_task(self, source_task_id: str, sched_id: str) -> Optional[Schedule]:
+        """agent 经 MCP `get_schedule` 查询单条——同样按项目圈定，不分创建者。"""
+        source = self.get_task(source_task_id)
+        if source is None:
+            raise ValueError(f"任务 '{source_task_id}' 不存在")
+        sched = self.get_schedule(sched_id)
+        if sched is None or sched.project_name != source.project_name:
+            return None
+        return self._redact_webhook_token_if_not_owner(sched, source.conversation_id)
+
+    def _require_agent_owned_schedule(self, source_task_id: str, sched_id: str) -> Schedule:
+        """update/cancel/toggle 共用的归属校验：只认创建它的那条 Conversation。
+
+        人工建的（created_by=="human"）和别的 Conversation 建的都拒绝——
+        跟改/删人工配置或别人会话的状态是同一类风险，不因为都是"agent 建的"
+        就互相放行（见 CONTEXT.md「Schedule 的创建者归属」）。
+        """
+        source = self.get_task(source_task_id)
+        if source is None:
+            raise ValueError(f"任务 '{source_task_id}' 不存在")
+        sched = self.get_schedule(sched_id)
+        if sched is None:
+            raise ValueError(f"定时计划 '{sched_id}' 不存在")
+        if sched.created_by != "agent" or sched.created_by_conversation_id != source.conversation_id:
+            raise ValueError(f"无权操作定时计划 '{sched_id}'：不是当前会话创建的")
+        return sched
+
+    def update_agent_schedule(self, source_task_id: str, sched_id: str, updates: dict) -> Schedule:
+        self._require_agent_owned_schedule(source_task_id, sched_id)
+        updated = self.update_schedule(sched_id, updates)
+        assert updated is not None
+        return updated
+
+    def cancel_agent_schedule(self, source_task_id: str, sched_id: str) -> None:
+        self._require_agent_owned_schedule(source_task_id, sched_id)
+        self.delete_schedule(sched_id)
+
+    def toggle_agent_schedule(self, source_task_id: str, sched_id: str) -> Schedule:
+        sched = self._require_agent_owned_schedule(source_task_id, sched_id)
+        updated = self.update_schedule(sched_id, {"enabled": not sched.enabled})
+        assert updated is not None
+        return updated
 
     def _compute_next_run_at(self, sched: Schedule) -> Optional[str]:
         if not sched.enabled:

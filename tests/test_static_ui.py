@@ -9,6 +9,7 @@ STATIC_DIR = ROOT / "coderfleet" / "server" / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 MOBILE_HTML = STATIC_DIR / "mobile.html"
 PROJECTS_JS = STATIC_DIR / "js" / "projects.js"
+SCHEDULES_JS = STATIC_DIR / "js" / "schedules.js"
 MAIN_PY = ROOT / "coderfleet" / "server" / "main.py"
 SEARCH_PY = ROOT / "coderfleet" / "server" / "search.py"
 RENDERER_CSS = STATIC_DIR / "css" / "renderer.css"
@@ -24,6 +25,10 @@ def read_mobile() -> str:
 
 def read_projects_js() -> str:
     return PROJECTS_JS.read_text(encoding="utf-8")
+
+
+def read_schedules_js() -> str:
+    return SCHEDULES_JS.read_text(encoding="utf-8")
 
 
 def read_main_py() -> str:
@@ -1142,3 +1147,16 @@ def test_open_template_renders_before_projects_and_accounts_resolve() -> None:
     render_idx = body.index("_renderTemplateEditor(tpl)")
     projects_idx = body.index("if (!projectsCache.length)")
     assert render_idx < projects_idx, "模板渲染必须先于 projects 懒加载执行"
+
+
+def test_schedule_card_flags_agent_created_schedules() -> None:
+    """issue #82：Schedule 新增 created_by（human|agent）后，Web UI 列表必须显示出来——
+    不能是个只写不读的字段（CLAUDE.md 的字段必须端到端接线铁律，历史上 Board.project_name
+    等字段就因为漏了这一步被专门开票清理过）。"""
+    source = read_schedules_js()
+
+    match = re.search(r"function scheduleCard\(s\) \{(?P<body>.*?)\n\}", source, re.S)
+    assert match is not None
+    body = match.group("body")
+    assert "s.created_by" in body
+    assert "agent" in body

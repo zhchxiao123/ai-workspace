@@ -125,6 +125,7 @@ function scheduleCard(s) {
         <span class="type-badge">${schedulePatternLabel(s)}</span>
         <span class="type-badge" style="background:var(--surface-3)">${esc(targetLabel)}</span>
         <span class="type-badge" style="background:var(--surface-3)">${esc(typeLabel)}</span>
+        ${s.created_by === 'agent' ? '<span class="type-badge" style="background:var(--surface-3)" title="由运行中的 agent 自助创建">Agent 自建</span>' : ''}
         <span class="${enabledClass}">${enabledLabel}</span>
       </div>
     </div>
