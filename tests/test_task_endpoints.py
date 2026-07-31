@@ -24,6 +24,43 @@ def _task(id: str, conversation_id: str = "") -> Task:
     )
 
 
+def test_list_tasks_response_carries_git_branch_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _use_scheduler(monkeypatch, ws)
+
+    task = _task("t1")
+    task.git_branch = "feature/x"
+    task.git_worktree = True
+    task.save(server_main.scheduler.tasks_dir)
+
+    result = asyncio.run(server_main.list_tasks(
+        status=None, account=None, conversation_id=None, limit=50, include_archived=False,
+    ))
+
+    assert result[0].git_branch == "feature/x"
+    assert result[0].git_worktree is True
+
+
+def test_list_tasks_response_defaults_git_branch_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    _use_scheduler(monkeypatch, ws)
+
+    _task("t1").save(server_main.scheduler.tasks_dir)
+
+    result = asyncio.run(server_main.list_tasks(
+        status=None, account=None, conversation_id=None, limit=50, include_archived=False,
+    ))
+
+    assert result[0].git_branch == ""
+    assert result[0].git_worktree is False
+
+
 def test_list_tasks_filters_by_conversation_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ws = tmp_path / "workspace"
     ws.mkdir()

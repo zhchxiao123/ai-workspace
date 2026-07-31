@@ -109,6 +109,7 @@ def _mk_task_acc(sched: Scheduler) -> tuple[Task, Account, Path]:
         prompt="fix tests",
         project="",
     )
+    task.save(sched.tasks_dir)  # 真实调度路径在进 _run() 前就已落盘（running 状态）
     acc = Account(name="alice", type=AccountType.claude)
     log_path = sched.get_log_path(task.id)
     sched._write_log_header(log_path, task, acc)
@@ -243,6 +244,124 @@ def test_run_persistent_nonzero_exit_marks_failed(
     assert sched.get_task(task.id).status == TaskStatus.failed
 
 
+# ── git 分支探测（issue #87）───────────────────────────────────────────
+def _run_with_workdir(
+    sched: Scheduler, task: Task, acc: Account, log_path: Path,
+    monkeypatch: pytest.MonkeyPatch, container_workdir: str = "/workspace",
+) -> None:
+    async def fake_stream(t, a, lp, host_log, host_exit, conv):
+        t.update_status(TaskStatus.done, sched.tasks_dir)
+
+    monkeypatch.setattr(sched, "_stream_container_log", fake_stream)
+    monkeypatch.setattr(sched, "_get_project_root", lambda _t: Path("/tmp"))
+
+    import asyncio as _a
+    _a.run(sched._run(
+        task, acc, log_path, auto=False,
+        container_workdir=container_workdir, container_name="coderfleet-alice",
+    ))
+
+
+def test_run_probes_git_branch_when_workdir_known(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = FakeRuntime().queue(
+        FakeProcess(stdout_chunks=[b"feature/foo\nabc1234\n/workspace/.git\n"], returncode=0),
+        FakeProcess(returncode=0),
+    )
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    _run_with_workdir(sched, task, acc, log_path, monkeypatch)
+
+    assert len(rt.execs) == 2
+    probe_container, probe_cmd, _, probe_workdir = rt.execs[0]
+    assert probe_container == "coderfleet-alice"
+    assert "git" in probe_cmd[-1]
+    # workdir 走 runtime.exec 自身的 -w 参数，不再手写 `git -C`
+    assert probe_workdir == "/workspace"
+    saved = sched.get_task(task.id)
+    assert saved.git_branch == "feature/foo"
+    assert saved.git_worktree is False
+
+
+def test_run_probes_git_worktree_true_when_git_dir_has_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = FakeRuntime().queue(
+        FakeProcess(
+            stdout_chunks=[b"feature/bar\nabc1234\n/workspace/.git/worktrees/feature-bar\n"],
+            returncode=0,
+        ),
+        FakeProcess(returncode=0),
+    )
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    _run_with_workdir(sched, task, acc, log_path, monkeypatch)
+
+    saved = sched.get_task(task.id)
+    assert saved.git_branch == "feature/bar"
+    assert saved.git_worktree is True
+
+
+def test_run_probes_git_detached_head_falls_back_to_short_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """detached HEAD：--abbrev-ref 只会给字面量 "HEAD"，不能把它当分支名展示，退化用短 SHA。"""
+    rt = FakeRuntime().queue(
+        FakeProcess(stdout_chunks=[b"HEAD\nabc1234\n/workspace/.git\n"], returncode=0),
+        FakeProcess(returncode=0),
+    )
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    _run_with_workdir(sched, task, acc, log_path, monkeypatch)
+
+    saved = sched.get_task(task.id)
+    assert saved.git_branch == "abc1234"
+
+
+def test_run_leaves_git_branch_empty_when_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 git 目录 / git 探测失败：字段留空，任务本身照常成功——探测失败不是任务失败。"""
+    rt = FakeRuntime().queue(
+        FakeProcess(stdout_chunks=[b""], returncode=128),
+        FakeProcess(returncode=0),
+    )
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    _run_with_workdir(sched, task, acc, log_path, monkeypatch)
+
+    saved = sched.get_task(task.id)
+    assert saved.git_branch == ""
+    assert saved.git_worktree is False
+    assert saved.status == TaskStatus.done
+
+
+def test_run_skips_git_probe_when_workdir_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """container_workdir 未知时不发起探测 exec —— 与既有 _mk_task_acc 调用方式保持一致。"""
+    rt = FakeRuntime().queue(FakeProcess(returncode=0))
+    sched = Scheduler(tmp_path, runtime=rt)
+    task, acc, log_path = _mk_task_acc(sched)
+
+    async def fake_stream(t, a, lp, host_log, host_exit, conv):
+        t.update_status(TaskStatus.done, sched.tasks_dir)
+
+    monkeypatch.setattr(sched, "_stream_container_log", fake_stream)
+    monkeypatch.setattr(sched, "_get_project_root", lambda _t: tmp_path)
+
+    import asyncio as _a
+    _a.run(sched._run(task, acc, log_path, auto=False, container_name="coderfleet-alice"))
+
+    assert len(rt.execs) == 1
+    assert sched.get_task(task.id).git_branch == ""
+
+
 # ── 临时会话（keep-container）路径：通过 seam 驱动，无全局 monkeypatch ──────
 def test_ephemeral_keep_container_via_fake_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -304,6 +423,71 @@ def test_ephemeral_keep_container_via_fake_runtime(
     assert saved_conv.ephemeral_container_name == "coderfleet-eph-session-conv-eph"
     assert saved_conv.ephemeral_expires_at
     assert sched.get_task(task.id).status == TaskStatus.done
+    # 没有 project 上下文（本用例未传 project=）：不探测，仍是 1 次 exec
+    assert sched.get_task(task.id).git_branch == ""
+
+
+def test_ephemeral_keep_container_probes_git_branch_when_project_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """keep-container 场景下，只要有已解析的 project，就在跑任务前多探测一次分支。"""
+    from coderfleet.server.models import Conversation
+
+    rt = FakeRuntime().queue(
+        FakeProcess(stdout_chunks=[b"container-id\n"], returncode=0),  # 启动会话容器
+        FakeProcess(stdout_chunks=[b"main\nabc1234\n/workspace/.git\n"], returncode=0),  # git 探测
+        FakeProcess(returncode=0),  # 真正跑任务
+    )
+    sched = Scheduler(tmp_path, runtime=rt)
+
+    conv = Conversation(
+        id="conv-eph-proj",
+        name="scratch",
+        account="alice",
+        type=AccountType.claude,
+        project="ephemeral",
+        ephemeral=True,
+        ephemeral_retention="keep_until_ttl",
+        ephemeral_ttl_minutes=45,
+    )
+    conv.save(sched.conversations_dir)
+    task = Task(
+        id="task-eph-proj",
+        status=TaskStatus.running,
+        account="alice",
+        type=AccountType.claude,
+        prompt="hello",
+        project=str(sched._get_session_dir(conv.id)),
+        conversation_id=conv.id,
+        ephemeral=True,
+        execution_mode="ephemeral",
+        ephemeral_retention="keep_until_ttl",
+        ephemeral_ttl_minutes=45,
+    )
+    task.save(sched.tasks_dir)
+    acc = Account(name="alice", type=AccountType.claude)
+    log_path = sched.get_log_path(task.id)
+    sched._write_log_header(log_path, task, acc)
+    project = Project(name="scratch-proj", account="alice", path=str(sched._get_session_dir(conv.id)))
+
+    monkeypatch.setattr(sched, "_get_ephemeral_network", lambda _acc: None)
+    monkeypatch.setattr(sched, "_get_account_image", lambda _acc, _project=None: "coderfleet:test")
+
+    import asyncio as _a
+    _a.run(sched._run_ephemeral_task(
+        task, acc, log_path, auto=False,
+        conversation=conv, session_dir=sched._get_session_dir(conv.id), project=project,
+    ))
+
+    assert len(rt.execs) == 2
+    probe_container, probe_cmd, _, probe_workdir = rt.execs[0]
+    assert probe_container == "coderfleet-eph-session-conv-eph-proj"
+    assert "git" in probe_cmd[-1]
+    assert probe_workdir == "/workspace"
+    saved = sched.get_task(task.id)
+    assert saved.git_branch == "main"
+    assert saved.git_worktree is False
+    assert saved.status == TaskStatus.done
 
 
 def test_ephemeral_task_mounts_configured_docker_socket(

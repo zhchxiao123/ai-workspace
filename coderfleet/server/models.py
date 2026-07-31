@@ -430,6 +430,10 @@ class Task(BaseModel):
     auto:     bool = False
     images:   list[str] = Field(default_factory=list)
     model:    str = ""
+    # 容器内 container_workdir 在任务开始执行时的 git 快照，仅当该目录是 git 仓库时非空。
+    # 探测失败（非 git 目录等）不影响任务本身执行，字段留空。
+    git_branch:   str = ""
+    git_worktree: bool = False
     execute_at: Optional[str] = None
     # DAG / workflow fields
     parent_task_id: str = ""
@@ -560,6 +564,8 @@ class TaskResponse(BaseModel):
     auto:     bool = False
     images:   list[str] = []
     model:    str = ""
+    git_branch:   str = ""
+    git_worktree: bool = False
     execute_at: Optional[str] = None
     parent_task_id: str = ""
     continuation_id: str = ""
@@ -599,6 +605,8 @@ class TaskResponse(BaseModel):
             auto         = getattr(t, "auto", False),
             images       = getattr(t, "images", []),
             model        = getattr(t, "model", ""),
+            git_branch   = getattr(t, "git_branch", ""),
+            git_worktree = getattr(t, "git_worktree", False),
             execute_at   = getattr(t, "execute_at", None),
             parent_task_id = getattr(t, "parent_task_id", ""),
             continuation_id = getattr(t, "continuation_id", ""),

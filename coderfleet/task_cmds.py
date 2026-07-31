@@ -246,6 +246,9 @@ def cmd_task_status(task_id: str) -> None:
     click.echo(f"  项目：    {d['project']}")
     if d.get("project_name"):
         click.echo(f"  项目名：  {d['project_name']}")
+    if d.get("git_branch"):
+        worktree_suffix = " (worktree)" if d.get("git_worktree") else ""
+        click.echo(f"  分支：    {d['git_branch']}{worktree_suffix}")
     click.echo(f"  创建：    {d['created']}")
     click.echo(f"  完成：    {d.get('finished') or '-'}")
     if d.get("execute_at"):

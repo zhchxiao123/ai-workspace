@@ -2874,6 +2874,23 @@ class Scheduler:
 
                 task.ephemeral_container_name = container_name
                 task.save(self.tasks_dir)
+
+                # 只有 keep-container（session 复用）场景才探测：一次性容器
+                # （release_on_finish，默认档）走的是下面 else 分支的单次
+                # runtime.run()，容器启动和任务命令在同一次调用里一起执行，
+                # 没有独立的"容器已启动、任务未执行"窗口可插入探测 exec，
+                # 因此即使有 project 也不探测，跟 keep-container 场景的判定
+                # 标准不同（issue #87 讨论过的范围收窄）。
+                if project is not None:
+                    git_branch, git_worktree = await self._probe_git_context(container_name, "/workspace")
+                    if git_branch:
+                        self._record_git_context(task.id, git_branch, git_worktree)
+                        # 同步本地对象：下面这个函数后续还会用同一个 task 变量多次
+                        # save()（pid/native_session_id/status…），不更新本地字段的话
+                        # 那些后续 save 会拿着内存里的旧空值把刚落盘的分支信息覆盖掉。
+                        task.git_branch = git_branch
+                        task.git_worktree = git_worktree
+
                 proc = await self.runtime.exec(
                     container_name, ["bash", "-c", wrapped_cmd], env=env, workdir="/workspace",
                 )
@@ -2986,6 +3003,49 @@ class Scheduler:
             self._running.pop(task.id, None)
             asyncio.create_task(self.schedule_next_tasks())
 
+    async def _probe_git_context(self, container_name: str, container_workdir: str) -> tuple[str, bool]:
+        """探测 container_workdir 当前的 git 分支，及是否为 linked worktree（git-dir 含 /worktrees/）。
+
+        detached HEAD 时 --abbrev-ref 只会给出字面量 "HEAD"，退化用短 SHA 代替，避免把
+        "HEAD" 这个非分支值当分支名展示。纯展示性附加信息，不是任务执行的前置条件：任何
+        失败（非 git 目录、git 未安装、exec 报错等）一律返回空结果，绝不抛异常、不影响
+        调用方的任务状态机。workdir 通过 runtime.exec 自身的 workdir 参数传入（seam 已支持
+        docker exec -w），不用 `git -C` 重新实现路径定位。
+        """
+        probe_cmd = (
+            "git rev-parse --abbrev-ref HEAD 2>/dev/null && "
+            "git rev-parse --short HEAD 2>/dev/null && "
+            "git rev-parse --git-dir 2>/dev/null"
+        )
+        try:
+            proc = await self.runtime.exec(
+                container_name, ["bash", "-c", probe_cmd], workdir=container_workdir,
+            )
+            out, _ = await proc.communicate()
+        except Exception:
+            return "", False
+        if proc.returncode != 0:
+            return "", False
+        lines = out.decode("utf-8", errors="replace").strip().splitlines()
+        if len(lines) < 3 or not lines[0].strip():
+            return "", False
+        abbrev_ref, short_sha, git_dir = (l.strip() for l in lines[:3])
+        branch = short_sha if abbrev_ref == "HEAD" else abbrev_ref
+        if not branch:
+            return "", False
+        return branch, "/worktrees/" in git_dir
+
+    def _record_git_context(self, task_id: str, git_branch: str, git_worktree: bool) -> None:
+        """单次同步 read-modify-write：探测跨越一次 await，写回前重新从磁盘加载最新任务记录，
+        避免覆盖 kill_task 等并发操作在探测期间写入的状态（CLAUDE.md 状态文件读改写不变式）。
+        """
+        fresh = self.get_task(task_id)
+        if fresh is None:
+            return
+        fresh.git_branch = git_branch
+        fresh.git_worktree = git_worktree
+        fresh.save(self.tasks_dir)
+
     async def _run(
         self,
         task: Task,
@@ -2999,6 +3059,15 @@ class Scheduler:
     ) -> None:
         """后台协程：以 detached 方式启动容器任务，再轮询宿主机日志文件跟踪进度。"""
         try:
+            if container_name and container_workdir:
+                git_branch, git_worktree = await self._probe_git_context(container_name, container_workdir)
+                if git_branch:
+                    self._record_git_context(task.id, git_branch, git_worktree)
+                    # 同步本地对象：_stream_container_log/失败处理分支后续还会用同一个
+                    # task 变量 save()，不更新本地字段就会被内存里的旧空值覆盖掉。
+                    task.git_branch = git_branch
+                    task.git_worktree = git_worktree
+
             cli_prompt = self._expand_skill_command(task.prompt, acc.name)
             cmd = self.build_cli_command(
                 acc.type,
