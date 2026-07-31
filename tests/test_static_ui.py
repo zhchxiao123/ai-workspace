@@ -1160,3 +1160,58 @@ def test_schedule_card_flags_agent_created_schedules() -> None:
     body = match.group("body")
     assert "s.created_by" in body
     assert "agent" in body
+
+
+def test_git_branch_badge_helper_skips_empty_branch() -> None:
+    """issue #88：徽标渲染是一个纯函数，分支为空时必须直接返回空字符串——
+    不渲染任何占位符/错误提示（PRD 明确要求：没有 git 信息就不显示徽标）。"""
+    source = read_ui_source()
+
+    match = re.search(
+        r"function renderGitBranchBadge\(gitBranch, gitWorktree\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "if (!gitBranch) return '';" in body
+    assert "worktree" in body
+
+
+def test_chat_sidebar_and_header_render_git_branch_badge() -> None:
+    """issue #88：分支徽标只应该出现在两个既有展示点——侧边栏会话/任务行、
+    以及会话工作区头部副标题——都复用同一个共享 renderGitBranchBadge helper，
+    不各自重新拼 HTML（避免issue #87 Spec review 里点名的重复实现）。会话场景按
+    conv.last_task_id 查 Task（而不是"最近创建的 Task"），跟 issue #88 验收标准
+    明确要求的读取方式一致——issue #87 Spec review 曾指出实现偏离过这一点。"""
+    source = read_ui_source()
+
+    # 定义 1 处（shared/git-badge.js）+ 2 个调用点：侧边栏行、
+    # _gitBranchBadgeForConversation（两个头部渲染函数共用它，不各自重复调用）
+    assert source.count("renderGitBranchBadge(") >= 3
+    assert "function _gitBranchBadgeForConversation(conv)" in source
+    assert "conv?.last_task_id ? (tasksCache || []).find(t => t.id === conv.last_task_id)" in source
+    assert "gitBranch: lastTask?.git_branch || ''" in source
+    assert "gitBranch: t.git_branch || ''" in source
+    # 徽标紧跟在"项目: xxx"后面（issue #88 原文："在已有'项目: xxx'信息旁追加"），
+    # 不是随手拼在副标题末尾——两个头部渲染函数都要满足。
+    assert source.count("</strong>${headerBranchBadge} ·") == 2
+
+
+def test_recent_section_and_quick_jump_omit_git_branch_badge() -> None:
+    """issue #88 明确划定范围：'最近访问' 区块和 Ctrl+K 快速跳转保持现有信息密度，
+    不追加分支徽标——只有侧边栏项目分组内的行和会话头部两处展示。"""
+    source = read_ui_source()
+
+    recent_match = re.search(
+        r"function renderRecentSection\(convs, projects, tasks\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert recent_match is not None
+    assert "renderGitBranchBadge" not in recent_match.group("body")
+
+    quick_jump_match = re.search(
+        r"function _buildQuickJumpItems\(\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert quick_jump_match is not None
+    assert "renderGitBranchBadge" not in quick_jump_match.group("body")

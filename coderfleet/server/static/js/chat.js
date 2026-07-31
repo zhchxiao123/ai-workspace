@@ -207,6 +207,10 @@ function renderConversations(convs, projects, tasks) {
       const convTasks = isTerminal ? [] : tasks.filter(t => t.conversation_id === c.id)
         .sort((a, b) => new Date(b.created || 0) - new Date(a.created || 0));
       const latestStatus = isTerminal ? 'terminal' : (convTasks[0]?.status || 'done');
+      // 会话本身不持有分支信息（Task 才是唯一执行原子）：按 last_task_id 找对应 Task 的
+      // 快照，而不是"最近创建的 Task"——一个仍在跑的新 Task 在完成前不会更新
+      // last_task_id（Conversation.touch() 的写入时机），这是 issue #88 明确要求的读取方式。
+      const lastTask = c.last_task_id ? tasks.find(t => t.id === c.last_task_id) : null;
       items.push({
         type: 'conversation',
         id: c.id,
@@ -214,6 +218,8 @@ function renderConversations(convs, projects, tasks) {
         time: c.updated || c.created || 0,
         status: latestStatus,
         mode: c.mode || 'chat',
+        gitBranch: lastTask?.git_branch || '',
+        gitWorktree: !!lastTask?.git_worktree,
       });
     });
     projTasks.forEach(t => {
@@ -223,6 +229,8 @@ function renderConversations(convs, projects, tasks) {
         name: t.prompt,
         time: t.created || 0,
         status: t.status || 'done',
+        gitBranch: t.git_branch || '',
+        gitWorktree: !!t.git_worktree,
       });
     });
 
@@ -296,9 +304,11 @@ function renderConversations(convs, projects, tasks) {
           : isPending
           ? `<span class="session-status-dot pending" title="${item.status === 'scheduled' ? '已定时' : '排队中'}"></span>`
           : `<span class="session-time">${esc(displayTime)}</span>`;
+        const branchBadge = renderGitBranchBadge(item.gitBranch, item.gitWorktree);
         return `
       <div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
         ${modeIcon}<span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
+        ${branchBadge}
         ${statusBadge}
         <button class="session-dots-btn" onclick="event.stopPropagation(); openSessionMenu(event, '${esc(item.id)}', '${item.type}')" title="更多操作" aria-label="更多操作">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
@@ -1319,6 +1329,15 @@ async function startNewTerminalConversation(projectName) {
   }
 }
 
+// 会话本身不持有分支信息（Task 才是唯一执行原子）：按 conv.last_task_id 找对应 Task 的
+// 快照，跟 renderConversations 里侧边栏行的读取方式一致（issue #88）。返回值已经带上
+// " · " 前缀，紧跟在"项目: xxx"后面；没有分支信息时返回空字符串，两个头部渲染函数共用。
+function _gitBranchBadgeForConversation(conv) {
+  const lastTask = conv?.last_task_id ? (tasksCache || []).find(t => t.id === conv.last_task_id) : null;
+  const raw = renderGitBranchBadge(lastTask?.git_branch, lastTask?.git_worktree);
+  return raw ? ` · ${raw}` : '';
+}
+
 // 渲染终端对话工作区
 function renderTerminalConversationWorkspace(conv) {
   currentChatProjectName = conv.project_name || conv.project?.split('/').pop() || '';
@@ -1354,6 +1373,7 @@ function renderTerminalConversationWorkspace(conv) {
   }
 
   // First time: create persistent workspace for this terminal conversation
+  const headerBranchBadge = _gitBranchBadgeForConversation(conv);
   convWs = document.createElement('div');
   convWs.id        = `terminal-conv-ws-${conv.id}`;
   convWs.className = 'terminal-conv-workspace';
@@ -1365,7 +1385,7 @@ function renderTerminalConversationWorkspace(conv) {
       <span style="margin-right:6px;opacity:.7">⌨</span>${esc(conv.name)}
     </div>
     <div class="chat-main-subtitle">
-      项目: <strong style="color:var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
+      项目: <strong style="color:var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong>${headerBranchBadge} ·
       账号: <span>${esc(conv.account || '未指定')}</span> ·
       活跃: <span>${fmtTime(conv.updated)}</span>
     </div>
@@ -1422,6 +1442,7 @@ async function renderChatWorkspace(conv) {
   const chatAccountType = chatAccount?.type || '';
   const modelPillHtml = chatAccountType === 'claude' ? buildChatModelPillHtml() : '';
   const usagePillHtml = buildChatUsagePillHtml(chatAccount);
+  const headerBranchBadge = _gitBranchBadgeForConversation(conv);
 
   workspace.innerHTML = `
 <!-- 会话头部 -->
@@ -1429,7 +1450,7 @@ async function renderChatWorkspace(conv) {
   <div class="chat-main-title-area">
     <div class="chat-main-title" title="${esc(conv.name)}">${esc(conv.name)}${conv.ephemeral ? ' <span style="font-size:11px;color:var(--accent);font-weight:normal" title="临时容器会话，每条消息在独立容器中运行">⚡ 临时</span>' : ''}</div>
     <div class="chat-main-subtitle">
-      项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong> ·
+      项目: <strong style="color: var(--accent);">${esc(conv.project_name || conv.project?.split('/').pop() || '未知')}</strong>${headerBranchBadge} ·
       账号: <span>${esc(conv.account || '未指定')}</span> ·
       活跃: <span>${fmtTime(conv.updated)}</span>${modelPillHtml}${usagePillHtml}
     </div>

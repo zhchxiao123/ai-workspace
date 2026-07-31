@@ -4190,6 +4190,18 @@
       flex-shrink: 0;
     }
 
+    .git-branch-badge {
+      font-size: 11px;
+      color: var(--text-3);
+      opacity: .75;
+      margin-right: 6px;
+      max-width: 110px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-shrink: 1;
+    }
+
     .chat-session-item .session-time {
       font-size: 11px;
       color: var(--text-3);
