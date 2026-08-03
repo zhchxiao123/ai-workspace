@@ -2680,7 +2680,7 @@ function renderRecentSection(convs, projects, tasks) {
   });
 
   allItems.sort((a, b) => new Date(b.time) - new Date(a.time));
-  const recentItems = allItems.slice(0, 5);
+  const recentItems = allItems.slice(0, 10);
   if (!recentItems.length) return '';
 
   const isCollapsed = localStorage.getItem('coderfleet.recentSectionCollapsed') === 'true';
@@ -2810,9 +2810,11 @@ function _renderQuickJumpResults() {
     const isSelected = i === quickJumpSelectedIdx;
     const isRunning = item.status === 'running';
     const dot = isRunning ? `<span class="session-status-dot running"></span>` : '';
+    const displayTime = fmtTimeFriendly(item.time);
     return `<div class="quick-jump-item${isSelected ? ' selected' : ''}" data-idx="${i}" onmouseenter="quickJumpSelectedIdx=${i}; document.querySelectorAll('#quick-jump-results .quick-jump-item').forEach((el,j)=>el.classList.toggle('selected',j===${i}))" onclick="selectQuickJumpItem(${i})">
         <span class="quick-jump-project-chip">${esc(item.projectName)}</span>
         <span class="quick-jump-item-name">${esc(item.name)}</span>
+        <span class="quick-jump-time">${esc(displayTime)}</span>
         ${dot}
       </div>`;
   }).join('');

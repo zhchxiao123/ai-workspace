@@ -6548,6 +6548,12 @@
       white-space: nowrap;
       color: var(--text);
     }
+    .quick-jump-time {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: var(--text-3);
+      white-space: nowrap;
+    }
     .quick-jump-empty {
       padding: 24px;
       text-align: center;
