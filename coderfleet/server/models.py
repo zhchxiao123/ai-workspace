@@ -118,6 +118,42 @@ class AccountProxy(str, Enum):
     off   = "off"
 
 
+class AccountRuntime(str, Enum):
+    """账号执行后端：container = 独立 Docker 容器（默认，历史行为）；
+    local = 直接调用宿主机上已安装的 CLI 二进制，不经过 Docker。"""
+    container = "container"
+    local     = "local"
+
+
+# local + relay 组合不是对所有账号类型都安全：Codex 自己的官方文档没有确认标准代理环境
+# 变量（HTTPS_PROXY 等）会被它的所有 HTTP client 尊重，上游 openai/codex#4242 目前仍是
+# 一个开放中的 feature request（描述的是"还没做完"，不是既有行为）。容器场景下"账号流量
+# 绝不绕开 relay"这条不变量是靠 Docker 的 internal 网络层强制的，不是靠信任 CLI 尊重环境
+# 变量；本地执行没有这层网络层背书，所以这个组合直接拒绝，而不是悄悄放行、指望环境变量
+# 生效。详见 docs/research/local-execution-mode.md 第 3 节。
+_LOCAL_RUNTIME_RELAY_UNSUPPORTED_TYPES: frozenset[str] = frozenset({"codex"})
+
+
+def check_account_runtime_proxy_compat(
+    acc_type: "AccountType", runtime: "AccountRuntime", proxy: "AccountProxy",
+) -> str:
+    """校验 runtime/proxy 组合是否安全。返回非空字符串表示拒绝（内容即错误信息）；
+    空字符串表示允许。`coderfleet account add`（CLI）和 Scheduler.save_account（Web API）
+    两个账号创建入口共用这一个函数，不各自实现一遍判断逻辑。"""
+    if (
+        runtime == AccountRuntime.local
+        and proxy == AccountProxy.relay
+        and acc_type.value in _LOCAL_RUNTIME_RELAY_UNSUPPORTED_TYPES
+    ):
+        return (
+            f"TYPE={acc_type.value} 账号不支持 --runtime local 搭配 --proxy relay："
+            f"{acc_type.value} 的官方文档未确认标准代理环境变量支持，且上游有一个开放中的 "
+            "issue（openai/codex#4242）证明这仍是未完成功能，本地执行没有 Docker 网络层兜底，"
+            "无法保证流量真的经过 relay。请改用 --proxy off，或 --runtime container。"
+        )
+    return ""
+
+
 # ── 账号 ──────────────────────────────────────────────────
 
 class Account(BaseModel):
@@ -126,6 +162,13 @@ class Account(BaseModel):
     auth:     AccountAuth = AccountAuth.login
     env_file: str = ""
     proxy:    AccountProxy = AccountProxy.relay
+    runtime:  AccountRuntime = AccountRuntime.container
+    # 只对 runtime=local 有意义：用户显式确认已经手工开启该账号对应 CLI 自带的 OS 级沙箱
+    # （Claude Code 的 sandbox.enabled+failIfUnavailable / Codex 的 --sandbox）。CoderFleet
+    # 不代为解析/修改对方 CLI 的配置文件 —— 这个字段只是"用户声明我已经做了"，由调度器在
+    # auto=True 任务提交时校验；没有它，local 账号无法提交 auto 任务（见
+    # Scheduler.check_local_sandbox_gate）。
+    sandbox_confirmed: bool = False
 
     @classmethod
     def from_conf_record(cls, record: dict[str, str]) -> "Account | None":
@@ -139,6 +182,7 @@ class Account(BaseModel):
             acc_type = AccountType(record["TYPE"])
             auth = AccountAuth(record.get("AUTH", AccountAuth.login.value))
             proxy = AccountProxy(record.get("PROXY", AccountProxy.relay.value))
+            runtime = AccountRuntime(record.get("RUNTIME", AccountRuntime.container.value))
         except ValueError:
             return None
         env_file = record.get("ENV_FILE", "")
@@ -146,7 +190,11 @@ class Account(BaseModel):
             return None
         if auth == AccountAuth.env and not env_file:
             env_file = f"./accounts/{record['NAME']}/env"
-        return cls(name=record["NAME"], type=acc_type, auth=auth, env_file=env_file, proxy=proxy)
+        sandbox_confirmed = record.get("SANDBOX_CONFIRMED", "").strip().lower() in ("1", "true", "yes")
+        return cls(
+            name=record["NAME"], type=acc_type, auth=auth, env_file=env_file,
+            proxy=proxy, runtime=runtime, sandbox_confirmed=sandbox_confirmed,
+        )
 
 
 class Project(BaseModel):
@@ -434,6 +482,10 @@ class Task(BaseModel):
     # 探测失败（非 git 目录等）不影响任务本身执行，字段留空。
     git_branch:   str = ""
     git_worktree: bool = False
+    # 相对上一次提交的未提交改动行数（git diff --shortstat HEAD）——不是相对默认分支的
+    # 累计改动，代理提交后会归零；跟 git_branch 同一次探测、同一次快照。
+    git_diff_added:   int = 0
+    git_diff_removed: int = 0
     execute_at: Optional[str] = None
     # DAG / workflow fields
     parent_task_id: str = ""
@@ -566,6 +618,8 @@ class TaskResponse(BaseModel):
     model:    str = ""
     git_branch:   str = ""
     git_worktree: bool = False
+    git_diff_added:   int = 0
+    git_diff_removed: int = 0
     execute_at: Optional[str] = None
     parent_task_id: str = ""
     continuation_id: str = ""
@@ -607,6 +661,8 @@ class TaskResponse(BaseModel):
             model        = getattr(t, "model", ""),
             git_branch   = getattr(t, "git_branch", ""),
             git_worktree = getattr(t, "git_worktree", False),
+            git_diff_added   = getattr(t, "git_diff_added", 0),
+            git_diff_removed = getattr(t, "git_diff_removed", 0),
             execute_at   = getattr(t, "execute_at", None),
             parent_task_id = getattr(t, "parent_task_id", ""),
             continuation_id = getattr(t, "continuation_id", ""),
@@ -774,6 +830,7 @@ class AccountResponse(BaseModel):
     auth:      AccountAuth
     env_file:  str = ""
     proxy:     AccountProxy
+    runtime:   AccountRuntime = AccountRuntime.container
     projects:  list[str]
     running:   bool         # 容器是否在线
     busy:      bool         # 是否有 running 任务占用

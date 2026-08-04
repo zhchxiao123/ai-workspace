@@ -220,6 +220,8 @@ function renderConversations(convs, projects, tasks) {
         mode: c.mode || 'chat',
         gitBranch: lastTask?.git_branch || '',
         gitWorktree: !!lastTask?.git_worktree,
+        gitDiffAdded: lastTask?.git_diff_added || 0,
+        gitDiffRemoved: lastTask?.git_diff_removed || 0,
       });
     });
     projTasks.forEach(t => {
@@ -231,6 +233,8 @@ function renderConversations(convs, projects, tasks) {
         status: t.status || 'done',
         gitBranch: t.git_branch || '',
         gitWorktree: !!t.git_worktree,
+        gitDiffAdded: t.git_diff_added || 0,
+        gitDiffRemoved: t.git_diff_removed || 0,
       });
     });
 
@@ -304,7 +308,7 @@ function renderConversations(convs, projects, tasks) {
           : isPending
           ? `<span class="session-status-dot pending" title="${item.status === 'scheduled' ? '已定时' : '排队中'}"></span>`
           : `<span class="session-time">${esc(displayTime)}</span>`;
-        const branchBadge = renderGitBranchBadge(item.gitBranch, item.gitWorktree);
+        const branchBadge = renderGitBranchBadge(item.gitBranch, item.gitWorktree, item.gitDiffAdded, item.gitDiffRemoved);
         return `
       <div class="chat-session-item ${isActive ? 'active' : ''}" data-item-id="${esc(item.id)}" onclick="selectConversation('${esc(item.id)}')">
         ${modeIcon}<span class="session-name" title="${esc(item.name)}">${esc(item.name)}</span>
@@ -1334,7 +1338,9 @@ async function startNewTerminalConversation(projectName) {
 // " · " 前缀，紧跟在"项目: xxx"后面；没有分支信息时返回空字符串，两个头部渲染函数共用。
 function _gitBranchBadgeForConversation(conv) {
   const lastTask = conv?.last_task_id ? (tasksCache || []).find(t => t.id === conv.last_task_id) : null;
-  const raw = renderGitBranchBadge(lastTask?.git_branch, lastTask?.git_worktree);
+  const raw = renderGitBranchBadge(
+    lastTask?.git_branch, lastTask?.git_worktree, lastTask?.git_diff_added, lastTask?.git_diff_removed,
+  );
   return raw ? ` · ${raw}` : '';
 }
 

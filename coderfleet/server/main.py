@@ -45,6 +45,7 @@ from coderfleet.server.models import (
     AccountAuth,
     AccountProxy,
     AccountResponse,
+    AccountRuntime,
     AccountType,
     AccountUsage,
     BoardCardResponse,
@@ -126,16 +127,20 @@ class ConversationCreateRequest(BaseModel):
 
 
 class AccountCreateRequest(BaseModel):
-    name:  str
-    type:  AccountType
-    auth:  AccountAuth  = AccountAuth.login
-    proxy: AccountProxy = AccountProxy.relay
+    name:    str
+    type:    AccountType
+    auth:    AccountAuth   = AccountAuth.login
+    proxy:   AccountProxy  = AccountProxy.relay
+    runtime: AccountRuntime = AccountRuntime.container
+    sandbox_confirmed: bool = False
 
 
 class AccountUpdateRequest(BaseModel):
-    type:  Optional[AccountType]  = None
-    auth:  Optional[AccountAuth]  = None
-    proxy: Optional[AccountProxy] = None
+    type:    Optional[AccountType]   = None
+    auth:    Optional[AccountAuth]   = None
+    proxy:   Optional[AccountProxy]  = None
+    runtime: Optional[AccountRuntime] = None
+    sandbox_confirmed: Optional[bool] = None
 
 
 class EnvVarsRequest(BaseModel):
@@ -660,6 +665,32 @@ async def list_accounts():
     return await run_in_threadpool(scheduler.list_accounts)
 
 
+class LocalCliDetectionResponse(BaseModel):
+    type_id: str
+    binary:  str
+    found:   bool
+    path:    str = ""
+    version: str = ""
+
+
+@app.get("/api/accounts/detect-local", response_model=list[LocalCliDetectionResponse])
+async def detect_local_clis():
+    """探测宿主机上已安装哪些账号类型对应的 CLI —— 添加 --runtime local 账号前的确认步骤。
+
+    CLI 的 `coderfleet account detect` 与这里共用同一个
+    `account_type_registry.detect_all_local_clis`，不重复实现探测逻辑。
+    每次探测都要跑 N 次 shutil.which + 子进程 --version，丢进线程池避免卡住事件循环。
+    """
+    from coderfleet.account_type_registry import detect_all_local_clis
+    results = await run_in_threadpool(detect_all_local_clis)
+    return [
+        LocalCliDetectionResponse(
+            type_id=r.type_id, binary=r.binary, found=r.found, path=r.path, version=r.version,
+        )
+        for r in results
+    ]
+
+
 @app.post("/api/accounts/{name}/usage/refresh", response_model=AccountUsage)
 async def refresh_account_usage(name: str):
     """立即探测一次指定账号的 Claude Max 套餐用量（而非等下一次后台轮询）"""
@@ -690,7 +721,12 @@ async def create_account(req: AccountCreateRequest):
     existing = {a.name for a in scheduler.get_accounts()}
     if req.name in existing:
         raise HTTPException(status_code=409, detail=f"账号 '{req.name}' 已存在")
-    scheduler.save_account(req.name, req.type, req.auth, req.proxy)
+    try:
+        scheduler.save_account(
+            req.name, req.type, req.auth, req.proxy, req.runtime, req.sandbox_confirmed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True, "name": req.name}
 
 
@@ -699,12 +735,17 @@ async def update_account(name: str, req: AccountUpdateRequest):
     acc = next((a for a in scheduler.get_accounts() if a.name == name), None)
     if acc is None:
         raise HTTPException(status_code=404, detail=f"账号 '{name}' 不存在")
-    scheduler.save_account(
-        name,
-        req.type  or acc.type,
-        req.auth  or acc.auth,
-        req.proxy or acc.proxy,
-    )
+    try:
+        scheduler.save_account(
+            name,
+            req.type    or acc.type,
+            req.auth    or acc.auth,
+            req.proxy   or acc.proxy,
+            req.runtime or acc.runtime,
+            req.sandbox_confirmed if req.sandbox_confirmed is not None else acc.sandbox_confirmed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True, "name": name}
 
 

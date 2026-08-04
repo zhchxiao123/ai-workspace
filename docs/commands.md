@@ -20,10 +20,13 @@
 
 | 命令 | 说明 |
 | --- | --- |
-| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok\|kimi` | 添加账号 |
+| `coderfleet account add <名称> TYPE=codex\|claude\|opencode\|hermes\|grok\|kimi [--runtime container\|local] [--sandbox-confirmed]` | 添加账号 |
 | `coderfleet account remove <名称>` | 删除账号配置 |
 | `coderfleet account list` | 查看账号列表 |
+| `coderfleet account detect` | 探测宿主机上已安装哪些账号类型对应的 CLI（`--runtime local` 之前的确认步骤） |
 | `coderfleet login <账号名\|all>` | 登录账号（`AUTH=env` 账号自动跳过） |
+
+`--runtime local` 让账号直接调用宿主机上已安装的 CLI，不经过 Docker；限制和用法见 [账号管理 › 本地执行模式](accounts.md#本地执行模式-runtime-local)。
 
 `--auth env` 适用于 `claude`、`opencode`、`hermes`、`grok` 和 `kimi`：
 

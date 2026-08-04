@@ -994,6 +994,11 @@
       color: var(--accent);
     }
 
+    .badge.runtime-local {
+      background: var(--yellow-bg, rgba(201, 153, 0, 0.15));
+      color: var(--yellow, #c99900);
+    }
+
     /* ── 任务链卡片 ───────────────────────────────────── */
     .chain-panel {
       margin-bottom: 14px;

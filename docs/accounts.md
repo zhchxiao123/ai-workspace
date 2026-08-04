@@ -146,3 +146,32 @@ coderfleet account add alice TYPE=codex
 ```bash
 coderfleet account add local TYPE=claude --proxy off
 ```
+
+## 本地执行模式（`--runtime local`）
+
+默认情况下每个账号跑在独立的 Docker 容器里（`--runtime container`）。如果宿主机上已经装好了 `claude`/`codex` 等 CLI，也可以让账号直接调用宿主机二进制，不经过 Docker：
+
+```bash
+# 先确认宿主机上装了哪些 CLI
+coderfleet account detect
+
+# 创建一个 local 账号
+coderfleet account add alice TYPE=claude --runtime local
+```
+
+local 账号的凭证隔离靠账号自己的 `accounts/<name>/.claude`（或 `.codex`）目录 —— 跟 container 场景一样，每个账号互不干扰，只是不再靠容器边界，而是靠 `CLAUDE_CONFIG_DIR`/`CODEX_HOME` 各自指向不同路径。
+
+**限制（先读这个再决定要不要用）：**
+
+- **`--proxy relay` 目前只支持 `TYPE=claude`。** Codex 自己的官方文档没有确认它的所有 HTTP client 都会尊重 `HTTPS_PROXY`（上游有个还没关闭的 issue，[`openai/codex#4242`](https://github.com/openai/codex/issues/4242)），本地执行没有 Docker 网络层兜底，无法像容器场景一样保证流量真的经过 relay。`coderfleet account add ... TYPE=codex --runtime local --proxy relay` 会被直接拒绝；需要代理就用 `--proxy off`，或者继续用 `--runtime container`。
+- **`auto` 任务需要先确认沙箱。** `auto` 模式默认会用假设"外部已经隔离好"的旗标（Claude 的 `--dangerously-skip-permissions`、Codex 的 `--dangerously-bypass-approvals-and-sandbox`）——这两个旗标官方文档都写着只推荐在已经被容器/VM 隔离的环境里用。local 账号没有容器兜底，必须先手工开启该 CLI 自带的 OS 级沙箱，再加 `--sandbox-confirmed` 确认：
+
+  ```bash
+  coderfleet account add alice TYPE=claude --runtime local --sandbox-confirmed
+  ```
+
+  没加这个标志的 local 账号能正常跑非 auto 任务，但提交 `auto` 任务会被明确拒绝（不会静默降级成无沙箱执行）。
+- **不支持会话复用（keep-container）。** container 场景下可以让一个容器常驻、反复 `exec` 进去；local 场景每次任务都是一次全新的宿主机子进程调用，靠 CLI 自己的 `--resume` 衔接上下文。
+- **不支持持久容器（Interactive 模式）**，`coderfleet enter`/`coderfleet up` 仍然是 container 账号的能力，local 账号只能通过 Task/Conversation 提交任务。
+
+完整的调研依据（官方文档引用、`--help` 原文）见 `docs/research/local-execution-mode.md`。

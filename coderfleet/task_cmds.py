@@ -249,6 +249,10 @@ def cmd_task_status(task_id: str) -> None:
     if d.get("git_branch"):
         worktree_suffix = " (worktree)" if d.get("git_worktree") else ""
         click.echo(f"  分支：    {d['git_branch']}{worktree_suffix}")
+        added, removed = d.get("git_diff_added", 0), d.get("git_diff_removed", 0)
+        if added or removed:
+            diff_str = click.style(f"+{added}", fg="green") + " " + click.style(f"-{removed}", fg="red")
+            click.echo(f"  变更：    {diff_str}")
     click.echo(f"  创建：    {d['created']}")
     click.echo(f"  完成：    {d.get('finished') or '-'}")
     if d.get("execute_at"):

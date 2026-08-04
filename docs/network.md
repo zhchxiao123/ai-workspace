@@ -62,3 +62,12 @@ coderfleet check-proxy
 ```bash
 coderfleet account add local TYPE=claude --proxy off
 ```
+
+## `--runtime local` 账号的代理支持范围
+
+以上整套 relay 模型（`internal` docker 网络 + gost 中继）是靠 Docker 网络层强制的：账号容器物理上无法绕开 relay 直连公网。`--runtime local` 账号不跑在容器里，这层网络层强制天然不存在——是否真的走了代理，完全取决于目标 CLI 自己是否尊重 `HTTPS_PROXY`/`ALL_PROXY` 等环境变量。
+
+- **`TYPE=claude`**：官方文档确认标准代理环境变量对纯终端子进程调用生效，`--runtime local --proxy relay` 受支持，CoderFleet 会把与 container 场景相同的 `HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` 注入到子进程环境变量里。
+- **`TYPE=codex`**：Codex 自己的官方文档没有确认它的所有 HTTP client 都会尊重代理环境变量，上游有一个仍然开放的 issue（[`openai/codex#4242`](https://github.com/openai/codex/issues/4242)）把"让所有 HTTP client 尊重 HTTPS_PROXY"描述成待实现的功能，而不是既有行为。CoderFleet 因此直接拒绝 `TYPE=codex --runtime local --proxy relay` 这个组合（`coderfleet account add`/`account edit` 都会报错），避免用户误以为流量真的经过了 relay，实际却从宿主机直连出去。Codex 的 local 账号只能用 `--proxy off`，或改用 `--runtime container`。
+
+完整调研依据（官方文档原文引用、CLI `--help` 输出）见 `docs/research/local-execution-mode.md`。

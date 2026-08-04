@@ -195,6 +195,13 @@ def generate_compose(ws: Path) -> dict[str, Any]:
             click.secho(f"  警告：跳过项目 {pname}：账号 {paccount} 不存在", fg="yellow")
             continue
 
+        if acc.get("RUNTIME", "container") == "local":
+            click.secho(
+                f"  跳过项目 {pname}（账号 {paccount} 是 RUNTIME=local，不经过 Docker，无需生成容器服务）",
+                fg="cyan",
+            )
+            continue
+
         acc_type     = acc.get("TYPE", "codex")
         acc_auth     = acc.get("AUTH", "login")
         acc_env_file = acc.get("ENV_FILE", "")

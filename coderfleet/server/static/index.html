@@ -966,6 +966,20 @@
             <option value="off">off（直连）</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">执行方式</label>
+          <select id="create-account-runtime" class="form-input" onchange="onCreateAccountRuntimeChange()">
+            <option value="container">container（独立 Docker 容器，默认）</option>
+            <option value="local">local（直接调用宿主机上已安装的 CLI）</option>
+          </select>
+        </div>
+        <div id="create-account-local-hint" style="display:none;font-size:12px;color:var(--text-3)"></div>
+        <div id="create-account-sandbox-row" class="form-group" style="display:none">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;font-weight:normal">
+            <input type="checkbox" id="create-account-sandbox-confirmed">
+            我已手工开启该 CLI 自带的 OS 级沙箱（未确认则无法提交 auto 任务）
+          </label>
+        </div>
         <div id="create-account-msg" style="display:none"></div>
         <button id="create-account-btn" class="btn primary" onclick="saveNewAccount()">创建账号</button>
       </div>
@@ -992,42 +1006,47 @@
           <label class="form-label">宿主机路径</label>
           <input id="project-form-path" class="form-input" placeholder="/home/user/my-project" autocomplete="off">
         </div>
-        <label class="toggle-row">
-          <input id="project-form-active" type="checkbox" checked>
-          <span>启用容器（apply 时启动）</span>
-        </label>
-        <div class="form-group">
-          <label class="form-label">Docker socket <span style="color:var(--text-3);font-size:11px">（留空使用全局设置）</span></label>
-          <input id="project-form-docker-socket" class="form-input" placeholder="off | auto | /var/run/docker.sock" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="form-label">从账号 <span style="color:var(--text-3);font-size:11px">（仅挂载认证目录，不参与任务调度；同一项目不能绑定两个相同类型的账号）</span></label>
-          <div style="display:flex;gap:8px">
-            <select id="project-form-secondary-account-picker" class="form-input"></select>
-            <button type="button" class="btn" onclick="addProjectSecondaryAccount()">添加</button>
-          </div>
-          <div id="project-form-secondary-accounts-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
-        </div>
-        <label class="toggle-row">
-          <input id="project-form-ide-enabled" type="checkbox" onchange="toggleProjectIdePort()">
-          <span>启用浏览器 IDE（code-server）</span>
-        </label>
-        <div id="project-form-ide-port-wrap" style="display:none;flex-direction:column;gap:12px">
+        <div id="project-form-container-only-fields" style="display:flex;flex-direction:column;gap:12px">
+          <label class="toggle-row">
+            <input id="project-form-active" type="checkbox" checked>
+            <span>启用容器（apply 时启动）</span>
+          </label>
           <div class="form-group">
-            <label class="form-label">IDE 端口 <span style="color:var(--text-3);font-size:11px">（留空随机分配空闲端口）</span></label>
-            <input id="project-form-ide-port" class="form-input" type="number" min="1024" max="65535" placeholder="自动随机分配" autocomplete="off">
+            <label class="form-label">Docker socket <span style="color:var(--text-3);font-size:11px">（留空使用全局设置）</span></label>
+            <input id="project-form-docker-socket" class="form-input" placeholder="off | auto | /var/run/docker.sock" autocomplete="off">
           </div>
           <div class="form-group">
-            <label class="form-label">IDE 认证</label>
-            <select id="project-form-ide-auth" class="form-input">
-              <option value="none">none（无密码）</option>
-              <option value="password">password（密码保护）</option>
-            </select>
+            <label class="form-label">从账号 <span style="color:var(--text-3);font-size:11px">（仅挂载认证目录，不参与任务调度；同一项目不能绑定两个相同类型的账号）</span></label>
+            <div style="display:flex;gap:8px">
+              <select id="project-form-secondary-account-picker" class="form-input"></select>
+              <button type="button" class="btn" onclick="addProjectSecondaryAccount()">添加</button>
+            </div>
+            <div id="project-form-secondary-accounts-rows" style="display:flex;flex-direction:column;gap:6px;margin-top:8px"></div>
           </div>
           <label class="toggle-row">
-            <input id="project-form-ide-remote" type="checkbox">
-            <span>允许远程访问 <span style="color:var(--text-3);font-size:11px">（绑定 0.0.0.0，默认仅 127.0.0.1）</span></span>
+            <input id="project-form-ide-enabled" type="checkbox" onchange="toggleProjectIdePort()">
+            <span>启用浏览器 IDE（code-server）</span>
           </label>
+          <div id="project-form-ide-port-wrap" style="display:none;flex-direction:column;gap:12px">
+            <div class="form-group">
+              <label class="form-label">IDE 端口 <span style="color:var(--text-3);font-size:11px">（留空随机分配空闲端口）</span></label>
+              <input id="project-form-ide-port" class="form-input" type="number" min="1024" max="65535" placeholder="自动随机分配" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">IDE 认证</label>
+              <select id="project-form-ide-auth" class="form-input">
+                <option value="none">none（无密码）</option>
+                <option value="password">password（密码保护）</option>
+              </select>
+            </div>
+            <label class="toggle-row">
+              <input id="project-form-ide-remote" type="checkbox">
+              <span>允许远程访问 <span style="color:var(--text-3);font-size:11px">（绑定 0.0.0.0，默认仅 127.0.0.1）</span></span>
+            </label>
+          </div>
+        </div>
+        <div id="project-form-local-hint" style="display:none;font-size:12px;color:var(--text-3)">
+          绑定账号是 local 执行方式：不经过 Docker，直接调用宿主机 CLI，容器/IDE 侧车/从账号这些选项不适用。
         </div>
         <div id="project-form-msg" style="display:none"></div>
         <button id="project-form-btn" class="btn primary" onclick="saveProjectForm()">保存</button>

@@ -8,14 +8,20 @@ docker argv 并启动子进程」收拢到一个接口后面，调度器只描�
 DockerRuntime 实现里。
 
 - DockerRuntime —— 生产实现：唯一拼装 docker argv、真正调用 OS 的地方。
+- LocalRuntime  —— 生产实现：本地执行模式，不经过 Docker，直接在宿主机跑子进程。
+                   ContainerSpec 的容器专属字段（image/mounts/network）对它没有意义，
+                   调用方只需传 command/env/workdir；spec.name（run）/container（exec）
+                   被当作进程注册表的逻辑 key，不参与实际命令拼装。
 - FakeRuntime  —— 测试实现：记录每次 ContainerSpec / exec 调用，返回预先脚本化的进程，
                    让调度器的整条任务生命周期无需 Docker 即可测试。
 
-两个 adapter 让这个 seam 是真的（two adapters, not one）。
+三个 adapter 实现同一个 Protocol，让这个 seam 是真的（adapters, not branches）。
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -148,6 +154,76 @@ class DockerRuntime:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+
+
+class LocalRuntime:
+    """本地执行实现：直接在宿主机跑子进程，不经过 Docker。
+
+    没有容器可以 inspect，存活性判断靠自己维护的「逻辑名 → pid」注册表 + ``os.kill(pid, 0)``
+    探活；``remove`` 对应 ``SIGTERM``。调用方（Scheduler）负责只在 ``ContainerSpec``/``exec``
+    里传 command/env/workdir —— image/mounts/network 这些字段本来就是 Docker 专属的，这里
+    直接忽略，不做「本地场景下静默兼容」的特殊处理。
+    """
+
+    def __init__(self) -> None:
+        self._pids: dict[str, int] = {}
+
+    @staticmethod
+    def _merged_env(extra: dict[str, str] | None) -> dict[str, str]:
+        env = dict(os.environ)
+        env.update(extra or {})
+        return env
+
+    async def run(self, spec: ContainerSpec) -> Process:
+        proc = await asyncio.create_subprocess_exec(
+            *spec.command,
+            cwd=spec.workdir or None,
+            env=self._merged_env(spec.env),
+            stdout=_PIPE,
+            stderr=_STDOUT,
+        )
+        if spec.name:
+            self._pids[spec.name] = proc.pid
+        return proc
+
+    async def exec(
+        self,
+        container: str,
+        command: list[str],
+        env: dict[str, str] | None = None,
+        workdir: str = "",
+    ) -> Process:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=workdir or None,
+            env=self._merged_env(env),
+            stdout=_PIPE,
+            stderr=_STDOUT,
+        )
+        if container:
+            self._pids[container] = proc.pid
+        return proc
+
+    def is_running(self, container: str) -> bool:
+        pid = self._pids.get(container)
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 进程存在，只是不属于当前 OS 用户，signal 被拒绝不代表进程死了
+        return True
+
+    async def remove(self, container: str) -> None:
+        pid = self._pids.pop(container, None)
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 # ── 测试用 adapter ──────────────────────────────────────────────────────

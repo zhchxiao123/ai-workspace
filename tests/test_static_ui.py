@@ -1168,13 +1168,29 @@ def test_git_branch_badge_helper_skips_empty_branch() -> None:
     source = read_ui_source()
 
     match = re.search(
-        r"function renderGitBranchBadge\(gitBranch, gitWorktree\) \{(?P<body>.*?)\n\}",
+        r"function renderGitBranchBadge\(gitBranch, gitWorktree, diffAdded, diffRemoved\) \{(?P<body>.*?)\n\}",
         source, re.S,
     )
     assert match is not None
     body = match.group("body")
     assert "if (!gitBranch) return '';" in body
     assert "worktree" in body
+
+
+def test_git_branch_badge_helper_renders_diff_stat_when_nonzero() -> None:
+    """issue #88 后续：+N/-M 变更行数只在非零时追加，复用跟分支同一次探测出来的字段
+    （CLI `task status` 的"变更："行是同一份数据，见 test_task_cli.py）。"""
+    source = read_ui_source()
+
+    match = re.search(
+        r"function renderGitBranchBadge\(gitBranch, gitWorktree, diffAdded, diffRemoved\) \{(?P<body>.*?)\n\}",
+        source, re.S,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert "added || removed" in body
+    assert "var(--green)" in body and "var(--red)" in body
+    assert "git-diff-stat" in body
 
 
 def test_chat_sidebar_and_header_render_git_branch_badge() -> None:
@@ -1195,6 +1211,9 @@ def test_chat_sidebar_and_header_render_git_branch_badge() -> None:
     # 徽标紧跟在"项目: xxx"后面（issue #88 原文："在已有'项目: xxx'信息旁追加"），
     # 不是随手拼在副标题末尾——两个头部渲染函数都要满足。
     assert source.count("</strong>${headerBranchBadge} ·") == 2
+    # 变更行数（+N/-M）跟分支/worktree 一样，一次性任务读自身字段、会话读 lastTask 字段。
+    assert "gitDiffAdded: lastTask?.git_diff_added || 0" in source
+    assert "gitDiffAdded: t.git_diff_added || 0" in source
 
 
 def test_recent_section_and_quick_jump_omit_git_branch_badge() -> None:

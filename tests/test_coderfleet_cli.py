@@ -512,6 +512,112 @@ def test_account_add_accepts_proxy_off(tmp_path: Path) -> None:
     assert oct(account_dir.stat().st_mode)[-3:] == "777"
 
 
+def test_account_add_defaults_to_container_runtime(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "alice", "TYPE=claude",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "RUNTIME=container" in accounts_conf
+
+
+def test_account_add_accepts_runtime_local(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "alice", "TYPE=claude",
+        "--runtime", "local",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "RUNTIME=local" in accounts_conf
+    assert "local 执行方式" in result.stdout
+
+
+def test_account_add_rejects_local_codex_with_relay_proxy(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "bob", "TYPE=codex",
+        "--runtime", "local", "--proxy", "relay",
+    )
+
+    assert result.returncode != 0
+    assert "openai/codex#4242" in result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "bob" not in accounts_conf
+
+
+def test_account_add_allows_local_claude_with_relay_proxy(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "alice", "TYPE=claude",
+        "--runtime", "local", "--proxy", "relay",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "RUNTIME=local" in accounts_conf and "PROXY=relay" in accounts_conf
+
+
+def test_account_add_runtime_local_without_sandbox_confirmed_warns(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "alice", "TYPE=claude",
+        "--runtime", "local",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "SANDBOX_CONFIRMED=false" in accounts_conf
+    assert "无法提交 auto 任务" in result.stdout
+
+
+def test_account_add_accepts_sandbox_confirmed_flag(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(
+        workspace, fake_docker_path(tmp_path), "account", "add", "alice", "TYPE=claude",
+        "--runtime", "local", "--sandbox-confirmed",
+    )
+
+    assert result.returncode == 0, result.stderr
+    accounts_conf = (workspace / "accounts.conf").read_text(encoding="utf-8")
+    assert "SANDBOX_CONFIRMED=true" in accounts_conf
+    assert "无法提交 auto 任务" not in result.stdout
+
+
+def test_account_detect_lists_every_registered_type(tmp_path: Path) -> None:
+    workspace = make_workspace(tmp_path)
+    (workspace / "accounts.conf").write_text("", encoding="utf-8")
+    (workspace / "projects.conf").write_text("", encoding="utf-8")
+
+    result = run_coderfleet(workspace, fake_docker_path(tmp_path), "account", "detect")
+
+    assert result.returncode == 0, result.stderr
+    assert "claude" in result.stdout
+    assert "codex" in result.stdout
+    assert "--runtime local" in result.stdout
+
+
 def test_project_add_accepts_project_docker_socket(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
     (workspace / "accounts.conf").write_text(

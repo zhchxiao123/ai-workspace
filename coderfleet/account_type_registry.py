@@ -25,7 +25,10 @@ from typing import Callable, List, Optional, Union
 #   参数：prompt, auto, task_id,
 #         marker_quoted (shlex.quote(task_process_marker(task_id))),
 #         task_env_quoted (shlex.quote(task_id)),
-#         native_session_id, images
+#         native_session_id, images, model,
+#         local_sandboxed（默认 False；只有 runtime=local 且账号已确认开启自带 OS 级沙箱的
+#         账号才会传 True —— 目前只有 _build_codex 真的据此换旗标，其余类型接受但忽略，
+#         保持 InnerCmdFn 签名统一）
 #   返回：shell 命令字符串（inner_cmd，不含日志重定向包装）
 #
 # ExtractFn: 从任务日志文本中提取 native_session_id
@@ -36,7 +39,7 @@ from typing import Callable, List, Optional, Union
 #   参数：line（单行 json.loads 后的 dict）
 #   返回：OutputEvent 列表（纯函数，无 I/O，同 InnerCmdFn/ExtractFn 的约束一致）
 
-InnerCmdFn = Callable[[str, bool, str, str, str, str, List[str], str], str]
+InnerCmdFn = Callable[[str, bool, str, str, str, str, List[str], str, bool], str]
 ExtractFn  = Callable[[str], str]
 
 
@@ -221,7 +224,11 @@ def _claude_mcp_bridge_arg(*, allow_ask_user: bool) -> str:
     return f" --mcp-config {config_json} --allowedTools {allowed}{denied}"
 
 
-def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
+    # local_sandboxed 对 Claude 是接受但不使用的参数（跟其余非 claude/codex 类型一样只为了
+    # InnerCmdFn 签名统一）：--dangerously-skip-permissions 只跳过审批 UI，真正的隔离靠账号
+    # 自己在 sandbox_confirmed 门禁下已经手工开启的 Claude Code 自带 OS 级沙箱
+    # （sandbox.enabled + failIfUnavailable），两者不冲突，不需要在这里换旗标。
     p  = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep = shlex.quote(p)
     perm   = "--dangerously-skip-permissions" if auto else "--permission-mode acceptEdits"
@@ -239,17 +246,24 @@ def _build_claude(prompt, auto, task_id, marker, task_env, session_id, images, m
     )
 
 
-def _build_codex(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_codex(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
     ep   = shlex.quote(prompt)
     imgs = "".join(f" -i {shlex.quote(i)}" for i in images)
     if session_id:
-        danger = " --dangerously-bypass-approvals-and-sandbox" if auto else ""
+        if local_sandboxed:
+            # local runtime 没有容器兜底：换成 Codex 自己的 --sandbox，而不是假设外部已经
+            # 隔离好的 --dangerously-bypass-approvals-and-sandbox —— 这个旗标自己的 --help
+            # 原话是 "Intended solely for running in environments that are externally
+            # sandboxed"，本地场景不满足这个前提。
+            sandbox_arg = " --sandbox workspace-write"
+        else:
+            sandbox_arg = " --dangerously-bypass-approvals-and-sandbox" if auto else ""
         return (
             f"printf '%s\\n' {ep} | "
             f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
-            f"codex exec resume {shlex.quote(session_id)} --json --skip-git-repo-check{danger}{imgs}"
+            f"codex exec resume {shlex.quote(session_id)} --json --skip-git-repo-check{sandbox_arg}{imgs}"
         )
-    sandbox = "danger-full-access" if auto else "workspace-write"
+    sandbox = "workspace-write" if (local_sandboxed or not auto) else "danger-full-access"
     return (
         f"printf '%s\\n' {ep} | "
         f"CODERFLEET_TASK_ID={task_env} exec -a {marker} "
@@ -257,7 +271,7 @@ def _build_codex(prompt, auto, task_id, marker, task_env, session_id, images, mo
     )
 
 
-def _build_opencode(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_opencode(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
     ep    = shlex.quote(prompt)
     perm  = " --dangerously-skip-permissions" if auto else ""
     sess  = f" --session {shlex.quote(session_id)}" if session_id else ""
@@ -268,7 +282,7 @@ def _build_opencode(prompt, auto, task_id, marker, task_env, session_id, images,
     )
 
 
-def _build_hermes(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_hermes(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
     ep     = shlex.quote(prompt)
     yolo   = " --yolo" if auto else ""
     resume = f" --resume {shlex.quote(session_id)}" if session_id else ""
@@ -278,7 +292,7 @@ def _build_hermes(prompt, auto, task_id, marker, task_env, session_id, images, m
     )
 
 
-def _build_grok(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_grok(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
     p    = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep   = shlex.quote(p)
     qsid = shlex.quote(session_id) if session_id else ""
@@ -294,7 +308,7 @@ def _build_grok(prompt, auto, task_id, marker, task_env, session_id, images, mod
     )
 
 
-def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
     p = f"{prompt}\n\n[Attached images:\n" + "\n".join(images) + "]" if images else prompt
     ep = shlex.quote(p)
     sess = f" --session {shlex.quote(session_id)}" if session_id else ""
@@ -304,7 +318,11 @@ def _build_kimi(prompt, auto, task_id, marker, task_env, session_id, images, mod
     )
 
 
-def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model=""):
+def _build_pi(prompt, auto, task_id, marker, task_env, session_id, images, model="", local_sandboxed=False):
+    # local_sandboxed 接受但不使用：pi 自己的文档明确写着 "No permission popups. Run in a
+    # container." ——它没有类似 Claude sandbox.enabled / Codex --sandbox 的自带 OS 级隔离可以
+    # 换用，local runtime 场景下即使 sandbox_confirmed=True 也无法真正兑现"已隔离"这个前提。
+    # 这一期 sandbox 门禁只覆盖 claude/codex（PRD 场景 5 范围），pi 的 local 支持是后续项。
     ep = shlex.quote(prompt)
     # pi's real attachment mechanism (docs/usage.md "File Arguments"): `@path`
     # positional args before the message, e.g. `pi @screenshot.png "..."`. For
@@ -1197,6 +1215,55 @@ ACCOUNT_TYPES: dict[str, AccountTypeSpec] = {
 def get_spec(type_id: str) -> AccountTypeSpec:
     """返回账号类型的 spec，未知类型抛出 KeyError。"""
     return ACCOUNT_TYPES[type_id]
+
+
+@dataclass
+class LocalCliDetection:
+    """本地 CLI 探测结果：runtime=local 之前用来回答"这台宿主机装没装这个 CLI"。
+
+    只回答二进制存不存在、版本是什么 —— 不做登录态检查，那是 Account 凭证目录
+    （Scheduler.local_auth_dir）的职责，跟"CLI 装没装"是两个独立的问题。
+    """
+    type_id: str
+    binary:  str
+    found:   bool
+    path:    str = ""
+    version: str = ""
+
+
+def detect_local_cli(type_id: str) -> LocalCliDetection:
+    """探测 type_id 对应的 CLI 二进制是否已安装在宿主机上。
+
+    CLI（`coderfleet account detect`）和 Web UI（`/api/accounts/detect-local`）
+    共用这一个函数 —— 避免出现两份探测逻辑各自漂移。login_cli 已经是
+    AccountTypeSpec 里"这个账号类型对应哪个二进制"的唯一事实来源，探测直接
+    复用它，不新增第二份绑定。
+    """
+    import shutil
+    import subprocess
+
+    spec = get_spec(type_id)
+    binary = spec.login_cli
+    path = shutil.which(binary)
+    if not path:
+        return LocalCliDetection(type_id=type_id, binary=binary, found=False)
+
+    version = ""
+    try:
+        result = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=10,
+        )
+        raw = (result.stdout or result.stderr or "").strip()
+        if raw:
+            version = raw.splitlines()[0].strip()
+    except Exception:
+        pass
+    return LocalCliDetection(type_id=type_id, binary=binary, found=True, path=path, version=version)
+
+
+def detect_all_local_clis() -> list[LocalCliDetection]:
+    """对所有已注册账号类型各探测一次。"""
+    return [detect_local_cli(t) for t in valid_type_ids()]
 
 
 def valid_type_ids() -> list[str]:

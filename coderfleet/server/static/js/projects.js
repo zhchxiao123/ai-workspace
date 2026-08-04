@@ -238,6 +238,7 @@ async function openProjectFormModal(name) {
     _selectedSecondaryAccounts = [];
   }
   toggleProjectIdePort();
+  toggleProjectContainerOnlyFields();
   renderSecondaryAccountPicker();
   renderProjectSecondaryAccountsRows();
 
@@ -249,6 +250,17 @@ function onProjectAccountChanged() {
   _selectedSecondaryAccounts = _selectedSecondaryAccounts.filter(n => n !== primaryAccount);
   renderSecondaryAccountPicker();
   renderProjectSecondaryAccountsRows();
+  toggleProjectContainerOnlyFields();
+}
+
+// runtime=local 的账号没有容器：启用容器/Docker socket/从账号/浏览器 IDE 这些选项全都不适用，
+// 隐藏掉而不是留着让用户以为设置生效了(容器场景之外这些字段在 compose 生成阶段本来就会被跳过)。
+function toggleProjectContainerOnlyFields() {
+  const primaryAccount = document.getElementById('project-form-account').value;
+  const acc = _projectAccountsCache.find(a => a.name === primaryAccount);
+  const isLocal = acc?.runtime === 'local';
+  document.getElementById('project-form-container-only-fields').style.display = isLocal ? 'none' : 'flex';
+  document.getElementById('project-form-local-hint').style.display = isLocal ? '' : 'none';
 }
 
 function renderSecondaryAccountPicker() {

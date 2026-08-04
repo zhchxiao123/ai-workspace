@@ -55,6 +55,9 @@ function renderAccounts(accounts) {
       : a.busy ? `<span class="badge busy">工作中</span>` : `<span class="badge idle">空闲</span>`;
     const proxy = a.proxy || 'relay';
     const proxyBadge = `<span class="badge proxy-${proxy}">proxy: ${esc(proxy)}</span>`;
+    const runtimeBadge = a.runtime === 'local'
+      ? `<span class="badge runtime-local" title="不经过 Docker，直接调用宿主机 CLI">local</span>`
+      : '';
     const projectNames = a.projects || [];
     const containers = String(a.container || '').split(/\s+/).filter(Boolean);
     const projectChips = projectNames.length
@@ -77,6 +80,7 @@ function renderAccounts(accounts) {
         <span class="badge ${a.type}">${a.type}</span>
         <span class="badge idle">${esc(a.auth || 'login')}</span>
         ${proxyBadge}
+        ${runtimeBadge}
       </div>
       <div class="account-name">${esc(a.name)}</div>
     </div>
@@ -481,7 +485,10 @@ async function cloneAccount(source, newName) {
       fetch(`${API}/api/accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName, type: source.type, auth: source.auth, proxy: source.proxy }),
+        body: JSON.stringify({
+          name: newName, type: source.type, auth: source.auth, proxy: source.proxy,
+          runtime: source.runtime, sandbox_confirmed: source.sandbox_confirmed,
+        }),
       }),
       fetch(`${API}/api/accounts/${encodeURIComponent(source.name)}/env`).then(r => r.json()).catch(() => ({ vars: {} })),
     ]);
@@ -504,11 +511,49 @@ async function cloneAccount(source, newName) {
 }
 
 // ── 新建账号 ──────────────────────────────────────────────
+let _localCliDetectionCache = null;
+
+async function _getLocalCliDetection() {
+  if (_localCliDetectionCache) return _localCliDetectionCache;
+  try {
+    _localCliDetectionCache = await fetch(`${API}/api/accounts/detect-local`).then(r => r.json());
+  } catch {
+    _localCliDetectionCache = [];
+  }
+  return _localCliDetectionCache;
+}
+
+// runtime=local 时展示：该类型宿主机上是否已探测到 CLI + 沙箱确认勾选框。
+// container（默认）时两者都隐藏 —— 跟 --runtime local 时 CLI 侧的行为对等。
+async function onCreateAccountRuntimeChange() {
+  const runtime = document.getElementById('create-account-runtime').value;
+  const sandboxRow = document.getElementById('create-account-sandbox-row');
+  const hintEl = document.getElementById('create-account-local-hint');
+  sandboxRow.style.display = runtime === 'local' ? '' : 'none';
+  if (runtime !== 'local') { hintEl.style.display = 'none'; return; }
+
+  const type = document.getElementById('create-account-type').value;
+  const results = await _getLocalCliDetection();
+  const match = (results || []).find(r => r.type_id === type);
+  hintEl.style.display = '';
+  if (match && match.found) {
+    hintEl.textContent = `✓ 宿主机已安装 ${esc(match.binary)}（${esc(match.version || '版本未知')}）`;
+    hintEl.style.color = 'var(--green)';
+  } else {
+    hintEl.textContent = `✗ 宿主机未探测到 ${esc(match ? match.binary : type)}，请先安装（coderfleet account detect 查看安装方式）`;
+    hintEl.style.color = 'var(--yellow, #c99)';
+  }
+}
+
 function openCreateAccountModal() {
   document.getElementById('create-account-name').value = '';
   document.getElementById('create-account-type').value = 'claude';
   document.getElementById('create-account-auth').value = 'login';
   document.getElementById('create-account-proxy').value = 'relay';
+  document.getElementById('create-account-runtime').value = 'container';
+  document.getElementById('create-account-sandbox-confirmed').checked = false;
+  document.getElementById('create-account-sandbox-row').style.display = 'none';
+  document.getElementById('create-account-local-hint').style.display = 'none';
   document.getElementById('create-account-msg').style.display = 'none';
   document.getElementById('create-account-modal').style.display = '';
 }
@@ -523,6 +568,8 @@ async function saveNewAccount() {
   const type  = document.getElementById('create-account-type').value;
   const auth  = document.getElementById('create-account-auth').value;
   const proxy = document.getElementById('create-account-proxy').value;
+  const runtime = document.getElementById('create-account-runtime').value;
+  const sandbox_confirmed = document.getElementById('create-account-sandbox-confirmed').checked;
   if (!name) { showCreateAccountMsg('请填写账号名', 'error'); return; }
   const btn = document.getElementById('create-account-btn');
   btn.disabled = true;
@@ -530,7 +577,7 @@ async function saveNewAccount() {
     const r = await fetch(`${API}/api/accounts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type, auth, proxy }),
+      body: JSON.stringify({ name, type, auth, proxy, runtime, sandbox_confirmed }),
     });
     const data = await r.json();
     if (!r.ok) { showCreateAccountMsg(data.detail || '创建失败', 'error'); return; }
@@ -603,6 +650,20 @@ async function loadAccountSettings(name) {
             </select>
           </div>
 
+          <div class="form-group">
+            <label class="form-label">执行方式</label>
+            <select id="settings-runtime" class="form-input" onchange="toggleSettingsSandboxRow()">
+              <option value="container" ${acc.runtime!=='local'?'selected':''}>container（独立 Docker 容器）</option>
+              <option value="local"     ${acc.runtime==='local'?'selected':''}>local（直接调用宿主机 CLI）</option>
+            </select>
+          </div>
+          <div id="settings-sandbox-row" class="form-group" style="display:${acc.runtime==='local'?'':'none'}">
+            <label class="form-label" style="display:flex;align-items:center;gap:6px;font-weight:normal">
+              <input type="checkbox" id="settings-sandbox-confirmed" ${acc.sandbox_confirmed?'checked':''}>
+              我已手工开启该 CLI 自带的 OS 级沙箱（未确认则无法提交 auto 任务）
+            </label>
+          </div>
+
           <div style="display:flex;gap:8px;align-items:center">
             <button class="btn primary" style="font-size:12px" onclick="saveAccountSettings('${esc(name)}')">保存配置</button>
             <div id="settings-msg" style="display:none"></div>
@@ -645,6 +706,12 @@ function toggleEnvSection() {
   if (sec) sec.style.display = auth === 'env' ? 'flex' : 'none';
 }
 
+function toggleSettingsSandboxRow() {
+  const runtime = document.getElementById('settings-runtime')?.value;
+  const row = document.getElementById('settings-sandbox-row');
+  if (row) row.style.display = runtime === 'local' ? '' : 'none';
+}
+
 
 function addEnvRow() {
   const k = document.getElementById('new-env-key').value.trim();
@@ -671,16 +738,18 @@ function removeEnvRow(key) {
 }
 
 async function saveAccountSettings(name) {
-  const type  = document.getElementById('settings-type').value;
-  const auth  = document.getElementById('settings-auth').value;
-  const proxy = document.getElementById('settings-proxy').value;
+  const type    = document.getElementById('settings-type').value;
+  const auth    = document.getElementById('settings-auth').value;
+  const proxy   = document.getElementById('settings-proxy').value;
+  const runtime = document.getElementById('settings-runtime').value;
+  const sandbox_confirmed = document.getElementById('settings-sandbox-confirmed').checked;
   const btn   = document.querySelector('#acct-panel-settings .btn.primary');
   if (btn) btn.disabled = true;
   try {
     const r = await fetch(`${API}/api/accounts/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, auth, proxy }),
+      body: JSON.stringify({ type, auth, proxy, runtime, sandbox_confirmed }),
     });
     const data = await r.json();
     if (!r.ok) { showSettingsMsg(data.detail || '保存失败', 'error'); return; }

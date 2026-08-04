@@ -76,6 +76,14 @@ def account_group() -> None:
               help="Env file path (for --auth env, default: accounts/<name>/env)")
 @click.option("--proxy", default="relay", type=click.Choice(["relay", "off"]),
               show_default=True, help="Proxy mode")
+@click.option("--runtime", default="container", type=click.Choice(["container", "local"]),
+              show_default=True,
+              help="Execution backend: container（独立 Docker 容器，默认）or "
+                   "local（直接调用宿主机上已安装的 CLI，不经过 Docker）")
+@click.option("--sandbox-confirmed", is_flag=True, default=False,
+              help="确认已手工开启该 CLI 自带的 OS 级沙箱（Claude Code: sandbox.enabled + "
+                   "failIfUnavailable；Codex: --sandbox）。仅 --runtime local 时有意义，"
+                   "不设置的话该账号无法提交 auto 任务。")
 @click.pass_context
 def cmd_account_add(
     ctx: click.Context,
@@ -84,6 +92,8 @@ def cmd_account_add(
     auth: str,
     env_file: Optional[str],
     proxy: str,
+    runtime: str,
+    sandbox_confirmed: bool,
 ) -> None:
     """Add a new account. TYPE can be any registered type (run 'account list-types' to see all)."""
     ws: Path = ctx.obj["workspace"]
@@ -113,16 +123,39 @@ def cmd_account_add(
         if r.get("NAME") == name:
             raise click.ClickException(f"账号 '{name}' 已存在，若要修改请先 remove 再 add")
 
+    from coderfleet.account_type_registry import AccountType
+    from coderfleet.server.models import AccountProxy, AccountRuntime, check_account_runtime_proxy_compat
+    rejection = check_account_runtime_proxy_compat(
+        AccountType(acc_type), AccountRuntime(runtime), AccountProxy(proxy),
+    )
+    if rejection:
+        raise click.ClickException(rejection)
+
     tokens: dict[str, str] = {"NAME": name, "TYPE": acc_type, "AUTH": auth}
     if auth == "env" and env_file:
         tokens["ENV_FILE"] = env_file
     tokens["PROXY"] = proxy
+    tokens["RUNTIME"] = runtime
+    tokens["SANDBOX_CONFIRMED"] = "true" if sandbox_confirmed else "false"
 
     ensure_workspace(ws)
     write_conf_line(accounts_conf, tokens)
     ensure_bind_mount_dir(ws / "accounts" / name)
 
-    click.secho(f"✓ 账号 '{name}' 已添加（类型：{acc_type}，认证：{auth}，代理：{proxy}）", fg="green")
+    click.secho(f"✓ 账号 '{name}' 已添加（类型：{acc_type}，认证：{auth}，代理：{proxy}，执行方式：{runtime}）", fg="green")
+    if runtime == "local":
+        click.secho(
+            "  local 执行方式：不经过 Docker，直接调用宿主机上已安装的 CLI 二进制。"
+            "先用 'coderfleet account detect' 确认已安装，且 --proxy relay 目前仅 "
+            "TYPE=claude 受支持（Codex 的代理行为上游尚未确认，见 docs/network.md）。",
+            fg="yellow",
+        )
+        if not sandbox_confirmed:
+            click.secho(
+                "  未加 --sandbox-confirmed：该账号无法提交 auto 任务，直到你手工确认已经"
+                "开启 CLI 自带的 OS 级沙箱后重新添加（或用 Web UI / API 更新该账号）。",
+                fg="yellow",
+            )
     if auth == "env":
         click.secho(f"  ENV 文件路径：{env_file}", fg="yellow")
         spec = ACCOUNT_TYPES[acc_type]
@@ -166,6 +199,42 @@ def cmd_account_remove(ctx: click.Context, name: str) -> None:
     click.secho("  执行 coderfleet apply 重新生成配置", fg="yellow")
 
 
+# 仅对已经在 docs/research/local-execution-mode.md 里核实过官方安装命令的类型给出具体提示；
+# 其余类型不编造未经核实的安装命令。
+_INSTALL_HINTS = {
+    "claude": "curl -fsSL https://claude.ai/install.sh | bash   （或 npm install -g @anthropic-ai/claude-code）",
+    "codex":  "curl -fsSL https://chatgpt.com/codex/install.sh | sh   （或 npm install -g @openai/codex）",
+}
+
+
+@account_group.command("detect")
+@click.pass_context
+def cmd_account_detect(ctx: click.Context) -> None:
+    """探测宿主机上已安装哪些账号类型对应的 CLI 二进制（用于 --runtime local 之前的确认）。"""
+    from coderfleet.account_type_registry import detect_all_local_clis
+
+    click.echo()
+    click.echo("  ── 宿主机 CLI 探测 " + "─" * 52)
+    click.echo(f"  {'类型':<10} {'二进制':<10} {'状态':<8}  版本 / 路径")
+    click.echo("  " + "─" * 70)
+
+    for r in detect_all_local_clis():
+        if r.found:
+            status = click.style("✓ 已安装", fg="green")
+            detail = f"{r.version or '(无版本信息)'}  —  {r.path}"
+        else:
+            status = click.style("✗ 未安装", fg="yellow")
+            detail = _INSTALL_HINTS.get(r.type_id, "")
+        click.echo(f"  {r.type_id:<10} {r.binary:<10} {status}  {detail}")
+
+    click.echo()
+    click.secho(
+        "  已安装的类型可以用 --runtime local 创建账号，不经过 Docker 直接调用宿主机 CLI。",
+        dim=True,
+    )
+    click.echo()
+
+
 @account_group.command("list")
 @click.pass_context
 def cmd_account_list(ctx: click.Context) -> None:
@@ -176,7 +245,7 @@ def cmd_account_list(ctx: click.Context) -> None:
 
     click.echo()
     click.echo("  ── 账号列表 " + "─" * 58)
-    click.echo(f"  {'名称':<20} {'类型':<8} {'认证':<8} {'代理':<8}  状态")
+    click.echo(f"  {'名称':<20} {'类型':<8} {'认证':<8} {'代理':<8} {'执行方式':<10}  状态")
     click.echo("  " + "─" * 70)
 
     if not accounts:
@@ -189,14 +258,18 @@ def cmd_account_list(ctx: click.Context) -> None:
         acc_type = rec.get("TYPE", "")
         auth = rec.get("AUTH", "login")
         proxy = rec.get("PROXY", "relay")
+        runtime = rec.get("RUNTIME", "container")
 
-        any_running = any(
-            _is_running(_container_name(p.get("NAME", ""), acc_type))
-            for p in projects
-            if p.get("ACCOUNT") == name
-        )
-        status = click.style("● 运行中", fg="green") if any_running else click.style("○ 已停止", fg="yellow")
-        click.echo(f"  {name:<20} {acc_type:<8} {auth:<8} {proxy:<8}  {status}")
+        if runtime == "local":
+            status = click.style("● 本地", fg="cyan")
+        else:
+            any_running = any(
+                _is_running(_container_name(p.get("NAME", ""), acc_type))
+                for p in projects
+                if p.get("ACCOUNT") == name
+            )
+            status = click.style("● 运行中", fg="green") if any_running else click.style("○ 已停止", fg="yellow")
+        click.echo(f"  {name:<20} {acc_type:<8} {auth:<8} {proxy:<8} {runtime:<10}  {status}")
 
     click.echo()
 

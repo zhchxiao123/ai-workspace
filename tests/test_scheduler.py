@@ -15,6 +15,7 @@ from coderfleet.server.models import (
     Account,
     AccountAuth,
     AccountProxy,
+    AccountRuntime,
     AccountType,
     BoardCardStatus,
     Conversation,
@@ -1366,6 +1367,54 @@ def test_submit_uses_project_account_and_project_path(
 
     assert task.account == "alice"
     assert task.project == str(project_path.resolve())
+
+
+def test_submit_routes_local_account_normal_project_through_ephemeral_path_not_persistent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """runtime=local 账号绑定一个普通(非 ephemeral)项目提交任务：不能走 _run()（要求持久
+    容器已运行），必须走 _run_ephemeral_task；且工作目录必须是项目真实路径，不是临时
+    scratch 目录，否则模型看到的是空目录。Conversation.ephemeral 也必须保持 False——这是
+    一次正常对话，不是临时/scratch 会话，不该被 UI 标成"⚡ 临时"。"""
+    project_path = tmp_path / "repo"
+    project_path.mkdir()
+    sched = Scheduler(tmp_path)
+    monkeypatch.setattr(
+        sched, "get_accounts",
+        lambda: [Account(name="alice", type=AccountType.claude, runtime=AccountRuntime.local)],
+    )
+    monkeypatch.setattr(
+        sched, "get_projects",
+        lambda: [Project(name="repo", account="alice", path=str(project_path))],
+    )
+
+    persistent_called = False
+    def fail_if_persistent(*args, **kwargs):
+        nonlocal persistent_called
+        persistent_called = True
+        return asyncio.sleep(0)
+    monkeypatch.setattr(sched, "_run", fail_if_persistent)
+
+    captured = {}
+    async def fake_ephemeral(
+        task, acc, log_path, auto, conversation=None, session_dir=None,
+        output_dir="", secrets=None, images=None, project=None,
+    ):
+        captured["session_dir"] = session_dir
+        captured["project"] = project
+    monkeypatch.setattr(sched, "_run_ephemeral_task", fake_ephemeral)
+
+    task = asyncio.run(sched.submit("hello", project_name="repo", conversation_name="my chat"))
+
+    assert persistent_called is False
+    assert captured["session_dir"] == project_path.resolve()
+    assert captured["project"] is not None and captured["project"].name == "repo"
+    assert task.project == str(project_path.resolve())
+
+    conv = sched.get_conversation(task.conversation_id)
+    assert conv is not None
+    assert conv.ephemeral is False
 
 
 def test_submit_records_requested_model(

@@ -58,6 +58,8 @@ Run the Python test suite with `uv run --with pytest pytest -q`.
 
 Containers join an `internal: true` Docker network; they cannot reach the public internet directly. All traffic is forced through a `coderfleet-proxy-relay` container running gost, which forwards to the host proxy (Clash/v2ray). `PROXY=off` accounts skip the relay and connect to the default bridge.
 
+`--runtime local` accounts (see `docs/accounts.md`, `docs/network.md`) are an explicit, narrower exception to this invariant, not an equivalent alternative: they run as a plain host subprocess, so this network-layer enforcement doesn't exist for them — whether traffic actually goes through the relay depends entirely on the target CLI honoring proxy env vars. Only `TYPE=claude` is allowed to combine `--runtime local` with `--proxy relay`; `TYPE=codex` is rejected outright (`check_account_runtime_proxy_compat` in `coderfleet/server/models.py`) because Codex's own docs don't confirm proxy support (see `docs/research/local-execution-mode.md`). Never extend this allowlist without re-verifying the target CLI's proxy behavior against a primary source first.
+
 ### Frontend conventions
 
 - Global mutable state lives in `state.js` (e.g. `activeConversationId`, `chatNewSessionProject`, `projectsCache`).

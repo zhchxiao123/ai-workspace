@@ -145,6 +145,38 @@ def test_task_status_omits_branch_line_when_absent(monkeypatch):
     assert "分支：" not in result.output
 
 
+def test_task_status_shows_git_diff_stat_line(monkeypatch):
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda url, **kw: _FakeResp(json_data={
+            "id": "task-1", "status": "done", "account": "alice", "type": "claude",
+            "project": "/srv/x", "created": "2026-01-01T00:00:00+00:00",
+            "prompt": "do the thing", "git_branch": "feature/x",
+            "git_diff_added": 42, "git_diff_removed": 7,
+        }),
+    )
+    result = CliRunner().invoke(task_cmds.task_group, ["status", "task-1"])
+    assert result.exit_code == 0, result.output
+    assert "变更：" in result.output
+    assert "+42" in result.output
+    assert "-7" in result.output
+
+
+def test_task_status_omits_git_diff_stat_line_when_zero(monkeypatch):
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda url, **kw: _FakeResp(json_data={
+            "id": "task-1", "status": "done", "account": "alice", "type": "claude",
+            "project": "/srv/x", "created": "2026-01-01T00:00:00+00:00",
+            "prompt": "do the thing", "git_branch": "feature/x",
+            "git_diff_added": 0, "git_diff_removed": 0,
+        }),
+    )
+    result = CliRunner().invoke(task_cmds.task_group, ["status", "task-1"])
+    assert result.exit_code == 0, result.output
+    assert "变更：" not in result.output
+
+
 def test_task_answer_surfaces_409_conflict(monkeypatch):
     monkeypatch.setattr(
         httpx, "get",

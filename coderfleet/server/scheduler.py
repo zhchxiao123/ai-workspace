@@ -29,7 +29,7 @@ from coderfleet.config import load_config, parse_conf, truthy
 from coderfleet import usage_probe
 from coderfleet.server import docker_mgr
 from coderfleet.server.log_parser import split_complete_lines
-from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime
+from coderfleet.server.runtime import ContainerRuntime, ContainerSpec, DockerRuntime, LocalRuntime
 from coderfleet.server.store import JsonStore
 from coderfleet.ports import allocate_ide_port
 from coderfleet.server.models import (
@@ -37,6 +37,7 @@ from coderfleet.server.models import (
     AccountAuth,
     AccountProxy,
     AccountResponse,
+    AccountRuntime,
     AccountType,
     AccountUsage,
     Board,
@@ -103,10 +104,13 @@ class Scheduler:
         self,
         workspace_dir: Path,
         runtime: "ContainerRuntime | None" = None,
+        local_runtime: "ContainerRuntime | None" = None,
     ):
         self.workspace_dir  = workspace_dir
         # 容器运行时 seam：默认走真正的 docker，测试注入 FakeRuntime。
         self.runtime: "ContainerRuntime" = runtime or DockerRuntime()
+        # local 账号不经过 docker，走同一个 LocalRuntime 单例（无状态无所谓复用）；测试注入 FakeRuntime。
+        self._local_runtime: "ContainerRuntime" = local_runtime or LocalRuntime()
         self.accounts_conf  = workspace_dir / "accounts.conf"
         self.projects_conf  = workspace_dir / "projects.conf"
         self.tasks_dir      = workspace_dir / "tasks"
@@ -306,9 +310,19 @@ class Scheduler:
         acc_type: AccountType,
         auth:     AccountAuth,
         proxy:    AccountProxy,
+        runtime:  AccountRuntime = AccountRuntime.container,
+        sandbox_confirmed: bool = False,
     ) -> Account:
         """新增或修改 accounts.conf 中的账号行，env 认证时自动创建 env 文件占位。"""
-        parts = [f"NAME={name}", f"TYPE={acc_type.value}", f"AUTH={auth.value}", f"PROXY={proxy.value}"]
+        from coderfleet.server.models import check_account_runtime_proxy_compat
+        rejection = check_account_runtime_proxy_compat(acc_type, runtime, proxy)
+        if rejection:
+            raise ValueError(rejection)
+        parts = [
+            f"NAME={name}", f"TYPE={acc_type.value}", f"AUTH={auth.value}",
+            f"PROXY={proxy.value}", f"RUNTIME={runtime.value}",
+            f"SANDBOX_CONFIRMED={'true' if sandbox_confirmed else 'false'}",
+        ]
         env_file = ""
         if auth == AccountAuth.env:
             env_file = f"./accounts/{name}/env"
@@ -322,7 +336,10 @@ class Scheduler:
                 except OSError:
                     pass
         self._rewrite_conf(self.accounts_conf, name, " ".join(parts))
-        return Account(name=name, type=acc_type, auth=auth, proxy=proxy, env_file=env_file)
+        return Account(
+            name=name, type=acc_type, auth=auth, proxy=proxy, runtime=runtime,
+            sandbox_confirmed=sandbox_confirmed, env_file=env_file,
+        )
 
     def delete_account(self, name: str) -> None:
         """从 accounts.conf 删除账号行。"""
@@ -515,11 +532,16 @@ class Scheduler:
             project_names = projects_by_account.get(acc.name, [])
             containers = []
             running = False
-            for pn in project_names:
-                ctr = f"{acc.type.value}-{pn}"
-                containers.append(ctr)
-                if docker_mgr.is_container_running(ctr):
-                    running = True
+            if acc.runtime == AccountRuntime.local:
+                # local 账号没有持久容器 —— "running" 退化为「当前是否有任务在跑」，
+                # 不去查一个根本不存在的 docker 容器名。
+                running = acc.name in busy
+            else:
+                for pn in project_names:
+                    ctr = f"{acc.type.value}-{pn}"
+                    containers.append(ctr)
+                    if docker_mgr.is_container_running(ctr):
+                        running = True
             rt = running_tasks.get(acc.name)
             result.append(AccountResponse(
                 name      = acc.name,
@@ -527,6 +549,7 @@ class Scheduler:
                 auth      = acc.auth,
                 env_file  = acc.env_file,
                 proxy     = acc.proxy,
+                runtime   = acc.runtime,
                 projects  = project_names,
                 running   = running,
                 busy      = acc.name in busy,
@@ -2108,11 +2131,16 @@ class Scheduler:
                     f"没有匹配的可用账号{('（' + hint_str + '）') if hint_str else ''}"
                 )
 
-        # ── Ephemeral 路径：跳过持久容器，直接 docker run --rm ──
+        # ── Ephemeral 路径：跳过持久容器，直接 docker run --rm（或 LocalRuntime）──
         # 触发条件：显式传 ephemeral=True / execution_mode=ephemeral，
-        # 或 execution_mode=inherit 且选中项目本身是 ephemeral 项目。
+        # 或 execution_mode=inherit 且选中项目本身是 ephemeral 项目，
+        # 或账号本身是 runtime=local —— local 账号根本没有"持久容器"这个概念
+        # （没有 docker-compose 常驻服务可以 exec 进去），不管请求方传了什么
+        # execution_mode，都必须走这条本地能力覆盖到的路径，否则会去 _run()
+        # 尝试 exec 一个压根不存在的容器，报错也不直观。
         _is_ephemeral = (
-            ephemeral
+            acc.runtime == AccountRuntime.local
+            or ephemeral
             or mode == "ephemeral"
             or (mode == "inherit" and selected_project is not None and selected_project.ephemeral)
         )
@@ -2125,6 +2153,21 @@ class Scheduler:
         if _is_ephemeral:
             retention = self._normalize_ephemeral_retention(ephemeral_retention)
             ttl_minutes = self._normalize_ephemeral_ttl(ephemeral_ttl_minutes)
+            # _is_ephemeral only says "this task must run through the ephemeral *execution*
+            # path" (no persistent container to exec into) — it does NOT mean the
+            # *conversation* is semantically temporary/scratch. A `local` account bound to
+            # an ordinary, non-ephemeral project is forced through this path purely because
+            # it has no persistent container, but the user is having a completely normal,
+            # ongoing conversation about their real project; it must not be labelled/treated
+            # as an "⚡ 临时" ephemeral conversation in the UI, and must not have its working
+            # directory swapped out for a throwaway scratch dir. `is_genuinely_ephemeral`
+            # is the semantic question ("does the user actually want a disposable
+            # workspace/container?"); `_is_ephemeral` above is the mechanical one ("does this
+            # account even have a persistent-container option?") — keep them separate.
+            is_genuinely_ephemeral = (
+                ephemeral or mode == "ephemeral"
+                or (selected_project is not None and selected_project.ephemeral)
+            )
             # Resolve conversation. Retained ephemeral containers need a
             # conversation record so later turns can locate the same container.
             if conversation is None and (conversation_name or retention != "release_on_finish"):
@@ -2138,21 +2181,21 @@ class Scheduler:
                     type         = acc.type,
                     project      = proj_path,
                     project_name = proj_name,
-                    ephemeral    = True,
+                    ephemeral    = is_genuinely_ephemeral,
                     output_dir   = output_dir,
                     ephemeral_retention = retention,
                     ephemeral_ttl_minutes = ttl_minutes,
                     ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes) if retention == "keep_until_ttl" else "",
                 )
                 conversation.save(self.conversations_dir)
-            elif conversation and not conversation.ephemeral:
+            elif conversation and is_genuinely_ephemeral and not conversation.ephemeral:
                 # Existing conversation just detected as ephemeral — update its flag
                 conversation.ephemeral = True
                 conversation.ephemeral_retention = retention
                 conversation.ephemeral_ttl_minutes = ttl_minutes
                 conversation.ephemeral_expires_at = self._ephemeral_expires_at(ttl_minutes) if retention == "keep_until_ttl" else ""
                 conversation.save(self.conversations_dir)
-            elif conversation:
+            elif conversation and conversation.ephemeral:
                 conversation.ephemeral_retention = retention
                 conversation.ephemeral_ttl_minutes = ttl_minutes
                 if retention == "keep_until_ttl":
@@ -2167,13 +2210,28 @@ class Scheduler:
                         conversation.ephemeral_container_name = ""
                     conversation.ephemeral_expires_at = ""
                 conversation.save(self.conversations_dir)
+            # else: existing non-ephemeral conversation on a `local` account bound to a
+            # normal project — nothing about its ephemeral bookkeeping needs touching.
 
             # Carry output_dir from conversation if not overridden in this request
             if not output_dir and conversation and conversation.output_dir:
                 output_dir = conversation.output_dir
 
+            # local 账号被强制走这条路径（见上面 _is_ephemeral 的注释），但如果绑定的其实是
+            # 一个正常、非 ephemeral 的项目，就不能用下面 _get_session_dir 那个空的临时
+            # scratch 目录当工作区——模型会看到一个空目录，不是用户的真实项目文件。只有
+            # "真的要一次性临时工作区"（is_genuinely_ephemeral）才用 scratch 目录；local 账号
+            # 绑定普通项目时，直接用项目在宿主机上的真实路径（container 场景下这条路径本来
+            # 就是靠 container_workdir_for_project 把它映射成容器内 /workspace/... 路径，
+            # local 场景没有容器边界要跨，宿主机路径本身就是要 cd 进去的地方，不需要再映射）。
             session_dir: Optional[Path] = None
-            if conversation:
+            if (
+                acc.runtime == AccountRuntime.local
+                and not is_genuinely_ephemeral
+                and selected_project is not None
+            ):
+                session_dir = Path(self.resolve_task_project(acc, prefer_project))
+            elif conversation:
                 session_dir = self._get_session_dir(conversation.id)
 
             task_project = str(session_dir) if session_dir else "ephemeral"
@@ -2689,6 +2747,46 @@ class Scheduler:
             pass
         return None
 
+    def _runtime_for(self, acc: Account) -> "ContainerRuntime":
+        """按账号选 runtime —— 一个 Scheduler 实例里 local 账号和 container 账号可以并存。"""
+        return self._local_runtime if acc.runtime == AccountRuntime.local else self.runtime
+
+    def check_local_sandbox_gate(self, acc: Account, auto: bool) -> str:
+        """local 账号 + auto=True 且未确认已开启 OS 级沙箱时拒绝，不静默放行。
+
+        auto 模式会使用假设"外部已经隔离好"的旗标 ——
+        _build_claude 的 --dangerously-skip-permissions、_build_codex 的
+        --dangerously-bypass-approvals-and-sandbox，后者自己的 --help 原文是
+        "Intended solely for running in environments that are externally sandboxed"。
+        容器场景下 Docker 本身就是那个"外部沙箱"；local 场景没有，必须由账号自己显式
+        确认已经手工开启 CLI 自带的 OS 级沙箱（Claude Code 的
+        sandbox.enabled+failIfUnavailable / Codex 的 --sandbox），门禁才放行。
+        返回非空字符串表示拒绝（内容即错误信息）；空字符串表示允许。
+        """
+        if acc.runtime == AccountRuntime.local and auto and not acc.sandbox_confirmed:
+            return (
+                f"账号 '{acc.name}'（runtime=local）不能提交 auto 任务：本地执行没有容器兜底，"
+                "而 auto 模式会使用假设已有外部沙箱的旗标（Claude 的 "
+                "--dangerously-skip-permissions / Codex 的 "
+                "--dangerously-bypass-approvals-and-sandbox）。请先手工确认已经开启该 CLI "
+                "自带的 OS 级沙箱（Claude Code: sandbox.enabled + failIfUnavailable；"
+                "Codex: --sandbox），再用 --sandbox-confirmed 标记该账号已确认。"
+            )
+        return ""
+
+    def local_auth_dir(self, acc: Account) -> Path:
+        """local 账号在宿主机上的 CODEX_HOME/CLAUDE_CONFIG_DIR 根目录。
+
+        复用 accounts/<name>/ —— 这个目录今天已经是 container 场景的挂载源
+        （见 _run_ephemeral_task 里的 auth_src），local 场景直接把它当宿主机路径用，
+        不新增存储位置。容器场景下所有账号共用同一个容器内固定路径隔离靠容器边界；
+        local 场景没有容器边界，隔离必须靠每个账号拿到不同的宿主机目录。
+        """
+        sub = "codex" if acc.type == AccountType.codex else "claude"
+        path = self.workspace_dir / "accounts" / acc.name / f".{sub}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def _get_account_image(self, acc: Account, project: Optional["Project"] = None) -> str:
         """Return the docker image to use for ephemeral containers."""
         from coderfleet.config import load_config
@@ -2734,7 +2832,11 @@ class Scheduler:
             getattr(task, "ephemeral_ttl_minutes", None)
             or (getattr(conversation, "ephemeral_ttl_minutes", None) if conversation else None)
         )
-        keep_container = bool(conversation and retention != "release_on_finish")
+        # local 账号没有"闲置容器可以反复 exec 进去"这个 docker 专属技巧 —— 每次任务都是
+        # 一次全新的宿主机子进程调用（靠 CLI 自己的 --resume 衔接上下文），不支持会话复用。
+        keep_container = bool(
+            conversation and retention != "release_on_finish" and acc.runtime != AccountRuntime.local
+        )
         container_name = (
             getattr(conversation, "ephemeral_container_name", "") if keep_container and conversation else ""
         ) or (
@@ -2744,8 +2846,18 @@ class Scheduler:
         proc: Optional[asyncio.subprocess.Process] = None
 
         try:
+            gate_rejection = self.check_local_sandbox_gate(acc, auto)
+            if gate_rejection:
+                raise RuntimeError(gate_rejection)
+
             spec = get_spec(acc.type.value)
             cfg  = load_config(self.workspace_dir)
+
+            is_local = acc.runtime == AccountRuntime.local
+            # sandbox_confirmed 只有在 local 时才有意义（见 Account.sandbox_confirmed
+            # docstring）；门禁已经保证 local+auto 时 sandbox_confirmed 必为 True，这里
+            # 直接读字段即可，不需要重复判断 auto。
+            local_sandboxed = is_local and acc.sandbox_confirmed
 
             inner_cmd = spec.build_inner_cmd(
                 self._expand_skill_command(task.prompt, acc.name), auto, task.id,
@@ -2754,6 +2866,7 @@ class Scheduler:
                 conversation.native_session_id if conversation else "",
                 list(images),
                 getattr(task, "model", ""),
+                local_sandboxed,
             )
 
             auth_src = self.workspace_dir / "accounts" / acc.name
@@ -2761,6 +2874,8 @@ class Scheduler:
             image    = self._get_account_image(acc, project)
 
             # 用领域词汇描述容器：环境变量、挂载、网络 —— docker argv 细节交给 runtime。
+            # local 账号没有容器，mounts 对 LocalRuntime 是死字段，但留着构建不影响正确性
+            # （只是没人读），不必为它单独分叉。
             env: dict[str, str] = {}
             mounts: list[tuple[str, str]] = [(str(auth_src), str(auth_dst))]
 
@@ -2779,19 +2894,26 @@ class Scheduler:
                 out_path.mkdir(parents=True, exist_ok=True)
                 mounts.append((str(out_path), "/output"))
 
-            project_socket_record = {}
-            if project and getattr(project, "docker_socket", ""):
-                project_socket_record["DOCKER_SOCKET"] = project.docker_socket
-            docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, project_socket_record))
-            if docker_socket is not None:
-                mounts.append((docker_socket.host_path, docker_socket.container_path))
-                env["DOCKER_HOST"] = docker_socket.env
-                env["CODERFLEET_DOCKER_SOCKET"] = docker_socket.container_path
-                env["CODERFLEET_HOST_WORKSPACE"] = host_workspace
+            # docker socket 转发是「容器里跑的任务想反过来操作宿主机 docker」的机制 ——
+            # local 账号本来就直接跑在宿主机上，不存在这层间接，跳过整段。
+            if not is_local:
+                project_socket_record = {}
+                if project and getattr(project, "docker_socket", ""):
+                    project_socket_record["DOCKER_SOCKET"] = project.docker_socket
+                docker_socket = resolve_docker_socket(docker_socket_config_for_project(cfg, project_socket_record))
+                if docker_socket is not None:
+                    mounts.append((docker_socket.host_path, docker_socket.container_path))
+                    env["DOCKER_HOST"] = docker_socket.env
+                    env["CODERFLEET_DOCKER_SOCKET"] = docker_socket.container_path
+                    env["CODERFLEET_HOST_WORKSPACE"] = host_workspace
 
-            # Proxy / network
-            network = self._get_ephemeral_network(acc)
-            if network:
+            # Proxy / network —— local 账号没有 docker 网络可加入（_get_ephemeral_network 探测
+            # 的是 docker 容器该不该 join 哪个网络，跟宿主机子进程完全无关），是否要设代理环境
+            # 变量单看账号自己的 proxy 设置；network 变量只用来控制 ContainerSpec.network（对
+            # LocalRuntime 是死字段），不再兼职当"要不要设代理"的判断依据。
+            network = None if is_local else self._get_ephemeral_network(acc)
+            proxy_active = (acc.proxy != AccountProxy.off) if is_local else bool(network)
+            if proxy_active:
                 relay_ip   = cfg.get("RELAY_IP",           "172.21.0.2")
                 relay_port = cfg.get("RELAY_LISTEN_PORT",  "7890")
                 proxy_url  = f"http://{relay_ip}:{relay_port}"
@@ -2805,8 +2927,14 @@ class Scheduler:
                 env["CODERFLEET_RELAY_PORT"] = relay_port
 
             # Standard env vars (matching compose.py baseline — always set for all types)
-            env["CODEX_HOME"] = "/home/byclaw/.codex"
-            env["CLAUDE_CONFIG_DIR"] = "/home/byclaw/.claude"
+            if is_local:
+                # 容器场景所有账号共用同一个容器内固定路径，靠容器边界隔离；local 场景没有
+                # 容器边界，每个账号必须拿到互不相同的宿主机目录（见 local_auth_dir docstring）。
+                env["CODEX_HOME"] = str(self.local_auth_dir(acc)) if acc.type == AccountType.codex else "/home/byclaw/.codex"
+                env["CLAUDE_CONFIG_DIR"] = str(self.local_auth_dir(acc)) if acc.type == AccountType.claude else "/home/byclaw/.claude"
+            else:
+                env["CODEX_HOME"] = "/home/byclaw/.codex"
+                env["CLAUDE_CONFIG_DIR"] = "/home/byclaw/.claude"
             env["TZ"] = container_timezone(cfg)
             env["CODERFLEET_ACCOUNT_NAME"] = acc.name
             env["CODERFLEET_ACCOUNT_TYPE"] = acc.type.value
@@ -2835,10 +2963,16 @@ class Scheduler:
             # Wrap inner_cmd in explicit subshell so exec -a replaces the subshell,
             # not the outer bash (which must stay alive to propagate the exit code).
             # Use bash -c (not -lc) and set PATH explicitly to avoid login-profile issues.
-            path_prefix = (
-                "export PATH=/home/byclaw/.local/bin:/usr/local/bin"
-                ":/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH && "
-            )
+            # 这几个路径是 CoderFleet 镜像里固定的容器内布局（container 场景的 byclaw 用户），
+            # 跟宿主机真实用户的 claude/codex 安装位置无关 —— local 场景不覆盖 PATH，直接继承
+            # LocalRuntime 传下去的宿主机环境变量（探测阶段 shutil.which 找到的就是这份 PATH）。
+            if is_local:
+                path_prefix = ""
+            else:
+                path_prefix = (
+                    "export PATH=/home/byclaw/.local/bin:/usr/local/bin"
+                    ":/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH && "
+                )
             wrapped_cmd = path_prefix + f"( {inner_cmd} )"
 
             if keep_container:
@@ -2882,22 +3016,30 @@ class Scheduler:
                 # 因此即使有 project 也不探测，跟 keep-container 场景的判定
                 # 标准不同（issue #87 讨论过的范围收窄）。
                 if project is not None:
-                    git_branch, git_worktree = await self._probe_git_context(container_name, "/workspace")
+                    git_branch, git_worktree, diff_added, diff_removed = await self._probe_git_context(
+                        container_name, "/workspace",
+                    )
                     if git_branch:
-                        self._record_git_context(task.id, git_branch, git_worktree)
+                        self._record_git_context(task.id, git_branch, git_worktree, diff_added, diff_removed)
                         # 同步本地对象：下面这个函数后续还会用同一个 task 变量多次
                         # save()（pid/native_session_id/status…），不更新本地字段的话
                         # 那些后续 save 会拿着内存里的旧空值把刚落盘的分支信息覆盖掉。
                         task.git_branch = git_branch
                         task.git_worktree = git_worktree
+                        task.git_diff_added = diff_added
+                        task.git_diff_removed = diff_removed
 
                 proc = await self.runtime.exec(
                     container_name, ["bash", "-c", wrapped_cmd], env=env, workdir="/workspace",
                 )
             else:
-                proc = await self.runtime.run(ContainerSpec(
+                # image/mounts/network/remove 对 LocalRuntime 都是死字段（它只看
+                # command/env/workdir）——local 账号不需要单独拼一份 spec，只需要把
+                # workdir 从容器路径 "/workspace" 换成真实的宿主机目录。
+                proc = await self._runtime_for(acc).run(ContainerSpec(
                     image=image,
                     command=["bash", "-c", wrapped_cmd],
+                    workdir=host_workspace if is_local else "/workspace",
                     env=env,
                     mounts=mounts,
                     network=network,
@@ -3003,8 +3145,14 @@ class Scheduler:
             self._running.pop(task.id, None)
             asyncio.create_task(self.schedule_next_tasks())
 
-    async def _probe_git_context(self, container_name: str, container_workdir: str) -> tuple[str, bool]:
-        """探测 container_workdir 当前的 git 分支，及是否为 linked worktree（git-dir 含 /worktrees/）。
+    _SHORTSTAT_INSERTIONS_RE = re.compile(r"(\d+) insertions?\(\+\)")
+    _SHORTSTAT_DELETIONS_RE = re.compile(r"(\d+) deletions?\(-\)")
+
+    async def _probe_git_context(self, container_name: str, container_workdir: str) -> tuple[str, bool, int, int]:
+        """探测 container_workdir 当前的 git 分支、是否为 linked worktree（git-dir 含
+        /worktrees/），以及相对上一次提交的未提交改动行数（issue #88 后续：`git diff
+        --shortstat HEAD`，不是相对默认分支的累计改动——不需要判断默认分支叫什么，
+        代价是代理一旦提交就会归零；这是有意选择的 MVP 范围，不是遗漏）。
 
         detached HEAD 时 --abbrev-ref 只会给出字面量 "HEAD"，退化用短 SHA 代替，避免把
         "HEAD" 这个非分支值当分支名展示。纯展示性附加信息，不是任务执行的前置条件：任何
@@ -3015,7 +3163,8 @@ class Scheduler:
         probe_cmd = (
             "git rev-parse --abbrev-ref HEAD 2>/dev/null && "
             "git rev-parse --short HEAD 2>/dev/null && "
-            "git rev-parse --git-dir 2>/dev/null"
+            "git rev-parse --git-dir 2>/dev/null && "
+            "git diff --shortstat HEAD 2>/dev/null"
         )
         try:
             proc = await self.runtime.exec(
@@ -3023,19 +3172,28 @@ class Scheduler:
             )
             out, _ = await proc.communicate()
         except Exception:
-            return "", False
+            return "", False, 0, 0
         if proc.returncode != 0:
-            return "", False
+            return "", False, 0, 0
         lines = out.decode("utf-8", errors="replace").strip().splitlines()
         if len(lines) < 3 or not lines[0].strip():
-            return "", False
+            return "", False, 0, 0
         abbrev_ref, short_sha, git_dir = (l.strip() for l in lines[:3])
         branch = short_sha if abbrev_ref == "HEAD" else abbrev_ref
         if not branch:
-            return "", False
-        return branch, "/worktrees/" in git_dir
+            return "", False, 0, 0
+        # 第 4 行（--shortstat）在"无未提交改动"时本来就是空输出，不代表探测失败。
+        shortstat = lines[3] if len(lines) > 3 else ""
+        ins_m = self._SHORTSTAT_INSERTIONS_RE.search(shortstat)
+        del_m = self._SHORTSTAT_DELETIONS_RE.search(shortstat)
+        added = int(ins_m.group(1)) if ins_m else 0
+        removed = int(del_m.group(1)) if del_m else 0
+        return branch, "/worktrees/" in git_dir, added, removed
 
-    def _record_git_context(self, task_id: str, git_branch: str, git_worktree: bool) -> None:
+    def _record_git_context(
+        self, task_id: str, git_branch: str, git_worktree: bool,
+        diff_added: int = 0, diff_removed: int = 0,
+    ) -> None:
         """单次同步 read-modify-write：探测跨越一次 await，写回前重新从磁盘加载最新任务记录，
         避免覆盖 kill_task 等并发操作在探测期间写入的状态（CLAUDE.md 状态文件读改写不变式）。
         """
@@ -3044,6 +3202,8 @@ class Scheduler:
             return
         fresh.git_branch = git_branch
         fresh.git_worktree = git_worktree
+        fresh.git_diff_added = diff_added
+        fresh.git_diff_removed = diff_removed
         fresh.save(self.tasks_dir)
 
     async def _run(
@@ -3060,13 +3220,17 @@ class Scheduler:
         """后台协程：以 detached 方式启动容器任务，再轮询宿主机日志文件跟踪进度。"""
         try:
             if container_name and container_workdir:
-                git_branch, git_worktree = await self._probe_git_context(container_name, container_workdir)
+                git_branch, git_worktree, diff_added, diff_removed = await self._probe_git_context(
+                    container_name, container_workdir,
+                )
                 if git_branch:
-                    self._record_git_context(task.id, git_branch, git_worktree)
+                    self._record_git_context(task.id, git_branch, git_worktree, diff_added, diff_removed)
                     # 同步本地对象：_stream_container_log/失败处理分支后续还会用同一个
                     # task 变量 save()，不更新本地字段就会被内存里的旧空值覆盖掉。
                     task.git_branch = git_branch
                     task.git_worktree = git_worktree
+                    task.git_diff_added = diff_added
+                    task.git_diff_removed = diff_removed
 
             cli_prompt = self._expand_skill_command(task.prompt, acc.name)
             cmd = self.build_cli_command(
@@ -3183,16 +3347,7 @@ class Scheduler:
                 f.write("\n" + "=" * 38 + "\n")
                 f.write("usage status:\n")
 
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "exec",
-                container_name,
-                "bash",
-                "-lc",
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            proc = await self.runtime.exec(container_name, ["bash", "-lc", cmd])
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=45)
             text = stdout.decode("utf-8", errors="replace").strip()
             if not text:
@@ -3231,11 +3386,9 @@ class Scheduler:
     async def _get_hermes_session_id(self, container_name: str) -> str:
         """Query the most recently updated hermes session ID from inside the container."""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", container_name, "bash", "-lc",
-                "/opt/hermes-venv/bin/hermes sessions export 2>/dev/null | tail -1",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+            proc = await self.runtime.exec(
+                container_name,
+                ["bash", "-lc", "/opt/hermes-venv/bin/hermes sessions export 2>/dev/null | tail -1"],
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             text = stdout.decode("utf-8", errors="replace").strip()
